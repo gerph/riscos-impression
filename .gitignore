@@ -1,0 +1,22 @@
+# Real Impression documents used for local manual testing. These may
+# contain personal information and must never be committed. See PLAN.md
+# Stage 13 for the process of auditing and promoting a sanitised subset
+# to committed test fixtures.
+/examples/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Local scratch conversion output
+/out/
+*.log
