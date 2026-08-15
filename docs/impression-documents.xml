@@ -540,7 +540,7 @@ flags field distinguishes the two.
 <subsection title="On-disk colour definitions (icolourstr)">
 <p>
 <offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
-<offset number="0" name="palword" data-size="4">A RISC OS palette-style colour word (blue/green/red byte order, as used by OS_ReadPalette and ColourTrans), used by the converter only as a fallback/preview value. The authoritative colour value is given by the y/c/m/k fields below.</offset>
+<offset number="0" name="palword" data-size="4">A RISC OS palette-style colour word (blue/green/red byte order, as used by OS_ReadPalette and ColourTrans), used by the converter only as a fallback/preview value. The authoritative colour value is given by the y/c/m/k fields below. For a tint entry (see "Colour flags word"), this field is present on disk but its value is never actually used by the converter: the code path that would apply it is unconditionally overwritten, later in the same routine, by copying the base colour's own resolved palette word wholesale; see "Colour channel encoding".</offset>
 <offset number="4" name="flags" data-size="4">Packed flags; see "Colour flags word" below.</offset>
 <offset number="8" name="y" data-size="1">Colour-model-dependent channel byte; see "Colour channel encoding" below.</offset>
 <offset number="9" name="c" data-size="1">Colour-model-dependent channel byte; see "Colour channel encoding" below.</offset>
@@ -557,9 +557,9 @@ flags field distinguishes the two.
 <p>
 <bitfield-table>
 <bit number="0" name="process">When bit 1 (tint) is clear: 1 = this is a process colour, 0 = this is a spot colour.</bit>
-<bit number="1" name="tint">This entry defines a tint of another named colour, rather than a base colour. When set, bit 0 does not apply directly: the tint inherits its base colour's spot/process assignment.</bit>
+<bit number="1" name="tint">This entry defines a tint of another named colour, rather than a base colour. When set, bits 0 and 7 of this word are not honoured: the converter reads them, but then unconditionally overwrites the whole resolved colour record with a copy of the base colour's own flags (and palette word), so a tint entry always displays with its base colour's spot/process and overprint settings, never its own. This may not be the intended behaviour, but it is what the converter actually produces.</bit>
 <bit number="2-6" state="reserved">Unknown.</bit>
-<bit number="7" name="overprint">Print this colour in overprint mode.</bit>
+<bit number="7" name="overprint">Print this colour in overprint mode. See bit 1 for the tint-entry exception.</bit>
 </bitfield-table>
 </p>
 </subsubsection>
@@ -575,7 +575,7 @@ value:
 <value-table head-number="y &amp; 0x3" head-value="Colour model">
 <value number="0 or 3">RGB: red = c, green = m, blue = k.</value>
 <value number="1">CMYK: cyan = c, magenta = m, yellow = (y &amp; 0xFC) (the yellow channel is packed into the upper six bits of the same byte that carries the model selector), black = k.</value>
-<value number="2">HSV: hue, saturation, and value are packed across nibbles of the k, m, c, and y bytes; see the conversion source for the exact bit packing, which is faithfully reproduced but not independently confirmed against Impression documentation.</value>
+<value number="2">HSV: hue = ((k &lt;&lt; 4) | (m &gt;&gt; 4)), saturation = c, value = ((y &gt;&gt; 4) | ((m &amp; 0xF) &lt;&lt; 4)), each then scaled the same way as the other models (hue additionally has no /255 scaling applied, unlike saturation and value). Hue and value are each packed across the nibbles of two adjacent bytes; this is reproduced exactly from the conversion source but not independently confirmed against any other Impression documentation.</value>
 </value-table>
 </p>
 <p>
@@ -588,6 +588,15 @@ the same array that this tint is based on. This is the same
 index-computation formula used for the named-colour case of an inline
 colour value word (see "Inline colour value words"), confirming both
 refer to entries of this same table by zero-based index.
+</p>
+<p>
+Only the tint's own name and its computed channel values (the base
+colour's channel values scaled toward white, by the tint fraction
+k/128, for RGB and HSV's value channel; scaled toward zero for CMYK and
+HSV's hue/saturation channels) are actually used from a tint entry
+itself. Every other displayed property -- model, spot/process, overprint,
+and palette word -- is inherited unchanged from the base colour, per the
+note on bit 1 in "Colour flags word".
 </p>
 </subsubsection>
 </subsection>
@@ -604,8 +613,8 @@ b3 select how the rest of the word is interpreted:
 </p>
 <p>
 <value-table head-number="b3 &amp; 0x3" head-value="Meaning">
-<value number="0">RGB, given directly: red = b2, green = b1, blue = b0, each scaled from 0-255 to the colour system's internal 0-0x10000 range.</value>
-<value number="1">CMYK, given directly: cyan = b2, magenta = b1, yellow = (b3 &amp; 0xFC), black = b0, each scaled as above. As in icolourstr, the yellow channel is packed into the upper six bits of the byte that also carries the model selector.</value>
+<value number="0">RGB, given directly: red = b2, green = b1, blue = b0, each scaled from 0-255 to the colour system's internal 0-0x10000 range (multiplied by 0x10000 and divided by 255).</value>
+<value number="1">CMYK, given directly: cyan = b2, magenta = b1, yellow = (b3 &amp; 0xFC), black = b0. Cyan, magenta, and black are scaled by 0x10000/255 as usual, but yellow is instead scaled by 0x10000/0xFC (0xFC being the largest value the masked byte can hold) -- unlike icolourstr's on-disk colour-table entries, which scale their equivalent yellow channel by 0x10000/255 like every other channel. This asymmetry is reproduced exactly from the conversion source. As in icolourstr, the yellow channel is packed into the upper six bits of the byte that also carries the model selector.</value>
 <value number="2">HSV, given directly, with hue, saturation, and value packed across nibbles of b0-b2 in the same manner as icolourstr's HSV encoding.</value>
 <value number="3">A reference to a named colour already defined in the document's colour table, rather than an inline value. The referenced entry's zero-based index into the icolourstr array (colour1 in the file header) is (b2 &lt;&lt; 6) | (b3 &gt;&gt; 2).</value>
 </value-table>

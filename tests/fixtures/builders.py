@@ -71,3 +71,34 @@ def build_header(**overrides: object) -> bytes:
     data[368 : 368 + len(name_bytes)] = name_bytes
 
     return bytes(data)
+
+
+COLOUR_ENTRY_SIZE = 48
+
+
+def build_colour_entry(
+    *,
+    palword: int = 0,
+    flags: int = 0,
+    y: int = 0,
+    c: int = 0,
+    m: int = 0,
+    k: int = 0,
+    name: str = "",
+) -> bytes:
+    """Build one 48-byte on-disk icolourstr record."""
+    data = bytearray(COLOUR_ENTRY_SIZE)
+    struct.pack_into("<I", data, 0, palword)
+    struct.pack_into("<I", data, 4, flags)
+    data[8] = y & 0xFF
+    data[9] = c & 0xFF
+    data[10] = m & 0xFF
+    data[11] = k & 0xFF
+    name_bytes = name.encode("latin-1")[:24]
+    data[12 : 12 + len(name_bytes)] = name_bytes
+    return bytes(data)
+
+
+def build_colour_table(entries: list[bytes]) -> bytes:
+    """Concatenate colour-entry records into one colour-table blob."""
+    return b"".join(entries)
