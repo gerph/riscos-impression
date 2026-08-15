@@ -814,7 +814,7 @@ boundary before the four-byte fields begin.
 <definition name="fontaspectratio" extra="flags2 bit 14">Font horizontal/vertical aspect scale; 0x10000 = unity.</definition>
 <definition name="xxx215" extra="flags2 bit 15">Unknown; consumed but not emitted.</definition>
 <definition name="keeptogether" extra="flags2 bit 16">Consumed but not emitted.</definition>
-<definition name="leadering" extra="flags2 bit 17">First four bytes are copied as a short tab-leader fill-character string (up to four characters).</definition>
+<definition name="leadering" extra="flags2 bit 17">Four bytes holding a short tab-leader fill-character string (up to four characters), using the same NUL-or-CR termination convention as the font-style name field below, not NUL alone.</definition>
 <definition name="xxx218-xxx220" extra="flags2 bits 18-20">Unknown; consumed but not emitted.</definition>
 <definition name="fontname1 (selector)" extra="flags2 bit 21">Placeholder word in this position; the 40-byte font-style name string itself follows later (see below). The same governing bit gates both pieces of data.</definition>
 <definition name="tracking" extra="flags2 bit 22">Character tracking (letter-spacing).</definition>
@@ -836,8 +836,16 @@ value = a rule-line marker rather than a stop) and whose remaining 24
 bits give the tab position.
 </p>
 <p>
-If fontname1 is set (see above), a 40-byte, string follows next,
-holding the font (family and style) name.
+If fontname1 is set (see above), a 40-byte string follows next, holding
+the font (family and style) name, for example "Trinity.Medium.Italic".
+Like the leader field above, this uses the same NUL-or-CR termination
+convention as other fixed-length character-string fields in this
+format (see, for example, oldname in "File Header"), not NUL alone:
+real documents were found, empirically, to leave stale trailing bytes
+from a previously-stored longer name past a CR terminator when a
+shorter name is later written into the same field, so a reader that
+stops only at NUL rather than at the first of either byte will corrupt
+the decoded name with that leftover data.
 </p>
 <p>
 Finally, for whichever of the following governing bits were set

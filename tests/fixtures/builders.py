@@ -316,3 +316,183 @@ def build_section_body(
     flags2 = 1 << 0 if override_start_chapter else 0
     struct.pack_into("<H", data, 82, flags2)
     return bytes(data)
+
+
+# One-byte style fields, in on-disk order: (bit in flags1, field name used
+# as a key in build_style_record's `values`). Names matching model.styles.Style
+# attributes carry that field's value; "xxxNNN" names are unconfirmed
+# placeholders, and names starting with "_" are selectors superseded by
+# later data (their value doesn't matter; only their presence does).
+_STYLE_ONE_BYTE_FIELDS = [
+    (0, "xxx100"),
+    (1, "auto_indent"),
+    (2, "xxx102"),
+    (3, "xxx103"),
+    (4, "xxx104"),
+    (5, "xxx105"),
+    (6, "xxx106"),
+    (7, "font_name_selector0"),
+    (8, "underline"),
+    (9, "script"),
+    (10, "strikeout"),
+    (11, "alignment"),
+    (12, "keep_single"),
+    (13, "keep_multiple"),
+    (14, "hyphenation"),
+    (15, "xxx115"),
+    (16, "decimal_tab"),
+    (17, "keep_next"),
+    (18, "_textcolour0_selector"),
+    (19, "xxx119"),
+    (20, "_underlinecolour_selector"),
+    (21, "xxx121"),
+    (22, "xxx122"),
+    (23, "_textbackcolour_selector"),
+    (24, "lock_to_grid"),
+    (25, "rule_off_0"),
+    (26, "italic"),
+    (27, "bold"),
+]
+
+# Four-byte style fields, in on-disk order: (bit in flags2, field name).
+_STYLE_FOUR_BYTE_FIELDS = [
+    (0, "left_indent"),
+    (1, "right_indent_raw"),
+    (2, "first_indent_absolute"),
+    (3, "script_offset"),
+    (4, "script_size"),
+    (5, "line_spacing_raw"),
+    (6, "space_after"),
+    (7, "space_before"),
+    (8, "underline_offset_0"),
+    (9, "underline_offset_1"),
+    (10, "rule_vertical_width"),
+    (11, "xxx211"),
+    (12, "xxx212"),
+    (13, "font_size"),
+    (14, "font_aspect_ratio"),
+    (15, "xxx215"),
+    (16, "keep_together"),
+    (17, "_leader"),
+    (18, "xxx218"),
+    (19, "xxx219"),
+    (20, "xxx220"),
+    (21, "_fontname1_selector"),
+    (22, "tracking"),
+    (23, "xxx223"),
+    (24, "_textcolour1_selector"),
+    (25, "_textcolour2_selector"),
+    (26, "xxx226"),
+    (27, "xxx227"),
+    (28, "xxx228"),
+    (29, "xxx229"),
+    (30, "xxx230"),
+    (31, "xxx231"),
+]
+
+STYLESTR_HEADER_SIZE = 56
+
+
+def build_style_record(
+    *,
+    flags1: int = 0,
+    flags2: int = 0,
+    tabs: int = 0,
+    xxx4: int = 0,
+    xxx5: int = 0,
+    key: int = 0,
+    b1: int = 0,
+    b2: int = 0,
+    paragraph_apply: bool = False,
+    is_contents_entry_style: bool = False,
+    is_index_entry_style: bool = False,
+    name: str = "",
+    is_body_text: bool = False,
+    values: "dict | None" = None,
+    leader: bytes = b"\x00\x00\x00\x00",
+    tab_words: "list[int] | None" = None,
+    font_style_name: str = "",
+    foreground_colour_word: int = 0,
+    background_colour_word: int = 0,
+    underline_colour_word: int = 0,
+) -> bytes:
+    """Build one stylestr record (56-byte fixed header plus its
+    variable-length body), mirroring model.styles's decode order and
+    presence rules field for field."""
+    values = values or {}
+
+    def present1(bit: int) -> bool:
+        return bool(flags1 & (1 << bit)) or is_body_text
+
+    def present2(bit: int) -> bool:
+        return bool(flags2 & (1 << bit)) or is_body_text
+
+    body = bytearray()
+    for bit, fname in _STYLE_ONE_BYTE_FIELDS:
+        if present1(bit):
+            body.append(values.get(fname, 0) & 0xFF)
+    if is_body_text:
+        body += b"\x00"  # iseffect/xxx129/showonstylemenu/xxx131 phantom byte
+
+    while len(body) % 4:
+        body.append(0)
+
+    for bit, fname in _STYLE_FOUR_BYTE_FIELDS:
+        if present2(bit):
+            if fname == "_leader":
+                body += leader[:4].ljust(4, b"\x00")
+            elif fname in ("line_spacing_raw", "space_before"):
+                # Read as unsigned by the decoder (line_spacing_raw packs a
+                # top-bit flag; space_before is masked to its low 24 bits).
+                body += struct.pack("<I", values.get(fname, 0) & 0xFFFFFFFF)
+            else:
+                body += struct.pack("<i", values.get(fname, 0))
+
+    tab_bits = [b for b in range(32) if (tabs & (1 << b)) or is_body_text]
+    tab_words = tab_words or []
+    for i in range(len(tab_bits)):
+        word = tab_words[i] if i < len(tab_words) else 0
+        body += struct.pack("<I", word)
+
+    if present2(21):
+        name_bytes = font_style_name.encode("latin-1")[:40]
+        body += name_bytes + b"\x00" * (40 - len(name_bytes))
+
+    if present2(24):
+        body += struct.pack("<I", foreground_colour_word)
+    if present2(25):
+        body += struct.pack("<I", background_colour_word)
+    if flags1 & (1 << 20):
+        body += struct.pack("<I", underline_colour_word)
+
+    header = bytearray(STYLESTR_HEADER_SIZE)
+    struct.pack_into("<I", header, 0, flags1)
+    struct.pack_into("<I", header, 4, flags2)
+    struct.pack_into("<I", header, 8, tabs)
+    struct.pack_into("<I", header, 12, xxx4)
+    struct.pack_into("<I", header, 16, xxx5)
+    key_word = (key & 0x1FF) | ((b1 & 0x7F) << 9) | ((b2 & 0xFF) << 16)
+    if paragraph_apply:
+        key_word |= 1 << 29
+    if is_contents_entry_style:
+        key_word |= 1 << 30
+    if is_index_entry_style:
+        key_word |= 1 << 31
+    struct.pack_into("<I", header, 20, key_word)
+    name_bytes = name.encode("latin-1")[:32]
+    header[24 : 24 + len(name_bytes)] = name_bytes
+
+    return bytes(header) + bytes(body)
+
+
+def build_style_table(entries: "dict[int, bytes]") -> bytes:
+    """Build a full style-table blob (255-entry offset array followed by
+    the concatenated style records) from a slot-number -> record bytes
+    mapping, as produced by build_style_record."""
+    offsets_size = 255 * 4
+    offsets = [0] * 255
+    bodies = bytearray()
+    for slot in sorted(entries):
+        offsets[slot] = offsets_size + len(bodies)
+        bodies += entries[slot]
+    return b"".join(struct.pack("<I", o) for o in offsets) + bytes(bodies)
