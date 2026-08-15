@@ -1,8 +1,10 @@
 import struct
 
 from riscos_impression.model.dictionary import (
+    DictionaryEntry,
     DictionaryEntryType,
     EmbeddedObjectType,
+    chapter_index_for,
     classify_embedded_object,
     parse_dictionary,
     parse_master_dictionary,
@@ -79,3 +81,34 @@ def test_master_dictionary_and_story_length():
     assert master == offsets
     assert story_length(master, 0) == 200
     assert story_length(master, 1) == 300
+
+
+def _entries(*types):
+    return [
+        DictionaryEntry(index=i, type=t, id=0, types=0) for i, t in enumerate(types)
+    ]
+
+
+def test_chapter_index_for_master_pages():
+    # Exactly one preceding DCSECT entry -- the master pages' own marker
+    # -- means MasterChap, not zero preceding entries; see
+    # model.dictionary.chapter_index_for for why.
+    dictionary = _entries(DictionaryEntryType.SECTION, DictionaryEntryType.TEXT)
+    assert chapter_index_for(dictionary, index=1) is None
+
+
+def test_chapter_index_for_no_preceding_section_is_also_masterchap():
+    dictionary = _entries(DictionaryEntryType.TEXT)
+    assert chapter_index_for(dictionary, index=0) is None
+
+
+def test_chapter_index_for_real_chapters():
+    dictionary = _entries(
+        DictionaryEntryType.SECTION,  # master pages marker
+        DictionaryEntryType.SECTION,  # chapter 0's marker
+        DictionaryEntryType.TEXT,  # belongs to chapter 0
+        DictionaryEntryType.SECTION,  # chapter 1's marker
+        DictionaryEntryType.TEXT,  # belongs to chapter 1
+    )
+    assert chapter_index_for(dictionary, index=2) == 0
+    assert chapter_index_for(dictionary, index=4) == 1

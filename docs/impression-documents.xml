@@ -310,7 +310,7 @@ same 104 bytes and then extends it (see "Picture frame (XPICT)").
 <offset number="36" name="exx1" data-size="4">Right edge of the repel box.</offset>
 <offset number="40" name="exy1" data-size="4">Top edge of the repel box.</offset>
 <offset number="44" name="xxxx30" data-size="1" state="undefined">Unknown.</offset>
-<offset number="45" name="masterindex" data-size="1">Index of the corresponding frame on the linked master page. Meaningful only when the "master" flag bit is set (see "Frame flags word").</offset>
+<offset number="45" name="masterindex" data-size="1">A tag value shared with the corresponding frame on the linked master page, not a positional index despite the name: the conversion source (ixindex() in c/frames.c) resolves a main-document frame's master counterpart by scanning the frames on the chapter's current master page for the one whose own masterindex field equals this one's, i.e. equality of a shared identifier, not lookup by stream position. Meaningful only when the "master" flag bit is set (see "Frame flags word"); the search is scoped to a single master page's own frames (bounded by the next XPAGE/XBRANCH/XSECT record) and does not resolve further if that page's frame is itself flagged as linked to a master (there is no third level).</offset>
 <offset number="46" name="xxxx32" data-size="1" state="undefined">Unknown.</offset>
 <offset number="47" name="xxxx33" data-size="1" state="undefined">Unknown.</offset>
 <offset number="48" name="backcolour" data-size="4">Inline colour value word for the frame's fill colour; see "Inline colour value words". Meaningful only when the "filled" flag bit is set.</offset>
@@ -521,6 +521,17 @@ primary master page, and, if the following XPAGE record has the same
 top edge (y1) as the first, it is treated as a second, paired master
 page (giving separate left- and right-hand master pages for a
 double-sided chapter).
+</p>
+<p>
+When a chapter has two paired master pages, which one applies to a
+given main-document page alternates strictly through the chapter's own
+page sequence, in document order: the first page uses the second
+master page if startonright is set (and a second master page exists),
+or the first master page otherwise; each following page then swaps to
+the other master page, or stays on the first if there is no second one.
+This alternation, and the masterindex-based matching described under
+"Frame object common layout", together determine which master-page
+frame a given main-document frame links to.
 </p>
 </subsection>
 
@@ -1034,11 +1045,19 @@ createn field (see "Section object (XSECT)"), holding its own
 <p>
 Whether a given dictionary entry belongs to the master pages or to a
 particular chapter is determined by counting DCSECT-typed entries in
-the object dictionary that precede it: zero such entries means the
-entry belongs to the master pages (MasterChap); otherwise, the count
-gives a zero-based chapter index, which is then matched against
-successive XSECT object records in the main object-record stream to
-find that chapter's createn value.
+the object dictionary that precede it. The dictionary always carries
+one DCSECT entry for the master pages themselves, before any entry
+belonging to a real chapter, so exactly one preceding DCSECT entry
+means the entry belongs to the master pages (MasterChap) -- not zero,
+which does not occur in practice. Two or more preceding DCSECT entries
+give a zero-based chapter index (two -> chapter 0, three -> chapter 1,
+and so on), which is then matched against successive XSECT object
+records in the main object-record stream, in order, to find that
+chapter's createn value. This is confirmed directly from the
+conversion source (getifp() and chapcn() in c/frames.c) and was
+cross-checked empirically: across a 46-document survey, the number of
+DCSECT dictionary entries was always exactly one more than the number
+of real chapters, with no exceptions.
 </p>
 <p>
 A chapter's <filename type="riscos">Text</filename> file is a

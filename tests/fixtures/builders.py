@@ -642,3 +642,45 @@ class ContentBuilder:
 
     def bytes(self) -> bytes:
         return bytes(self.data)
+
+
+def build_minimal_document_bytes(**header_overrides: object) -> bytes:
+    """Build the smallest complete, valid document-data block: a file
+    header followed by an empty (all-zero) 255-slot style table and a
+    one-entry (sentinel-only) master dictionary, with every other table
+    trivially empty. Suitable as a base for io.reader.load_document()
+    tests; pass header field overrides (e.g. mainpages1/mainpages2/
+    contents1 to add object-record streams after this block) to extend
+    it further.
+    """
+    style_table_offset = HEADER_SIZE
+    style_table_size = 255 * 4
+    after_style_table = style_table_offset + style_table_size
+    mdict1_offset = after_style_table
+    total_size = mdict1_offset + 4  # the master dictionary's one sentinel word
+
+    fields = dict(
+        colour1=style_table_offset,
+        colour2=style_table_offset,
+        colour3=style_table_offset,
+        tints=style_table_offset,
+        stylebase=style_table_offset,
+        x3=after_style_table,
+        x4=after_style_table,
+        x5=after_style_table,
+        numbers=after_style_table,
+        numbers_end=after_style_table,
+        dict1=mdict1_offset,
+        dict2=mdict1_offset,
+        mdict1=mdict1_offset,
+        mdict2=mdict1_offset,
+        masterpages1=total_size,
+        masterpages2=total_size,
+        mainpages1=total_size,
+        mainpages2=total_size,
+        contents1=total_size,
+        contents2=total_size,
+    )
+    fields.update(header_overrides)
+    header = build_header(**fields)
+    return header + bytes(style_table_size) + bytes(4)

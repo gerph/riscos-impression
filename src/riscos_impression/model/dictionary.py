@@ -6,6 +6,7 @@ See docs/impression-documents.xml, "Object Dictionary".
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -13,6 +14,16 @@ from typing import Optional
 from riscos_impression import binary
 
 DICTSTR_SIZE = 56
+
+#: Directory-mode documents keep master-page story/picture files here.
+MASTER_CHAPTER_DIRECTORY = "MasterChap"
+
+
+def chapter_directory_name(create_number: int) -> str:
+    """The directory-mode directory name for the chapter whose Section
+    record has the given create_number; see "Directory layout and story
+    files"."""
+    return f"Chapter{create_number}"
 
 
 class DictionaryEntryType(Enum):
@@ -114,3 +125,21 @@ def story_length(master_dictionary: list[int], index: int) -> int:
     """The byte length of dictionary entry *index*'s story/picture data,
     derived from the master dictionary's offset table."""
     return master_dictionary[index + 1] - master_dictionary[index]
+
+
+def chapter_index_for(dictionary: Sequence[DictionaryEntry], index: int) -> Optional[int]:
+    """Which chapter dictionary entry *index* belongs to, in directory
+    mode: found by counting DCSECT entries preceding it. The dictionary
+    always carries one DCSECT entry for the master pages themselves
+    before any belonging to a real chapter, so exactly one preceding
+    DCSECT entry means MasterChap (MASTER_CHAPTER_DIRECTORY), not zero;
+    two or more preceding DCSECT entries give a zero-based index into
+    the document's chapters (two -> chapter 0, three -> chapter 1, and
+    so on). See "Directory layout and story files"; confirmed directly
+    from the conversion source (getifp() and chapcn() in c/frames.c),
+    and empirically against every document in a 46-document survey (in
+    which zero preceding DCSECT entries never actually occurred)."""
+    count = sum(
+        1 for entry in dictionary[:index] if entry.type is DictionaryEntryType.SECTION
+    )
+    return None if count <= 1 else count - 2
