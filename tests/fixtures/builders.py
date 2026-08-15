@@ -496,3 +496,149 @@ def build_style_table(entries: "dict[int, bytes]") -> bytes:
         offsets[slot] = offsets_size + len(bodies)
         bodies += entries[slot]
     return b"".join(struct.pack("<I", o) for o in offsets) + bytes(bodies)
+
+
+NUMBERSTR_SIZE = 12
+
+
+def build_numbering_record(
+    *,
+    start: bool = False,
+    start_value: int = 0,
+    style: int = 0,
+    tag: int = 0,
+    dictionary_index: int = 0,
+) -> bytes:
+    data = bytearray(NUMBERSTR_SIZE)
+    word0 = (1 if start else 0) | ((start_value & 0x7FFFFFFF) << 1)
+    struct.pack_into("<I", data, 0, word0)
+    word1 = (style & 0xFF) | ((tag & 0xFFFFFF) << 8)
+    struct.pack_into("<I", data, 4, word1)
+    struct.pack_into("<i", data, 8, dictionary_index)
+    return bytes(data)
+
+
+ILINESTR_SIZE = 8
+
+
+def _pack_u24(value: int) -> bytes:
+    return bytes([value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF])
+
+
+def build_frame_reference_line(*, frame_offset: int) -> bytes:
+    """Build one ilinestr-framed frame-reference (kind 0x2) line."""
+    payload = struct.pack("<I", frame_offset)
+    total_len = ILINESTR_SIZE + len(payload)
+    header = bytearray(ILINESTR_SIZE)
+    header[4] = 0x2
+    header[5:8] = _pack_u24(total_len)
+    return bytes(header) + payload
+
+
+def build_text_content_line(content: bytes, *, preamble: bytes = b"\x00" * 16) -> bytes:
+    """Build one ilinestr-framed text-content (kind 0x5) line from
+    *content* (the control-code/text stream), with the always-skipped
+    16-byte preamble prepended."""
+    payload = preamble + content
+    total_len = ILINESTR_SIZE + len(payload)
+    header = bytearray(ILINESTR_SIZE)
+    header[4] = 0x5
+    header[5:8] = _pack_u24(total_len)
+    return bytes(header) + payload
+
+
+def build_story_bytes(lines: "list[bytes]") -> bytes:
+    """Concatenate story lines and append the zero-length terminator
+    record that ends a story."""
+    return b"".join(lines) + bytes(ILINESTR_SIZE)
+
+
+CTRL_E = 0x05
+CTRL_G = 0x07
+CTRL_H = 0x08
+CTRL_K = 0x0B
+CTRL_M = 0x0D
+CTRL_N = 0x0E
+CTRL_R = 0x12
+CTRL_S = 0x13
+CTRL_U = 0x15
+CTRL_CLOSESQ = 0x1D
+SEMBED = 0x1
+SMERGE = 0x2
+
+
+class ContentBuilder:
+    """Builds a text-content line's control-code/text stream, handling
+    the format's 4-byte alignment convention (relative to the start of
+    the content, which itself always begins 4-byte aligned after the
+    16-byte skipped preamble) so tests can compose control-code sequences
+    without hand-computing padding."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def literal(self, text: str) -> "ContentBuilder":
+        self.data += text.encode("latin-1")
+        return self
+
+    def _pad_after_control_byte(self) -> int:
+        after = len(self.data) + 1
+        aligned = (after + 3) & ~3
+        return aligned - after
+
+    def simple_ctrl(self, code: int) -> "ContentBuilder":
+        """A control code with no payload and no alignment (CTRL_E,
+        CTRL_M, CTRL_N)."""
+        self.data.append(code)
+        return self
+
+    def ctrl(self, code: int, *ints: int) -> "ContentBuilder":
+        """A control code whose payload is a 4-byte-aligned run of
+        signed 32-bit integers."""
+        pad = self._pad_after_control_byte()
+        self.data.append(code)
+        self.data += bytes(pad)
+        for value in ints:
+            self.data += struct.pack("<i", value)
+        return self
+
+    def ctrl_style(self, code: int, slots: "list[int]") -> "ContentBuilder":
+        """CTRL_G/CTRL_H: an unused count word, then a zero-terminated
+        list of style-table slot numbers."""
+        pad = self._pad_after_control_byte()
+        self.data.append(code)
+        self.data += bytes(pad)
+        self.data += struct.pack("<i", 0)  # count field; unused by the decoder
+        for slot in slots:
+            self.data += struct.pack("<i", slot & 0xFF)
+        self.data += struct.pack("<i", 0)
+        return self
+
+    def ctrl_s_embed(self, embed_tag: int, *, xx2: int = 0, xxx: int = 0, xxy: int = 0) -> "ContentBuilder":
+        pad = self._pad_after_control_byte()
+        self.data.append(CTRL_S)
+        self.data += bytes(pad)
+        total = 4 * 6  # length field + embedstr's 5 fields
+        self.data += struct.pack("<i", total)
+        self.data += struct.pack("<i", SEMBED)
+        self.data += struct.pack("<i", xx2)
+        self.data += struct.pack("<i", embed_tag)
+        self.data += struct.pack("<i", xxx)
+        self.data += struct.pack("<i", xxy)
+        return self
+
+    def ctrl_s_merge(self, field_name: str, *, xx1: int = 0, xx2: int = 0) -> "ContentBuilder":
+        pad = self._pad_after_control_byte()
+        self.data.append(CTRL_S)
+        self.data += bytes(pad)
+        name_bytes = field_name.encode("latin-1") + b"\x00"
+        total = 4 + 4 + 4 + 4 + len(name_bytes)
+        self.data += struct.pack("<i", total)
+        self.data += struct.pack("<i", SMERGE)
+        self.data += struct.pack("<i", xx1)
+        self.data += struct.pack("<i", xx2)
+        self.data += name_bytes
+        return self
+
+    def bytes(self) -> bytes:
+        return bytes(self.data)

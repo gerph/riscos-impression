@@ -121,7 +121,7 @@ riscos-impression/
 - [x] Stage 2 — Colour table
 - [x] Stage 3 — Object dictionary and frame/object-record model
 - [x] Stage 4 — Style table
-- [ ] Stage 5 — Numbering and text story decoding
+- [x] Stage 5 — Numbering and text story decoding
 - [ ] Stage 6 — Full document assembly
 - [ ] Stage 7 — Conversion framework, logging, embedded-format stubs
 - [ ] Stage 8 — OvProDDL output (reference converter)
