@@ -218,9 +218,9 @@ convert reliably.
 <offset number="316" name="x8" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
 <offset number="320" name="x9" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
 <offset number="324" name="x10" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
-<offset number="328" name="dict1" data-size="4">Offset to the start of the object dictionary (an array of dictstr records; see "Object Dictionary").</offset>
-<offset number="332" name="dict2" data-size="4" state="undefined">Not exercised by the conversion source. An earlier analogy with colour1/tints and numbers/x7 suggested this might be the dict1 array's end offset, but an empirical 46-document survey instead found it always exactly equal to dict1 itself (0 exceptions), so it behaves as a duplicate of dict1 rather than an end-of-array partner.</offset>
-<offset number="336" name="mdict1" data-size="4">Offset to the "master dictionary": an array of file-offset integers, one per object-dictionary entry plus one trailing sentinel entry, giving the byte offset within the original input file at which each dictionary entry's story or picture data begins (see "Object Dictionary").</offset>
+<offset number="328" name="dict1" data-size="4">Offset to the start of the object dictionary (an array of dictstr records; see "Object Dictionary"). The array's end boundary is mdict1, below -- confirmed directly from the conversion source -- not dict2.</offset>
+<offset number="332" name="dict2" data-size="4" state="undefined">Not exercised by the conversion source. An empirical 46-document survey found it always exactly equal to dict1 itself (0 exceptions), so it behaves as a duplicate of dict1. It is not the dictionary array's end boundary; that role belongs to mdict1, below.</offset>
+<offset number="336" name="mdict1" data-size="4">Offset to the "master dictionary": an array of file-offset integers, one per object-dictionary entry plus one trailing sentinel entry, giving the byte offset within the original input file at which each dictionary entry's story or picture data begins (see "Object Dictionary"). Also confirmed, directly from the conversion source, as the object dictionary's end boundary: the number of dictionary entries is (mdict1 - dict1) / 56.</offset>
 <offset number="340" name="mdict2" data-size="4" state="undefined">Not exercised by the conversion source. As with dict2, an empirical 46-document survey found it always exactly equal to mdict1, so it behaves as a duplicate of mdict1 rather than an end-of-array partner.</offset>
 <offset number="344" name="masterpages1" data-size="4">Offset to the start of the master-page object-record stream (see "Object-record streams").</offset>
 <offset number="348" name="masterpages2" data-size="4" state="undefined">Not referenced by the conversion source. The master-page stream is actually walked from masterpages1 up to (but excluding) mainpages1, so masterpages2 is not the stream's end-of-range partner. An empirical 46-document survey instead found it always exactly equal to masterpages1, so it behaves as a duplicate of masterpages1.</offset>
@@ -284,7 +284,7 @@ type-specific body.
 <value number="0xA" name="XGUIDE">Page guide line. See "Text, blank, guide, and group frames".</value>
 <value number="0xB" name="XGROUP">Frame group. See "Text, blank, guide, and group frames".</value>
 <value number="0xC-0xF">Not defined by the conversion source; unused/unknown.</value>
-<value number="0x10" name="UNKNOWN">Recognised locally by the converter as an unidentified frame type, tolerated (and otherwise ignored) rather than treated as an error; the source notes this type has been observed in corrupt documents.</value>
+<value number="0x10" name="UNKNOWN">Recognised locally by the converter as an unidentified frame type, tolerated (and otherwise ignored) rather than treated as an error; the source notes this type has been observed in corrupt documents. An empirical 46-document survey found six real instances (across four separate documents), every one with an identical 28-byte body -- a consistent size across independent documents is not what random corruption would produce, so this more likely represents a genuine, structured object kind that this converter's era simply never learned to interpret, rather than damage. Its body format remains undecoded.</value>
 <value number="0xFF (-1)" name="XXXXX">Byte value 0xFF, read as the signed value -1. Treated as equivalent to XBLANK everywhere it is tested, suggesting it is an alternate or legacy blank-frame type code rather than a distinct object kind.</value>
 </value-table>
 </p>
@@ -415,7 +415,10 @@ whether it behaves as a text or picture frame once instantiated.</item>
 <item>XGUIDE is a non-printing page guide line. Only x0, y0, x1, y1,
 locked, and level (from the common layout) are meaningful; a single
 XGUIDE record produces four independent guide lines in the output (the
-frame's left, right, bottom, and top edges).</item>
+frame's left, right, bottom, and top edges). No XGUIDE record was found
+in an empirical 46-document survey, so this type is unconfirmed against
+real data; it is possible guide lines are simply not persisted to disk
+by any Impression version represented in that survey.</item>
 <item>XGROUP marks the end of a run of grouped frames sharing the same
 level and group number; it carries the group's own master-page linkage
 (via the master bit and masterindex) but does not itself describe a
@@ -439,7 +442,7 @@ as follows:
 <offset number="112" name="xshift" data-size="4">Horizontal origin shift for the picture within its frame.</offset>
 <offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame.</offset>
 <offset number="120" name="angle" data-size="4">Rotation angle, in degrees multiplied by 0x10000 (16.16 fixed-point degrees).</offset>
-<offset number="124-127" data-size="4">Packed word: lpi (halftone screen ruling, in lines per inch), psscreen (halftone screen angle or identifier), and psx0 (remaining bits, unknown). All three are meaningful only when the usepsscreen flag bit is set. The exact byte order of this word could not be confirmed: the source's own inline comments for lpi and psscreen give offsets in the opposite order to their declaration, suggesting the original author was themselves unsure of the precise layout.</offset>
+<offset number="124-127" data-size="4">Packed word: lpi (halftone screen ruling, in lines per inch), psscreen (halftone screen angle or identifier), and psx0 (remaining bits, unknown). All three are meaningful only when the usepsscreen flag bit is set. The exact byte order of this word could not be confirmed: the source's own inline comments for lpi and psscreen give offsets in the opposite order to their declaration, suggesting the original author was themselves unsure of the precise layout. No picture frame with usepsscreen set was found in an empirical 46-document survey, so this remains untested against real data either way.</offset>
 <offset number="128-159" name="y" data-size="32" state="undefined">Unknown; reserved block of eight 32-bit words.</offset>
 </offset-table>
 </p>
@@ -466,7 +469,13 @@ below; for any other low-byte value, the scanner skips forward to the
 next sub-record by (code &gt;&gt; 8) bytes minus 4 (the code's upper 24
 bits, less the 4 bytes of the code word already read). No other
 sub-record kind is interpreted by the converter, so their low-byte tag
-values and payload formats are undetermined.
+values and payload formats are undetermined. No XPICT record with a
+body extending beyond the fixed 160 bytes was found in an empirical
+46-document survey, so this whole mechanism -- irregular boundaries and
+any other extension sub-record kind alike -- is unconfirmed against
+real data; it is implemented exactly as read from the conversion
+source, but by construction only synthetic test fixtures currently
+exercise it.
 </p>
 <p>
 The irregular boundary sub-record's payload, following its code word,
@@ -889,7 +898,14 @@ bit set, and summing the increments seen along the way.
 The object dictionary (dict1 in the file header; see "File Header") is
 a flat array of 56-byte dictstr records, one per story or embedded
 picture in the document. A frame's dictionaryindex field (see "Frame
-object common layout") is a zero-based index into this array.
+object common layout") is a zero-based index into this array. The
+array's end boundary is confirmed directly from the conversion source
+(c/styles.c's checkstyles(), which walks dictstr records while their
+address is less than docdata+mdict1) to be mdict1, not dict2: the
+number of dictionary entries is (mdict1 - dict1) / 56. dict1 and mdict1
+are themselves confirmed, adjacent regions of the document data block;
+dict2 (see "File Header") is a separate field that always duplicates
+dict1 and plays no part in this calculation.
 </p>
 
 <subsection title="Dictionary entries (dictstr)">

@@ -119,7 +119,7 @@ riscos-impression/
 - [x] Stage 0 — Scaffolding
 - [x] Stage 1 — Binary helpers, document source, file header
 - [x] Stage 2 — Colour table
-- [ ] Stage 3 — Object dictionary and frame/object-record model
+- [x] Stage 3 — Object dictionary and frame/object-record model
 - [ ] Stage 4 — Style table
 - [ ] Stage 5 — Numbering and text story decoding
 - [ ] Stage 6 — Full document assembly
