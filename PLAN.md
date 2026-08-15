@@ -123,7 +123,7 @@ riscos-impression/
 - [x] Stage 4 — Style table
 - [x] Stage 5 — Numbering and text story decoding
 - [x] Stage 6 — Full document assembly
-- [ ] Stage 7 — Conversion framework, logging, embedded-format stubs
+- [x] Stage 7 — Conversion framework, logging, embedded-format stubs
 - [ ] Stage 8 — OvProDDL output (reference converter)
 - [ ] Stage 9 — Native PDF output
 - [ ] Stage 10 — Scrolling HTML output

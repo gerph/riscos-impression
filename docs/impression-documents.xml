@@ -989,6 +989,14 @@ foreign data embedded at that dictionary entry:
 <value number="(other)">Treated generically as "Data": the raw bytes are embedded without a recognised application association.</value>
 </value-table>
 </p>
+<p>
+Every one of the 104 embedded pictures found across a 46-document
+survey classified as Draw, and every one began with the standard RISC
+OS DrawFile signature and a plausible bounding box when checked. No EPS,
+ArtWorks, other Draw-family application, or generic "Data" picture was
+found in that survey, so those paths remain unconfirmed against real
+documents.
+</p>
 </subsection>
 
 <subsection title="EPS embedded object data">
@@ -1102,15 +1110,23 @@ ilinestr header:
 
 <subsection title="Frame-reference lines">
 <p>
-A frame-reference line's payload begins with a single 32-bit integer:
-a byte offset identifying, within the appropriate object-record
-stream, the text or blank frame through which this story's text flows
-at this point. (In directory mode, this offset is adjusted relative to
-the start of the enclosing chapter's own object records rather than the
-document as a whole.) Building up the sequence of these records across
-a story's lines yields the frame chain later emitted as a DDL
-textchain. Any further bytes in the line's payload, beyond this first
-integer, are not examined by the converter.
+A frame-reference line's payload begins with a single 32-bit integer
+identifying the text or blank frame through which this story's text
+flows at this point. It is not a docdata-absolute byte offset by
+itself: in a single-file document, the conversion source resolves it
+as masterpages1 + offset for a master-page story, or mainpages2 +
+offset for a main-document story (matching the file header fields of
+the same name; see "File Header"), not as an offset from the start of
+the document data block. In a directory-mode document, a main-document
+story's on-disk value is instead stored relative to the byte offset of
+the chapter's own Section (XSECT) record, and resolving it needs that
+record's own docdata-absolute offset added directly, with no
+mainpages2 term involved (a master-page story's on-disk value is
+resolved the same way in both single-file and directory mode). Building
+up the sequence of these records across a story's lines yields the
+frame chain later emitted as a DDL textchain. Any further bytes in the
+line's payload, beyond this first integer, are not examined by the
+converter.
 </p>
 </subsection>
 
