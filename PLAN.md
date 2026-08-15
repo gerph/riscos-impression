@@ -117,7 +117,7 @@ riscos-impression/
 ## Progress
 
 - [x] Stage 0 — Scaffolding
-- [ ] Stage 1 — Binary helpers, document source, file header
+- [x] Stage 1 — Binary helpers, document source, file header
 - [ ] Stage 2 — Colour table
 - [ ] Stage 3 — Object dictionary and frame/object-record model
 - [ ] Stage 4 — Style table

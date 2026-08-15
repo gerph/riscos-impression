@@ -199,44 +199,55 @@ convert reliably.
 </p>
 <p>
 <offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
-<offset number="0" name="v1" data-size="4" state="undefined">Unknown; possibly part of a file-identification or checksum block together with v2.</offset>
-<offset number="4" name="v2" data-size="4" state="undefined">Unknown; see v1.</offset>
+<offset number="0" name="v1" data-size="4" state="undefined">Unknown. Varies between documents (unlike v2, below), so is not itself a format signature; possibly a checksum or a per-document identifier.</offset>
+<offset number="4" name="v2" data-size="4">A fixed signature word, 0x12345678, confirmed identical across an empirical survey of 46 real Impression documents of varying age and authorship. Not validated by this converter (a document with a different value here is simply unconfirmed, not necessarily invalid), but consistent enough to treat as a format-identification magic number.</offset>
 <offset number="8" name="v3" data-size="4">Document format version number. The converter refuses to proceed if this is less than 28 (the minimum version it supports).</offset>
 <offset number="12-199" name="stuff" data-size="188" state="undefined">Unknown; reserved block.</offset>
 <offset number="200" name="xx1" data-size="4" state="undefined">Unknown.</offset>
 <offset number="204-275" name="morestuff" data-size="72" state="undefined">Unknown; reserved block.</offset>
 <offset number="276" name="colour1" data-size="4">Offset to the start of the on-disk colour table (an array of icolourstr records; see "Colour Table").</offset>
-<offset number="280" name="colour2" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
-<offset number="284" name="colour3" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
-<offset number="288" name="tints" data-size="4">Offset to the end of the colour table (colour1 .. tints spans the icolourstr array). Despite the name, both base colours and colour tints are stored together in this one array; see "Colour Table".</offset>
+<offset number="280" name="colour2" data-size="4" state="undefined">Not referenced by the conversion source. Empirically always exactly equal to colour1 (0 exceptions across a 46-document survey), suggesting this is a duplicate copy of that field rather than an independently meaningful offset, though the reason for the duplication is unconfirmed.</offset>
+<offset number="284" name="colour3" data-size="4" state="undefined">Not referenced by the conversion source. Empirically always exactly equal to colour1, in the same way as colour2, above.</offset>
+<offset number="288" name="tints" data-size="4">Offset to the end of the colour table (colour1 .. tints spans the icolourstr array). Despite the name, both base colours and colour tints are stored together in this one array; see "Colour Table". Unlike colour2/colour3, this field genuinely diverges from colour1 in practice (5 of 46 surveyed documents), confirming it as a real, distinct boundary rather than a further duplicate.</offset>
 <offset number="292" name="stylebase" data-size="4">Base offset of the style table: a 255-entry array of 4-byte offsets, each relative to this field, one per style slot (see "Character and Paragraph Styles").</offset>
-<offset number="296" name="x3" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
-<offset number="300" name="x4" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
-<offset number="304" name="x5" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="296" name="x3" data-size="4" state="undefined">Not referenced by the conversion source. Empirically always exactly equal to numbers (offset 308), across a 46-document survey, in the same manner as x4 and x5 below; the reason for the apparent quadruplication of that one value across x3, x4, x5, and numbers is unconfirmed.</offset>
+<offset number="300" name="x4" data-size="4" state="undefined">Not referenced by the conversion source. Empirically always exactly equal to numbers (offset 308); see x3.</offset>
+<offset number="304" name="x5" data-size="4" state="undefined">Not referenced by the conversion source. Empirically always exactly equal to numbers (offset 308); see x3.</offset>
 <offset number="308" name="numbers" data-size="4">Offset to the start of the paragraph/heading numbering table (an array of numberstr records; see "Paragraph and Heading Numbering").</offset>
 <offset number="312" name="x7" data-size="4">Offset to the end of the numbering table (numbers .. x7 spans the numberstr array). The field is named generically in the source, but its role as the numbering table's end offset is established by the converter's own size calculation.</offset>
 <offset number="316" name="x8" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
 <offset number="320" name="x9" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
 <offset number="324" name="x10" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
 <offset number="328" name="dict1" data-size="4">Offset to the start of the object dictionary (an array of dictstr records; see "Object Dictionary").</offset>
-<offset number="332" name="dict2" data-size="4" state="undefined">Unconfirmed. By analogy with colour1/tints and numbers/x7, this is probably the end offset of the dict1 array, but nothing in the conversion source exercises it directly.</offset>
+<offset number="332" name="dict2" data-size="4" state="undefined">Not exercised by the conversion source. An earlier analogy with colour1/tints and numbers/x7 suggested this might be the dict1 array's end offset, but an empirical 46-document survey instead found it always exactly equal to dict1 itself (0 exceptions), so it behaves as a duplicate of dict1 rather than an end-of-array partner.</offset>
 <offset number="336" name="mdict1" data-size="4">Offset to the "master dictionary": an array of file-offset integers, one per object-dictionary entry plus one trailing sentinel entry, giving the byte offset within the original input file at which each dictionary entry's story or picture data begins (see "Object Dictionary").</offset>
-<offset number="340" name="mdict2" data-size="4" state="undefined">Unconfirmed. Probably the end offset of the mdict1 array, by the same reasoning as dict2; not exercised by the conversion source.</offset>
+<offset number="340" name="mdict2" data-size="4" state="undefined">Not exercised by the conversion source. As with dict2, an empirical 46-document survey found it always exactly equal to mdict1, so it behaves as a duplicate of mdict1 rather than an end-of-array partner.</offset>
 <offset number="344" name="masterpages1" data-size="4">Offset to the start of the master-page object-record stream (see "Object-record streams").</offset>
-<offset number="348" name="masterpages2" data-size="4" state="undefined">Unconfirmed; not referenced by the conversion source. The master-page stream is actually walked from masterpages1 up to (but excluding) mainpages1, so masterpages2 does not appear to be a simple end-of-range partner for masterpages1 in the way tints or x7 are for their start offsets.</offset>
-<offset number="352" name="mainpages1" data-size="4">End boundary (exclusive) of the master-page object-record stream: the stream is walked from masterpages1 up to this offset.</offset>
-<offset number="356" name="mainpages2" data-size="4">Offset to the start of the main document's page/frame object-record stream (see "Object-record streams").</offset>
-<offset number="360" name="contents1" data-size="4">End boundary (exclusive) of the main document's page/frame object-record stream: the stream is walked from mainpages2 up to this offset, and a converter should treat any object record reaching or passing this offset as a corrupt document.</offset>
+<offset number="348" name="masterpages2" data-size="4" state="undefined">Not referenced by the conversion source. The master-page stream is actually walked from masterpages1 up to (but excluding) mainpages1, so masterpages2 is not the stream's end-of-range partner. An empirical 46-document survey instead found it always exactly equal to masterpages1, so it behaves as a duplicate of masterpages1.</offset>
+<offset number="352" name="mainpages1" data-size="4">End boundary (exclusive) of the master-page object-record stream: the stream is walked from masterpages1 up to this offset. Empirically always exactly equal to mainpages2 (below) across a 46-document survey; see the note following this table.</offset>
+<offset number="356" name="mainpages2" data-size="4">Offset to the start of the main document's page/frame object-record stream (see "Object-record streams"). Empirically always exactly equal to mainpages1, above.</offset>
+<offset number="360" name="contents1" data-size="4">End boundary (exclusive) of the main document's page/frame object-record stream: the stream is walked from mainpages2 up to this offset, and a converter should treat any object record reaching or passing this offset as a corrupt document. Empirically always exactly equal to contents2 (below) across a 46-document survey, consistent with nothing else occupying the document-data block after the end of this stream.</offset>
 <offset number="364" name="contents2" data-size="4">Total length, in bytes, of the document data block described by this header (the whole of !DocData, or the equivalent initial chunk read from a single-file document). Used both to size the in-memory copy of the document and, multiplied by a chapter's epoch number, as the stride used to build unique frame identifiers for repeated master-page instances (see "Frame identifiers and epochs").</offset>
 <offset number="368" name="oldname" data-size="12">Character string. Consistent with a previous filename recorded for the document, for example one retained across a Save As operation, though this is not read anywhere in the conversion source.</offset>
 </offset-table>
 </p>
 <p>
-The gap between mainpages1 and mainpages2 (the region following the end
-of the master-page stream and preceding the start of the main-document
-stream) is not accounted for by any offset in this header pair, and the
-conversion source does not read anything from it. Its purpose, if any,
-is undetermined.
+An empirical survey of 46 real Impression documents (of varying age and
+authorship, produced outside this project) found mainpages1 and
+mainpages2 exactly equal in every case, meaning the master-page
+object-record stream is immediately followed by the main-document
+object-record stream with no gap between them in practice. The same
+survey found several other offset-table pairs always exactly equal to
+each other with no exceptions: colour1/colour2/colour3, x3/x4/x5/numbers,
+dict1/dict2, mdict1/mdict2, masterpages1/masterpages2, and
+contents1/contents2 (see the individual field descriptions above). Only
+colour1 and tints were found to genuinely diverge, confirming that pair
+as a real, distinct start/end boundary rather than a duplicated field.
+This does not prove the fields that were always found equal can never
+diverge in some other document, but no example examined so far
+contradicts treating colour2, colour3, x3, x4, x5, dict2, mdict2, and
+masterpages2 as duplicates of their respective sibling field, rather than
+as independently meaningful offsets.
 </p>
 </section>
 
@@ -1191,11 +1202,11 @@ field's own definition.
 </p>
 <p>
 <list type="unordered">
-<item><p>File header: v1, v2 (offsets 0, 4); the 188-byte block at offset
-12; xx1 (offset 200); the 72-byte block at offset 204; colour2, colour3
-(offsets 280, 284); x3, x4, x5 (offsets 296, 304); x8, x9, x10 (offsets
-316, 324); dict2, mdict2 (offsets 332, 340); masterpages2 (offset 348);
-and the unaccounted-for region between mainpages1 and mainpages2.</p></item>
+<item><p>File header: v1 (offset 0); the 188-byte block at offset 12; xx1
+(offset 200); the 72-byte block at offset 204; x8, x9, x10 (offsets 316,
+324); and the reason for the apparent duplication of colour2, colour3,
+x3, x4, x5, dict2, mdict2, and masterpages2 (see the note following the
+file header table, and each field's own description).</p></item>
 <item><p>Object record header: tx1, tx2, tx3, lx1, lx3.</p></item>
 <item><p>Frame object common layout: the leading word (xxxx0); most of
 the flags-word bits described as reserved in "Frame flags word" and
