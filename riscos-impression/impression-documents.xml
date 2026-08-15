@@ -1,0 +1,1321 @@
+<?xml version="1.0"?>
+<!DOCTYPE riscos-prm PUBLIC "-//Gerph//DTD PRM documentation 1.03//EN"
+                            "http://gerph.org/dtd/103/prm.dtd">
+
+<riscos-prm>
+<chapter title="Impression Document Format">
+
+<section title="Introduction and Overview">
+<p>
+Impression is a desktop publishing application for RISC OS, produced by
+Computer Concepts. This chapter describes the on-disk format of an
+Impression document, as reconstructed from the source of the TransIMP
+converter, a loader that reads Impression documents and produces
+OvationPro DDL (Document Description Language) output for import into
+OvationPro. Impression's own file format was never published, so this
+description is derived entirely from what a working converter needs to
+read correctly; it is not a specification released by the format's
+authors.
+</p>
+<p>
+Because the format is reconstructed rather than specified, many fields
+have no confirmed purpose: the converter parses them, or skips past
+them, without needing to know what they mean. Every field described in
+this chapter states whether its purpose is confirmed by converter
+behaviour, inferred from its name or position, or entirely unknown.
+Fields with no established purpose are marked accordingly rather than
+omitted, so that a reader attempting a fuller implementation knows
+exactly what remains to be determined.
+</p>
+<p>
+<fixme>
+Substantial areas of the format, in particular much of the file header,
+several bitfields in the frame and style records, and a handful of the
+inline text control codes, remain unidentified. A consolidated list of
+these gaps appears in "Unresolved and Undocumented Areas" at the end of
+this chapter.
+</fixme>
+</p>
+<p>
+An Impression document is built from several linked tables, all
+addressed by byte offset from a common base:
+</p>
+<p>
+<list type="unordered">
+<item>a fixed-size file header, giving the document's format version and
+the offsets of every other table;</item>
+<item>a colour table, giving the document's named colours and colour
+tints;</item>
+<item>a style table, giving up to 255 named character and paragraph
+styles;</item>
+<item>a paragraph/heading numbering table, giving the numbering
+sequences used by automatic page, chapter, and list numbering;</item>
+<item>an object dictionary, one entry per story (a run of text) or
+embedded picture, linking each to its underlying data;</item>
+<item>a master-page object-record stream, describing the frames placed
+on the document's master pages;</item>
+<item>a main-document object-record stream, describing the document's
+own pages, chapters, and frames; and</item>
+<item>the text and picture data itself, either embedded within the same
+data block or, for larger documents, held in separate files (see
+"Document storage: single file versus directory mode").</item>
+</list>
+</p>
+</section>
+
+<section title="Technical Details">
+
+<subsection title="Terminology">
+<p>
+<definition-table head-name="Term" head-value="Meaning">
+<definition name="Frame">A rectangular (or, for pictures, optionally
+irregular) region placed on a page: a text frame, picture frame, blank
+frame, group, or guide line. Every frame is described by an object
+record in an object-record stream.</definition>
+<definition name="Story">The text content flowing through one or more
+linked text frames, or the picture data displayed by one or more linked
+picture frames. Every story has an entry in the object dictionary.</definition>
+<definition name="Chapter / section">A document is divided into one or
+more sections, each associated with a pair of master pages and holding
+its own run of main pages. Impression's own user interface calls these
+"chapters"; the on-disk object type is XSECT.</definition>
+<definition name="Master page">A template page, edited separately from
+the document's main pages, whose frames are automatically linked to
+corresponding frames on every main page that uses it.</definition>
+<definition name="Object dictionary">The array of dictstr records (see
+"Object Dictionary") that indexes every story and embedded picture in
+the document.</definition>
+<definition name="Epoch / generation">Internal converter terms, not
+document fields: an "epoch" numbers successive chapters so that
+repeated instances of the same master-page frame receive distinct
+output identifiers (see "Frame identifiers and epochs"); a
+"generation" numbers successive repetitions of a repeating frame.</definition>
+</definition-table>
+</p>
+</subsection>
+
+<subsection title="Document storage: single file versus directory mode">
+<p>
+An Impression document can be stored in either of two ways, both
+described by the same header and table layout:
+</p>
+<p>
+<list type="unordered">
+<item><p>As a single file. The whole of the structure described in this
+chapter, including all text and picture data, is held as one
+contiguous block, read entirely into memory. All offsets in the file
+header, and all offsets embedded within object records, are byte
+offsets from the start of this block.</p></item>
+<item><p>As a directory (an Impression "application directory" style
+document). The directory contains a file called <filename>!DocData</filename>,
+holding the same header and table structure as the single-file case,
+but the offset-addressed tables within it (colours, styles, numbering,
+the object dictionary, and the master-page and main-page object-record
+streams) are used purely as an in-memory index: the bulk data for each
+story and picture is held in separate files, described in "Directory
+layout and story files" under "Object Dictionary".</p></item>
+</list>
+</p>
+<p>
+A converter can distinguish the two cases by examining the input path:
+if it names a directory rather than a file, directory mode applies and
+the actual data file to open first is <filename>!DocData</filename>
+within it.
+</p>
+</subsection>
+
+<subsection title="Object-record streams">
+<p>
+Several of the document's major tables (the master-page frames, the
+main-document pages/chapters/frames, and by convention the picture and
+text data referenced from the object dictionary) are stored as a
+stream of variable-length object records, all sharing the same eight-byte
+header format (see "Object record header"). Each record begins with a
+type code and a total length (header included); the stream is walked
+by repeatedly reading the length, stopping when a record of length zero
+is encountered, and advancing to the next record by adding the current
+record's length to the current position:
+</p>
+<p>
+<extended-example type="c">
+Generic pattern used throughout this chapter for walking an
+object-record stream.
+<br/><br/>
+<userinput>objhdr * obj = (objhdr*)(base + start_offset);</userinput><br/>
+<userinput>while (1)</userinput><br/>
+<userinput>{</userinput><br/>
+<userinput>&#32;&#32;int len = obj-&gt;len0 + (obj-&gt;len1 &lt;&lt; 8);</userinput><br/>
+<userinput>&#32;&#32;if (len == 0) break;              /* end of stream */</userinput><br/>
+<userinput>&#32;&#32;void * body = (char*)obj + sizeof(objhdr);</userinput><br/>
+<userinput>&#32;&#32;/* interpret *body* according to obj-&gt;type */</userinput><br/>
+<userinput>&#32;&#32;obj = (objhdr*)((char*)obj + len);   /* len already includes the header */</userinput><br/>
+<userinput>}</userinput>
+</extended-example>
+</p>
+<p>
+Frame objects (XTEXT, XPICT, XBLANK, XGUIDE, XGROUP) additionally carry
+a "level" value (see "Frame flags word") giving their front-to-back
+stacking position; a run of consecutive frames sharing a level and a
+non-zero group number belong to the same group (XGROUP) object.
+</p>
+</subsection>
+
+<subsection title="Frame identifiers and epochs">
+<p>
+The converter identifies every frame, picture, and text story in its
+DDL output by a hexadecimal offset relative to the start of the
+in-memory document data block. Because a master page's frames are
+reused, unmodified, by every main page that references that master
+page, a plain byte offset would collide across chapters. The converter
+avoids this by numbering each chapter with a successive "epoch": when
+generating an identifier for a master-page frame in the context of a
+particular chapter, it adds <userinput>epoch_number * contents2</userinput>
+(see "File Header") to the frame's raw offset, where
+<userinput>contents2</userinput> is comfortably larger than the
+document data block itself, guaranteeing the result cannot collide with
+a genuine offset into the block. The same mechanism, using a
+"generation" counter instead of an epoch, distinguishes successive
+repetitions of a repeating frame (see "Text Story Data").
+</p>
+</subsection>
+
+</section>
+
+<section title="File Header">
+<p>
+Every Impression document (or, in directory mode, its
+<filename>!DocData</filename> file) begins with a fixed-size header of
+380 bytes. The header gives the document's format version and the byte
+offsets of every other table described in this chapter. Unless stated
+otherwise, all multi-byte fields are little-endian, matching normal
+ARM/RISC OS byte order, and all offset fields are byte offsets measured
+from the start of this header (offset 0).
+</p>
+<p>
+The first three words identify and version the document; a converter
+should refuse a document whose version word is below 28, which the
+TransIMP converter treats as "too old a version of Impression" to
+convert reliably.
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="v1" data-size="4" state="undefined">Unknown; possibly part of a file-identification or checksum block together with v2.</offset>
+<offset number="4" name="v2" data-size="4" state="undefined">Unknown; see v1.</offset>
+<offset number="8" name="v3" data-size="4">Document format version number. The converter refuses to proceed if this is less than 28 (the minimum version it supports).</offset>
+<offset number="12-199" name="stuff" data-size="188" state="undefined">Unknown; reserved block.</offset>
+<offset number="200" name="xx1" data-size="4" state="undefined">Unknown.</offset>
+<offset number="204-275" name="morestuff" data-size="72" state="undefined">Unknown; reserved block.</offset>
+<offset number="276" name="colour1" data-size="4">Offset to the start of the on-disk colour table (an array of icolourstr records; see "Colour Table").</offset>
+<offset number="280" name="colour2" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="284" name="colour3" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="288" name="tints" data-size="4">Offset to the end of the colour table (colour1 .. tints spans the icolourstr array). Despite the name, both base colours and colour tints are stored together in this one array; see "Colour Table".</offset>
+<offset number="292" name="stylebase" data-size="4">Base offset of the style table: a 255-entry array of 4-byte offsets, each relative to this field, one per style slot (see "Character and Paragraph Styles").</offset>
+<offset number="296" name="x3" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="300" name="x4" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="304" name="x5" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="308" name="numbers" data-size="4">Offset to the start of the paragraph/heading numbering table (an array of numberstr records; see "Paragraph and Heading Numbering").</offset>
+<offset number="312" name="x7" data-size="4">Offset to the end of the numbering table (numbers .. x7 spans the numberstr array). The field is named generically in the source, but its role as the numbering table's end offset is established by the converter's own size calculation.</offset>
+<offset number="316" name="x8" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="320" name="x9" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="324" name="x10" data-size="4" state="undefined">Unknown; not referenced by the conversion source.</offset>
+<offset number="328" name="dict1" data-size="4">Offset to the start of the object dictionary (an array of dictstr records; see "Object Dictionary").</offset>
+<offset number="332" name="dict2" data-size="4" state="undefined">Unconfirmed. By analogy with colour1/tints and numbers/x7, this is probably the end offset of the dict1 array, but nothing in the conversion source exercises it directly.</offset>
+<offset number="336" name="mdict1" data-size="4">Offset to the "master dictionary": an array of file-offset integers, one per object-dictionary entry plus one trailing sentinel entry, giving the byte offset within the original input file at which each dictionary entry's story or picture data begins (see "Object Dictionary").</offset>
+<offset number="340" name="mdict2" data-size="4" state="undefined">Unconfirmed. Probably the end offset of the mdict1 array, by the same reasoning as dict2; not exercised by the conversion source.</offset>
+<offset number="344" name="masterpages1" data-size="4">Offset to the start of the master-page object-record stream (see "Object-record streams").</offset>
+<offset number="348" name="masterpages2" data-size="4" state="undefined">Unconfirmed; not referenced by the conversion source. The master-page stream is actually walked from masterpages1 up to (but excluding) mainpages1, so masterpages2 does not appear to be a simple end-of-range partner for masterpages1 in the way tints or x7 are for their start offsets.</offset>
+<offset number="352" name="mainpages1" data-size="4">End boundary (exclusive) of the master-page object-record stream: the stream is walked from masterpages1 up to this offset.</offset>
+<offset number="356" name="mainpages2" data-size="4">Offset to the start of the main document's page/frame object-record stream (see "Object-record streams").</offset>
+<offset number="360" name="contents1" data-size="4">End boundary (exclusive) of the main document's page/frame object-record stream: the stream is walked from mainpages2 up to this offset, and a converter should treat any object record reaching or passing this offset as a corrupt document.</offset>
+<offset number="364" name="contents2" data-size="4">Total length, in bytes, of the document data block described by this header (the whole of !DocData, or the equivalent initial chunk read from a single-file document). Used both to size the in-memory copy of the document and, multiplied by a chapter's epoch number, as the stride used to build unique frame identifiers for repeated master-page instances (see "Frame identifiers and epochs").</offset>
+<offset number="368" name="oldname" data-size="12">Character string. Consistent with a previous filename recorded for the document, for example one retained across a Save As operation, though this is not read anywhere in the conversion source.</offset>
+</offset-table>
+</p>
+<p>
+The gap between mainpages1 and mainpages2 (the region following the end
+of the master-page stream and preceding the start of the main-document
+stream) is not accounted for by any offset in this header pair, and the
+conversion source does not read anything from it. Its purpose, if any,
+is undetermined.
+</p>
+</section>
+
+<section title="Object Records">
+
+<subsection title="Object record header">
+<p>
+Every record in an object-record stream (see "Object-record streams")
+begins with this eight-byte header, followed immediately by a
+type-specific body.
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="type" data-size="1">Object type code; see the following table.</offset>
+<offset number="1" name="tx1" data-size="1" state="undefined">Unknown.</offset>
+<offset number="2" name="tx2" data-size="1" state="undefined">Unknown.</offset>
+<offset number="3" name="tx3" data-size="1" state="undefined">Unknown.</offset>
+<offset number="4" name="lx1" data-size="1" state="undefined">Unknown.</offset>
+<offset number="5" name="len0" data-size="1">Low 8 bits of the record's total length (header included); see len1.</offset>
+<offset number="6" name="len1" data-size="1">High 8 bits of the record's total length. The full 16-bit length is len0 + (len1 &lt;&lt; 8); a length of zero terminates the enclosing object-record stream.</offset>
+<offset number="7" name="lx3" data-size="1" state="undefined">Unknown.</offset>
+</offset-table>
+</p>
+<p>
+<value-table head-number="Type" head-name="Name" head-value="Meaning">
+<value number="0x1" name="XPAGE">Page. See "Page object (XPAGE)".</value>
+<value number="0x2" name="XTEXT">Text frame. See "Text, blank, guide, and group frames".</value>
+<value number="0x3" name="XPICT">Picture frame. See "Picture frame (XPICT)".</value>
+<value number="0x4" name="XBLANK">Blank frame (an unlinked frame that may later become text or picture). See "Text, blank, guide, and group frames".</value>
+<value number="0x5">Not defined by the conversion source; unused/unknown.</value>
+<value number="0x6" name="XBRANCH">Branch. See "Branch object (XBRANCH)".</value>
+<value number="0x7" name="XSECT">Section (chapter). See "Section object (XSECT)".</value>
+<value number="0x8-0x9">Not defined by the conversion source; unused/unknown.</value>
+<value number="0xA" name="XGUIDE">Page guide line. See "Text, blank, guide, and group frames".</value>
+<value number="0xB" name="XGROUP">Frame group. See "Text, blank, guide, and group frames".</value>
+<value number="0xC-0xF">Not defined by the conversion source; unused/unknown.</value>
+<value number="0x10" name="UNKNOWN">Recognised locally by the converter as an unidentified frame type, tolerated (and otherwise ignored) rather than treated as an error; the source notes this type has been observed in corrupt documents.</value>
+<value number="0xFF (-1)" name="XXXXX">Byte value 0xFF, read as the signed value -1. Treated as equivalent to XBLANK everywhere it is tested, suggesting it is an alternate or legacy blank-frame type code rather than a distinct object kind.</value>
+</value-table>
+</p>
+</subsection>
+
+<subsection title="Frame object common layout">
+<p>
+The XTEXT, XBLANK, XGUIDE, and XGROUP object bodies share an identical
+104-byte layout, described here once. The XPICT body begins with the
+same 104 bytes and then extends it (see "Picture frame (XPICT)").
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="xxxx0" data-size="4" state="undefined">Unknown.</offset>
+<offset number="4" name="x0" data-size="4">Left edge of the frame's outer box, in the document's drawing-coordinate units.</offset>
+<offset number="8" name="y0" data-size="4">Bottom edge of the frame's outer box.</offset>
+<offset number="12" name="x1" data-size="4">Right edge of the frame's outer box.</offset>
+<offset number="16" name="y1" data-size="4">Top edge of the frame's outer box.</offset>
+<offset number="20" name="flags" data-size="4">Packed flags word; see "Frame flags word".</offset>
+<offset number="24" name="dictionaryindex" data-size="4">Index into the object dictionary (see "Object Dictionary") identifying this frame's associated story or picture data; negative when the frame has no associated story, for example an unlinked blank frame.</offset>
+<offset number="28" name="exx0" data-size="4">Left edge of the frame's "repel" outer box, used for text-flow avoidance around the frame by frames elsewhere on the page.</offset>
+<offset number="32" name="exy0" data-size="4">Bottom edge of the repel box.</offset>
+<offset number="36" name="exx1" data-size="4">Right edge of the repel box.</offset>
+<offset number="40" name="exy1" data-size="4">Top edge of the repel box.</offset>
+<offset number="44" name="xxxx30" data-size="1" state="undefined">Unknown.</offset>
+<offset number="45" name="masterindex" data-size="1">Index of the corresponding frame on the linked master page. Meaningful only when the "master" flag bit is set (see "Frame flags word").</offset>
+<offset number="46" name="xxxx32" data-size="1" state="undefined">Unknown.</offset>
+<offset number="47" name="xxxx33" data-size="1" state="undefined">Unknown.</offset>
+<offset number="48" name="backcolour" data-size="4">Inline colour value word for the frame's fill colour; see "Inline colour value words". Meaningful only when the "filled" flag bit is set.</offset>
+<offset number="52" name="hinset" data-size="4">Horizontal inset margin between the frame's outer box and its text/content area.</offset>
+<offset number="56" name="vinset" data-size="4">Vertical inset margin.</offset>
+<offset number="60" name="border0" data-size="1">Border style for one edge of the frame; 0xFF means no border is drawn on that edge, any other value indicates a border is present. See the note below.</offset>
+<offset number="61" name="border1" data-size="1">Border style for another edge; see border0.</offset>
+<offset number="62" name="border2" data-size="1">Border style for another edge; see border0.</offset>
+<offset number="63" name="border3" data-size="1">Border style for the remaining edge; see border0.</offset>
+<offset number="64" name="bordercolour" data-size="4">Inline colour value word for the border; see "Inline colour value words". A value of -1 means no colour override (a default colour is used).</offset>
+<offset number="68" name="embedtag" data-size="4">Non-zero tag value. Frames with a non-zero embedtag are anchored inline within a text story, at the point a matching CTRL_S embedded-object marker occurs (see "Text Story Data"), rather than being placed directly on the page in normal front-to-back order.</offset>
+<offset number="72" name="groupn" data-size="1">Group number this frame belongs to, meaningful when the "grouped" flag bit is set (see "Frame flags word"); 0 = not grouped.</offset>
+<offset number="73-75" data-size="3">Continuation of the flags word begun at byte 72; see "Frame group flags word".</offset>
+<offset number="76-103" name="x" data-size="28">Unknown; reserved block of seven 32-bit words.</offset>
+</offset-table>
+</p>
+<p>
+The exact meaning of a non-0xFF border value, and the mapping of
+border0..border3 to the frame's physical top, left, bottom, and right
+edges, could not be established with confidence from the conversion
+source. The converter reorders them as (border0, border2, border3,
+border1) when building a four-bit edge-presence mask for its own
+output, which rules out a simple clockwise or "top, left, bottom,
+right" ordering, but does not by itself reveal the true one.
+</p>
+
+<subsubsection title="Frame flags word">
+<p>
+The 32-bit word at offset 20 (see "Frame object common layout") packs
+the following bits, numbered from bit 0 as the least significant bit
+of the first byte read from the file:
+</p>
+<p>
+<bitfield-table>
+<bit number="0" name="selected">Frame is currently selected in the Impression editor. Editor UI state; not relevant to conversion.</bit>
+<bit number="1" name="repel">Text in other frames should flow around (repel from) this frame.</bit>
+<bit number="2" name="filled">Frame has a fill colour; backcolour is meaningful.</bit>
+<bit number="3-7" state="reserved">Unknown.</bit>
+<bit number="8" name="master">This frame is linked to a corresponding frame on its master page; masterindex is meaningful.</bit>
+<bit number="9" name="locked">Frame is locked against editing.</bit>
+<bit number="10-15" state="reserved">Unknown.</bit>
+<bit number="16" name="usepsscreen / (unknown)">For XPICT frames only, this bit is "usepsscreen": use a custom PostScript halftone screen (see "Picture frame (XPICT)"). For all other frame types, this bit position is unknown.</bit>
+<bit number="17-20" state="reserved">Unknown.</bit>
+<bit number="21" name="grouped">Frame belongs to a frame group; groupn (offset 72) is meaningful.</bit>
+<bit number="22" name="repeating">Frame repeats itself; see "Text Story Data" for how repeating frames are handled.</bit>
+<bit number="23" state="reserved">Unknown.</bit>
+<bit number="24-31" name="level">Front-to-back stacking level of the frame (0 upwards). Used to determine group membership and drawing order when walking the object-record stream.</bit>
+</bitfield-table>
+</p>
+</subsubsection>
+
+<subsubsection title="Frame group flags word">
+<p>
+The 32-bit word beginning at offset 72 (the byte after groupn) packs
+the following bits:
+</p>
+<p>
+<bitfield-table>
+<bit number="0-7" name="groupn">Group number; see "Frame object common layout".</bit>
+<bit number="8-12" state="reserved">Unknown.</bit>
+<bit number="13" name="overprint">Frame's fill colour is printed in overprint mode.</bit>
+<bit number="14-31" state="reserved">Unknown, except for XPICT frames; see "Picture frame (XPICT)" for the two bits this word carries in that case.</bit>
+</bitfield-table>
+</p>
+</subsubsection>
+
+</subsection>
+
+<subsection title="Page object (XPAGE)">
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="xxxx0" data-size="4" state="undefined">Unknown.</offset>
+<offset number="4" name="x0" data-size="4">Left edge of the page's outer box.</offset>
+<offset number="8" name="y0" data-size="4">Bottom edge of the page's outer box.</offset>
+<offset number="12" name="x1" data-size="4">Right edge of the page's outer box.</offset>
+<offset number="16" name="y1" data-size="4">Top edge of the page's outer box.</offset>
+<offset number="20" name="xxx1" data-size="4" state="undefined">Unknown.</offset>
+<offset number="24" name="xxx2" data-size="4" state="undefined">Unknown.</offset>
+<offset number="28" name="bleed" data-size="4">Page bleed margin. Subtracted from the outer box on all sides to give the media/print box: width = (x1-x0) - 2*bleed, height = (y1-y0) - 2*bleed.</offset>
+<offset number="32" name="xxx4" data-size="4" state="undefined">Unknown.</offset>
+<offset number="36" name="xxx5" data-size="4" state="undefined">Unknown.</offset>
+<offset number="40" name="mpname" data-size="28">Name of the master page, as a character string. Not read anywhere in the conversion source, which derives master-page linkage purely from a section's mpindex field and positional matching instead (see "Section object (XSECT)").</offset>
+</offset-table>
+</p>
+</subsection>
+
+<subsection title="Text, blank, guide, and group frames">
+<p>
+The bodies of XTEXT, XBLANK, XGUIDE, and XGROUP object records all use
+exactly the common 104-byte layout given in "Frame object common
+layout", with no type-specific extension. The four types differ only in
+how the converter interprets the shared fields:
+</p>
+<p>
+<list type="unordered">
+<item>XTEXT is a normal text frame; its story (via dictionaryindex)
+holds formatted text, described in "Text Story Data".</item>
+<item>XBLANK is an unlinked frame, not yet assigned as text or picture;
+on a main page it may still carry a dictionaryindex if it has been
+linked to a story, and its master-page counterpart (if any) determines
+whether it behaves as a text or picture frame once instantiated.</item>
+<item>XGUIDE is a non-printing page guide line. Only x0, y0, x1, y1,
+locked, and level (from the common layout) are meaningful; a single
+XGUIDE record produces four independent guide lines in the output (the
+frame's left, right, bottom, and top edges).</item>
+<item>XGROUP marks the end of a run of grouped frames sharing the same
+level and group number; it carries the group's own master-page linkage
+(via the master bit and masterindex) but does not itself describe a
+drawable frame.</item>
+</list>
+</p>
+</subsection>
+
+<subsection title="Picture frame (XPICT)">
+<p>
+The XPICT object body begins with the same 104-byte common layout given
+in "Frame object common layout" (with bit 16 of the frame flags word
+repurposed as usepsscreen, and offset 72's flags word carrying two
+extra bits, both described below), and extends it to a fixed 160 bytes
+as follows:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="104" name="xscale" data-size="4">Horizontal scale factor for the picture. Stored as the reciprocal of the displayed horizontal scale; 0x10000 represents unity scale.</offset>
+<offset number="108" name="yscale" data-size="4">Vertical scale factor, using the same reciprocal convention as xscale.</offset>
+<offset number="112" name="xshift" data-size="4">Horizontal origin shift for the picture within its frame.</offset>
+<offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame.</offset>
+<offset number="120" name="angle" data-size="4">Rotation angle, in degrees multiplied by 0x10000 (16.16 fixed-point degrees).</offset>
+<offset number="124-127" data-size="4">Packed word: lpi (halftone screen ruling, in lines per inch), psscreen (halftone screen angle or identifier), and psx0 (remaining bits, unknown). All three are meaningful only when the usepsscreen flag bit is set. The exact byte order of this word could not be confirmed: the source's own inline comments for lpi and psscreen give offsets in the opposite order to their declaration, suggesting the original author was themselves unsure of the precise layout.</offset>
+<offset number="128-159" name="y" data-size="32" state="undefined">Unknown; reserved block of eight 32-bit words.</offset>
+</offset-table>
+</p>
+<p>
+The two extra bits carried in the frame group flags word (offset 72;
+see "Frame group flags word") for XPICT records only are:
+</p>
+<p>
+<bitfield-table>
+<bit number="14" state="reserved">Unknown.</bit>
+<bit number="15" name="userecommended">Use the picture's recommended/preferred screening settings rather than the explicit lpi/psscreen values.</bit>
+<bit number="16-31" state="reserved">Unknown.</bit>
+</bitfield-table>
+</p>
+
+<subsubsection title="Irregular boundary (crop path) data">
+<p>
+When an XPICT object record's total length (from the object record
+header) exceeds the fixed 160-byte body, the additional bytes hold a
+sequence of tagged extension sub-records. Each sub-record begins with a
+32-bit code word: if the low byte of the code is 1, the sub-record is
+an irregular boundary (crop/clip path) and is decoded as described
+below; for any other low-byte value, the scanner skips forward to the
+next sub-record by (code &gt;&gt; 8) bytes minus 4 (the code's upper 24
+bits, less the 4 bytes of the code word already read). No other
+sub-record kind is interpreted by the converter, so their low-byte tag
+values and payload formats are undetermined.
+</p>
+<p>
+The irregular boundary sub-record's payload, following its code word,
+is a path made of a sequence of 32-bit opcodes:
+</p>
+<p>
+<value-table head-number="Opcode" head-value="Meaning">
+<value number="0">End of path.</value>
+<value number="2">Move to (x, y): followed by two 32-bit signed coordinates. Coordinates are stored relative to the centre of the picture frame's outer box.</value>
+<value number="5">Close the current sub-path.</value>
+<value number="6">Curve segment. Recognised but not decoded by the converter; the shape and presence of any following payload is undetermined.</value>
+<value number="8">Draw (line) to (x, y): followed by two 32-bit signed coordinates, using the same centre-relative convention as opcode 2.</value>
+</value-table>
+</p>
+</subsubsection>
+</subsection>
+
+<subsection title="Section object (XSECT)">
+<p>
+An XSECT record marks the start of a chapter: the master-page pair it
+uses, its page-numbering behaviour, and, following it in the stream,
+the run of main-page object records belonging to it (up to the next
+XSECT, XBRANCH, or end of stream).
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="xxxx0" data-size="4" state="undefined">Unknown.</offset>
+<offset number="4" name="createn" data-size="4">Stable chapter creation number. Unlike the chapter's position in the document, this value does not change when chapters are reordered; in directory-mode documents it names the chapter's data directory (ChapterN; see "Directory layout and story files").</offset>
+<offset number="8" name="mpindex" data-size="4">Zero-based index selecting which pair of master pages (see "Section object (XSECT)" below) this chapter uses.</offset>
+<offset number="12" name="startpagen" data-size="2">Explicit starting page number for this chapter, meaningful only when the startpage bit (below) is set.</offset>
+<offset number="14" name="(flags)" data-size="2">Packed bits following startpagen: startpage (override automatic page numbering with startpagen), startonright (the chapter must begin on a right-hand/recto page), copyprev (unconfirmed; not read by the converter, but plausibly copies settings from the preceding chapter, based on its name), and 13 further unknown bits.</offset>
+<offset number="16-79" name="xx4" data-size="64" state="undefined">Unknown; reserved block of sixteen 32-bit words.</offset>
+<offset number="80" name="startchapn" data-size="2">Explicit starting chapter number, meaningful only when the startchap bit (below) is set.</offset>
+<offset number="82" name="(flags)" data-size="2">Packed bits following startchapn: startchap (override automatic chapter numbering with startchapn), and 15 further unknown bits.</offset>
+<offset number="84-115" name="xx21" data-size="32" state="undefined">Unknown; reserved block of eight 32-bit words.</offset>
+</offset-table>
+</p>
+<p>
+The pair of master pages a chapter uses (mpindex) is located by
+counting XPAGE records in the master-page object-record stream (see
+"Page object (XPAGE)"): the mpindex'th XPAGE record is the chapter's
+primary master page, and, if the following XPAGE record has the same
+top edge (y1) as the first, it is treated as a second, paired master
+page (giving separate left- and right-hand master pages for a
+double-sided chapter).
+</p>
+</subsection>
+
+<subsection title="Branch object (XBRANCH)">
+<p>
+The XBRANCH object body is a fixed 40 bytes (ten 32-bit words), all
+currently unidentified. The converter reads and discards these records
+without interpreting their content. The object type's name, together
+with its position alongside XSECT in the main object-record stream,
+suggests it marks some form of link to, or insertion point for, another
+document, but this could not be confirmed from the conversion source.
+</p>
+</subsection>
+
+</section>
+
+<section title="Colour Table">
+<p>
+A document's colour table is a flat array of 48-byte icolourstr
+records, spanning the byte range colour1 to tints in the file header
+(see "File Header"). The array holds both named base colours and named
+colour tints (shades of another named colour) together; an entry's
+flags field distinguishes the two.
+</p>
+
+<subsection title="On-disk colour definitions (icolourstr)">
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="palword" data-size="4">A RISC OS palette-style colour word (blue/green/red byte order, as used by OS_ReadPalette and ColourTrans), used by the converter only as a fallback/preview value. The authoritative colour value is given by the y/c/m/k fields below.</offset>
+<offset number="4" name="flags" data-size="4">Packed flags; see "Colour flags word" below.</offset>
+<offset number="8" name="y" data-size="1">Colour-model-dependent channel byte; see "Colour channel encoding" below.</offset>
+<offset number="9" name="c" data-size="1">Colour-model-dependent channel byte; see "Colour channel encoding" below.</offset>
+<offset number="10" name="m" data-size="1">Colour-model-dependent channel byte; see "Colour channel encoding" below.</offset>
+<offset number="11" name="k" data-size="1">Colour-model-dependent channel byte; see "Colour channel encoding" below.</offset>
+<offset number="12" name="name" data-size="24">Colour name, as a character string.</offset>
+<offset number="36" name="xx3" data-size="4" state="undefined">Unknown.</offset>
+<offset number="40" name="xx4" data-size="4" state="undefined">Unknown.</offset>
+<offset number="44" name="xx5" data-size="4" state="undefined">Unknown.</offset>
+</offset-table>
+</p>
+
+<subsubsection title="Colour flags word">
+<p>
+<bitfield-table>
+<bit number="0" name="process">When bit 1 (tint) is clear: 1 = this is a process colour, 0 = this is a spot colour.</bit>
+<bit number="1" name="tint">This entry defines a tint of another named colour, rather than a base colour. When set, bit 0 does not apply directly: the tint inherits its base colour's spot/process assignment.</bit>
+<bit number="2-6" state="reserved">Unknown.</bit>
+<bit number="7" name="overprint">Print this colour in overprint mode.</bit>
+</bitfield-table>
+</p>
+</subsubsection>
+
+<subsubsection title="Colour channel encoding">
+<p>
+For a base colour entry (the tint bit clear), the low two bits of the y
+byte select the colour model used by the c, m, y, and k bytes, each of
+which is otherwise a value in the range 0-255 scaled to a channel
+value:
+</p>
+<p>
+<value-table head-number="y &amp; 0x3" head-value="Colour model">
+<value number="0 or 3">RGB: red = c, green = m, blue = k.</value>
+<value number="1">CMYK: cyan = c, magenta = m, yellow = (y &amp; 0xFC) (the yellow channel is packed into the upper six bits of the same byte that carries the model selector), black = k.</value>
+<value number="2">HSV: hue, saturation, and value are packed across nibbles of the k, m, c, and y bytes; see the conversion source for the exact bit packing, which is faithfully reproduced but not independently confirmed against Impression documentation.</value>
+</value-table>
+</p>
+<p>
+For a tint entry (the tint bit set), the fields carry different
+information: k holds the tint amount, in the range 0-128 where 128 is
+full strength (unmodified) and 0 is white; and a 12-bit index formed
+from (y &gt;&gt; 2) in its low six bits and (c &amp; 0x3F) &lt;&lt; 6 in
+its high six bits selects, by position, the icolourstr entry earlier in
+the same array that this tint is based on. This is the same
+index-computation formula used for the named-colour case of an inline
+colour value word (see "Inline colour value words"), confirming both
+refer to entries of this same table by zero-based index.
+</p>
+</subsubsection>
+</subsection>
+
+<subsection title="Inline colour value words">
+<p>
+Wherever a colour is referenced from a frame or style record (for
+example a frame's backcolour or bordercolour, or a style's
+foreground/background/underline colour), it is given as a single 32-bit
+"colour value word", a distinct and more compact encoding from the
+colour table's own icolourstr records. Reading the word as four bytes
+b0 (most significant) to b3 (least significant), the low two bits of
+b3 select how the rest of the word is interpreted:
+</p>
+<p>
+<value-table head-number="b3 &amp; 0x3" head-value="Meaning">
+<value number="0">RGB, given directly: red = b2, green = b1, blue = b0, each scaled from 0-255 to the colour system's internal 0-0x10000 range.</value>
+<value number="1">CMYK, given directly: cyan = b2, magenta = b1, yellow = (b3 &amp; 0xFC), black = b0, each scaled as above. As in icolourstr, the yellow channel is packed into the upper six bits of the byte that also carries the model selector.</value>
+<value number="2">HSV, given directly, with hue, saturation, and value packed across nibbles of b0-b2 in the same manner as icolourstr's HSV encoding.</value>
+<value number="3">A reference to a named colour already defined in the document's colour table, rather than an inline value. The referenced entry's zero-based index into the icolourstr array (colour1 in the file header) is (b2 &lt;&lt; 6) | (b3 &gt;&gt; 2).</value>
+</value-table>
+</p>
+</subsection>
+</section>
+
+<section title="Character and Paragraph Styles">
+<p>
+A document's style table holds up to 255 named character and paragraph
+styles, addressed via the stylebase field in the file header (see "File
+Header"). stylebase points to an array of 255 four-byte offsets, one
+per style slot numbered 0 to 254, each relative to stylebase itself; a
+zero offset means the corresponding slot is unused. Style slot 0 is
+reserved for the document's base "body text" style: it is always
+treated as though every optional field described below were present,
+regardless of its own stored presence flags, and the converter emits it
+under the fixed name "BodyText" regardless of what name (if any) is
+actually stored in it. Slots 1-254 are the document's ordinary named
+styles, as created through Impression's own style-editing interface,
+and are selected within text stories by the low byte of a CTRL_G or
+CTRL_H control code (see "Text Story Data").
+</p>
+
+<subsection title="Style record fixed header (stylestr)">
+<p>
+Each non-empty style slot points to a fixed 56-byte header, followed
+immediately by a variable-length block of optional field data whose
+layout is controlled by the header's own presence-flag bits (see "Style
+record variable data").
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="flags1" data-size="4">Presence-flags word 1; see "Style presence-flags word 1".</offset>
+<offset number="4" name="flags2" data-size="4">Presence-flags word 2; see "Style presence-flags word 2".</offset>
+<offset number="8" name="tabs" data-size="4">Bitmask, one bit per tab-stop slot (32 slots, numbered 0-31 from the least significant bit). A set bit means that tab-stop's position word is present in the variable data.</offset>
+<offset number="12" name="xxx4" data-size="4" state="undefined">Unknown. The source comments this field with "see non-zero for efx", suggesting a link to the iseffect flag or to character "effect" styles generally.</offset>
+<offset number="16" name="xxx5" data-size="4" state="undefined">Unknown; see xxx4.</offset>
+<offset number="20" name="key" data-size="2">RISC OS key code assigned as this style's keyboard shortcut (9 bits used); see "Keyboard Shortcut Encoding".</offset>
+<offset number="21-23" data-size="2">Continuation of the flags word begun at byte 20: b1 (7 bits, unknown), b2 (8 bits, unknown), and five further single-bit unknown flags, followed by paragraphapply (style applies to a whole paragraph rather than a run of selected characters), contents (unconfirmed; plausibly marks a style used to build a table-of-contents entry), and index (unconfirmed; plausibly marks a style used to build an index entry).</offset>
+<offset number="24" name="name" data-size="32">Style name, as a character string.</offset>
+</offset-table>
+</p>
+
+<subsubsection title="Style presence-flags word 1">
+<p>
+Each bit, when set, means the corresponding one-byte field is present
+in the variable data described in "Style record variable data" (fields
+are listed here in bit, and therefore storage, order):
+</p>
+<p>
+<bitfield-table>
+<bit number="0" state="reserved">Unknown (xxx100).</bit>
+<bit number="1" name="autoindent">Style automatically indents following text, for example after a bullet or number. Decoded by the converter but not reproduced in its output.</bit>
+<bit number="2-6" state="reserved">Unknown (xxx102-xxx106).</bit>
+<bit number="7" name="fontname0">Unconfirmed selector related to the style's font; the font's actual name is carried separately (see fontname1 in "Style presence-flags word 2"). Decoded but not reproduced in the output.</bit>
+<bit number="8" name="underline">Text is underlined.</bit>
+<bit number="9" name="script">Text is subscript or superscript.</bit>
+<bit number="10" name="strikeout">Text has strikeout.</bit>
+<bit number="11" name="alignment">Paragraph alignment is set (0 = left, ... 3 = justified, per the source's own comment).</bit>
+<bit number="12" name="keepsingle">Unconfirmed pagination "keep" option. Decoded but not reproduced.</bit>
+<bit number="13" name="keepmultiple">Unconfirmed pagination "keep" option. Decoded but not reproduced.</bit>
+<bit number="14" name="hyphenation">Automatic hyphenation setting is present.</bit>
+<bit number="15" state="reserved">Unknown (xxx115).</bit>
+<bit number="16" name="decimaltab">Decimal tab character is present.</bit>
+<bit number="17" name="keepnext">Unconfirmed; plausibly "keep with next paragraph". Decoded but not reproduced.</bit>
+<bit number="18" name="textcolour0">Unconfirmed flag paired with the textcolour1 field's colour value (see "Style record variable data"). Decoded but not reproduced directly; the paired colour word governs the actual foreground colour output.</bit>
+<bit number="19" state="reserved">Unknown (xxx119).</bit>
+<bit number="20" name="underlinecolour">Underline/strikeout colour is present. Governs both underline and strikeout colour output; see "Style record variable data" for its two-part layout.</bit>
+<bit number="21-22" state="reserved">Unknown (xxx121, xxx122).</bit>
+<bit number="23" name="textbackcolour">Character/paragraph background colour is present, paired with the textcolour2 field's colour value.</bit>
+<bit number="24" name="locktogrid">Text is locked to the page's baseline grid.</bit>
+<bit number="25" name="ruleoff0">Unconfirmed rule-related flag. Decoded but not reproduced.</bit>
+<bit number="26" name="italic">Text is italic.</bit>
+<bit number="27" name="bold">Text is bold.</bit>
+<bit number="28" name="iseffect">This style is a character "effect" style rather than a full named style; affects whether background/foreground colours are honoured (see "Style record variable data").</bit>
+<bit number="29" name="xxx129">Unconfirmed; the source comments this "ruler related".</bit>
+<bit number="30" name="showonstylemenu">Style is shown on Impression's style-selection menu.</bit>
+<bit number="31" state="reserved">Unknown (xxx131).</bit>
+</bitfield-table>
+</p>
+</subsubsection>
+
+<subsubsection title="Style presence-flags word 2">
+<p>
+<bitfield-table>
+<bit number="0" name="ruler0">Left indent value is present.</bit>
+<bit number="1" name="ruler1">Right indent value is present.</bit>
+<bit number="2" name="ruler2">First-line indent value is present.</bit>
+<bit number="3" name="scriptoffset">Subscript/superscript vertical offset is present. Decoded but not reproduced.</bit>
+<bit number="4" name="scriptsize">Subscript/superscript size scale is present. Decoded but not reproduced.</bit>
+<bit number="5" name="linespace">Line spacing (leading) value is present.</bit>
+<bit number="6" name="spacebelow">Space-after-paragraph value is present.</bit>
+<bit number="7" name="spaceabove">Space-before-paragraph value is present.</bit>
+<bit number="8" name="ulineoffset0">Underline vertical offset (variant 0) is present. Decoded but not reproduced.</bit>
+<bit number="9" name="ulineoffset1">Underline vertical offset (variant 1) is present. Decoded but not reproduced.</bit>
+<bit number="10" name="ruleverticalwidth">Unconfirmed. Decoded but not reproduced.</bit>
+<bit number="11-12" state="reserved">Unknown (xxx211, xxx212).</bit>
+<bit number="13" name="fontsize">Font size value is present.</bit>
+<bit number="14" name="fontaspectratio">Font horizontal/vertical aspect scale is present.</bit>
+<bit number="15" state="reserved">Unknown (xxx215).</bit>
+<bit number="16" name="keeptogether">Unconfirmed; the field's name suggests "keep paragraph lines together". Decoded but not reproduced.</bit>
+<bit number="17" name="leadering">Tab-leader fill character is present.</bit>
+<bit number="18-20" state="reserved">Unknown (xxx218-xxx220).</bit>
+<bit number="21" name="fontname1">Font (family and style) name is present, both as a placeholder word in sequence and as a following 40-byte string; see "Style record variable data".</bit>
+<bit number="22" name="tracking">Character tracking (letter-spacing) value is present.</bit>
+<bit number="23" state="reserved">Unknown (xxx223).</bit>
+<bit number="24" name="textcolour1">Foreground text colour is present; see "Style record variable data" for its two-part layout.</bit>
+<bit number="25" name="textcolour2">Background text colour is present, honoured only when textbackcolour (word 1) is also set and the style is not an effect style.</bit>
+<bit number="26-31" state="reserved">Unknown (xxx226-xxx231).</bit>
+</bitfield-table>
+</p>
+</subsubsection>
+</subsection>
+
+<subsection title="Style record variable data">
+<p>
+Immediately following the 56-byte stylestr header, a style record
+continues with a variable-length block of optional fields. Each field's
+presence is controlled by the correspondingly-named bit in one of the
+two presence-flags words (see above), and, when present, fields appear
+in exactly the declaration order used throughout this chapter: first
+every present one-byte field, then (after padding to a four-byte
+boundary) every present four-byte field, then the tab ruler (if any tab
+bit is set), then the font-style name string (if fontname1 is set), and
+finally three trailing colour words for whichever of textcolour1,
+textcolour2, and underlinecolour were flagged earlier.
+</p>
+<p>
+For style slot 0 (the body text style), every field is always treated
+as present, regardless of its own presence-flags bits.
+</p>
+
+<subsubsection title="One-byte fields, in order">
+<p>
+<definition-table head-name="Field" head-extra="Governing bit" head-value="Meaning">
+<definition name="xxx100" extra="flags1 bit 0">Unknown; consumed but not emitted.</definition>
+<definition name="autoindent" extra="flags1 bit 1">Consumed but not emitted.</definition>
+<definition name="xxx102-xxx106" extra="flags1 bits 2-6">Unknown; consumed but not emitted.</definition>
+<definition name="fontname0" extra="flags1 bit 7">Unknown; consumed but not emitted.</definition>
+<definition name="underline" extra="flags1 bit 8">Underline style selector; combines with the trailing underlinecolour word to produce the output underline description.</definition>
+<definition name="script" extra="flags1 bit 9">0 = none, 1 = subscript, 2 = superscript.</definition>
+<definition name="strikeout" extra="flags1 bit 10">Strikeout style selector; combines with the trailing underlinecolour word.</definition>
+<definition name="alignment" extra="flags1 bit 11">Paragraph alignment: 0 = left ... 3 = justified.</definition>
+<definition name="keepsingle" extra="flags1 bit 12">Consumed but not emitted.</definition>
+<definition name="keepmultiple" extra="flags1 bit 13">Consumed but not emitted.</definition>
+<definition name="hyphenation" extra="flags1 bit 14">Automatic hyphenation setting.</definition>
+<definition name="xxx115" extra="flags1 bit 15">Unknown; consumed but not emitted.</definition>
+<definition name="decimaltab" extra="flags1 bit 16">Decimal tab character.</definition>
+<definition name="keepnext" extra="flags1 bit 17">Consumed but not emitted.</definition>
+<definition name="textcolour0" extra="bodytext, or flags1 bit 18">Placeholder byte; the actual foreground colour is carried by the trailing textcolour1 word.</definition>
+<definition name="xxx119" extra="flags1 bit 19">Unknown; consumed but not emitted.</definition>
+<definition name="underlinecolour (selector)" extra="flags1 bit 20">Placeholder byte in this position; the actual colour value is carried by a separate trailing word (see below). The same governing bit gates both pieces of data.</definition>
+<definition name="xxx121, xxx122" extra="flags1 bits 21-22">Unknown; consumed but not emitted.</definition>
+<definition name="textbackcolour" extra="bodytext, or flags1 bit 23">Placeholder byte; the actual background colour is carried by the trailing textcolour2 word.</definition>
+<definition name="locktogrid" extra="flags1 bit 24">Baseline grid lock setting.</definition>
+<definition name="ruleoff0" extra="flags1 bit 25">Consumed but not emitted.</definition>
+<definition name="italic" extra="flags1 bit 26">Italic setting.</definition>
+<definition name="bold" extra="flags1 bit 27">Bold setting.</definition>
+<definition name="iseffect" extra="bodytext only">Only consumed when reading the body style; for ordinary styles this byte is not read even if the iseffect flag bit happens to be set. This inconsistency between the declared flag bit and the field's actual consumption is noted directly in the conversion source as a known peculiarity of the format, not a mistake in the converter.</definition>
+<definition name="(ruler-related, xxx129)" extra="bodytext only">See iseffect; consumed only for the body style.</definition>
+<definition name="showonstylemenu" extra="bodytext only">See iseffect; consumed only for the body style.</definition>
+<definition name="xxx131" extra="bodytext only">See iseffect; consumed only for the body style.</definition>
+</definition-table>
+</p>
+<p>
+After the last one-byte field, the data is padded to the next 4-byte
+boundary before the four-byte fields begin.
+</p>
+</subsubsection>
+
+<subsubsection title="Four-byte fields, in order">
+<p>
+<definition-table head-name="Field" head-extra="Governing bit" head-value="Meaning">
+<definition name="ruler0" extra="flags2 bit 0">Left indent.</definition>
+<definition name="ruler1" extra="flags2 bit 1">Right indent; a positive stored value is a delta from the frame's right edge, a negative value an absolute offset (the sign determines which indent type is emitted).</definition>
+<definition name="ruler2" extra="flags2 bit 2">First-line indent, stored as an absolute position; the emitted value is this field minus ruler0 (the left indent), giving an indent relative to the body text.</definition>
+<definition name="scriptoffset" extra="flags2 bit 3">Consumed but not emitted.</definition>
+<definition name="scriptsize" extra="flags2 bit 4">Consumed but not emitted.</definition>
+<definition name="linespace" extra="flags2 bit 5">Line spacing (leading). The top bit of the stored word selects fixed leading (remaining 24 bits, minus 0x10000, is the fixed value) versus proportional/single leading (remaining 24 bits directly).</definition>
+<definition name="spacebelow" extra="flags2 bit 6">Space after the paragraph.</definition>
+<definition name="spaceabove" extra="flags2 bit 7">Space before the paragraph (low 24 bits used).</definition>
+<definition name="ulineoffset0" extra="flags2 bit 8">Decoded but not emitted in the output.</definition>
+<definition name="ulineoffset1" extra="flags2 bit 9">Decoded but not emitted in the output.</definition>
+<definition name="ruleverticalwidth" extra="flags2 bit 10">Consumed but not emitted.</definition>
+<definition name="xxx211, xxx212" extra="flags2 bits 11-12">Unknown; consumed but not emitted.</definition>
+<definition name="fontsize" extra="flags2 bit 13">Font size, stored in sixteenths of a point.</definition>
+<definition name="fontaspectratio" extra="flags2 bit 14">Font horizontal/vertical aspect scale; 0x10000 = unity.</definition>
+<definition name="xxx215" extra="flags2 bit 15">Unknown; consumed but not emitted.</definition>
+<definition name="keeptogether" extra="flags2 bit 16">Consumed but not emitted.</definition>
+<definition name="leadering" extra="flags2 bit 17">First four bytes are copied as a short tab-leader fill-character string (up to four characters).</definition>
+<definition name="xxx218-xxx220" extra="flags2 bits 18-20">Unknown; consumed but not emitted.</definition>
+<definition name="fontname1 (selector)" extra="flags2 bit 21">Placeholder word in this position; the 40-byte font-style name string itself follows later (see below). The same governing bit gates both pieces of data.</definition>
+<definition name="tracking" extra="flags2 bit 22">Character tracking (letter-spacing).</definition>
+<definition name="xxx223" extra="flags2 bit 23">Unknown; consumed but not emitted.</definition>
+<definition name="textcolour1 (selector)" extra="flags2 bit 24">Placeholder word in this position; the actual colour value is carried by a separate trailing word (see below).</definition>
+<definition name="textcolour2 (selector)" extra="flags2 bit 25">Placeholder word in this position; the actual colour value is carried by a separate trailing word (see below).</definition>
+<definition name="xxx226-xxx231" extra="flags2 bits 26-31">Unknown; consumed but not emitted.</definition>
+</definition-table>
+</p>
+</subsubsection>
+
+<subsubsection title="Tab ruler, font name, and trailing colour words">
+<p>
+If any of the 32 bits of the tabs field (in the fixed header) is set,
+or the style is the body style, a tab ruler follows: for each set bit,
+in bit order from 0 to 31, one four-byte word whose low byte selects
+the tab kind (0 = left, 1 = centre, 2 = right, 3 = decimal, any other
+value = a rule-line marker rather than a stop) and whose remaining 24
+bits give the tab position.
+</p>
+<p>
+If fontname1 is set (see above), a 40-byte, string follows next,
+holding the font (family and style) name.
+</p>
+<p>
+Finally, for whichever of the following governing bits were set
+earlier, one trailing four-byte colour word follows, in this order:
+</p>
+<p>
+<list type="ordered">
+<item>textcolour1's actual colour value, present if flags2 bit 24 (textcolour1) is set. Used as the foreground colour.</item>
+<item>textcolour2's actual colour value, present if flags2 bit 25 (textcolour2) is set. Used as the background colour, but only honoured when textbackcolour (flags1 bit 23) is also set and the style is not an effect style.</item>
+<item>underlinecolour's actual colour value, present if flags1 bit 20 (underlinecolour) is set. Used as the colour for both the underline and the strikeout, if either is present.</item>
+</list>
+</p>
+<p>
+<fixme>
+The conversion source notes that a further four bytes can apparently
+still be read after this point in some records; no field in this
+trailing position is identified or decoded.
+</fixme>
+</p>
+</subsubsection>
+</subsection>
+</section>
+
+<section title="Paragraph and Heading Numbering">
+<p>
+The numbering table (numbers to x7 in the file header; see "File
+Header") is a flat array of 12-byte numberstr records, describing the
+automatic numbering sequences used by page numbers, chapter numbers,
+and numbered list/heading styles. Numbering sequences are scoped to an
+individual story (dcindex): the current value at any point in a story
+is found by scanning backwards through the array from the matching
+record to the most recent record for the same story that has its start
+bit set, and summing the increments seen along the way.
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="start" data-size="0.125">This record resets the running numbering sequence.</offset>
+<offset number="0" name="startn" data-size="3.875">The value the sequence is reset to, when start is set (added to the running count at this point).</offset>
+<offset number="4" name="type" data-size="1">Numbering style; see the following table.</offset>
+<offset number="5-7" name="tag" data-size="3">A per-numbering-sequence tag, matched against the tag value embedded in a CTRL_K "insert number" marker within a text story (see "Text Story Data").</offset>
+<offset number="8" name="dcindex" data-size="4">Dictionary index of the text story this numbering record belongs to.</offset>
+</offset-table>
+</p>
+<p>
+<value-table head-number="Type" head-value="Numbering style">
+<value number="0">Decimal (1, 2, 3, ...). The only style the converter renders as formatted text.</value>
+<value number="1">Upper-case Roman numerals. Recognised on disk; the converter does not produce formatted output for this style, a known gap in the converter rather than an unknown format detail.</value>
+<value number="2">Lower-case Roman numerals. See type 1.</value>
+<value number="3">Upper-case letters. See type 1.</value>
+<value number="4">Lower-case letters. See type 1.</value>
+<value number="5">Bullet. See type 1.</value>
+</value-table>
+</p>
+</section>
+
+<section title="Object Dictionary">
+<p>
+The object dictionary (dict1 in the file header; see "File Header") is
+a flat array of 56-byte dictstr records, one per story or embedded
+picture in the document. A frame's dictionaryindex field (see "Frame
+object common layout") is a zero-based index into this array.
+</p>
+
+<subsection title="Dictionary entries (dictstr)">
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="type" data-size="1">Dictionary entry kind; see the following table.</offset>
+<offset number="1" name="type1" data-size="1" state="undefined">Unknown.</offset>
+<offset number="2" name="type2" data-size="1" state="undefined">Unknown.</offset>
+<offset number="3" name="type3" data-size="1" state="undefined">Unknown.</offset>
+<offset number="4" name="id" data-size="4">On-disk story/data identifier. In directory-mode documents, this matches the numeric suffix of the entry's StoryN file (for a DCPICT entry) or the chunk id inside the owning chapter's Text file (for a DCTEXT entry); see "Directory layout and story files".</offset>
+<offset number="8" name="xxx2" data-size="4" state="undefined">Unknown.</offset>
+<offset number="12" name="xxx3" data-size="4" state="undefined">Unknown.</offset>
+<offset number="16" name="xxx4" data-size="4" state="undefined">Unknown.</offset>
+<offset number="20" name="xxx5" data-size="4" state="undefined">Unknown.</offset>
+<offset number="24" name="len" data-size="4" state="undefined">Unconfirmed; presumably a stored copy of the entry's data length. The converter always derives the actual length independently, from the master dictionary's offset table (mdict1 in the file header), rather than reading this field.</offset>
+<offset number="28" name="xxx7" data-size="4" state="undefined">Unknown.</offset>
+<offset number="32" name="types" data-size="4">Packed foreign-file-type identification word, used for DCPICT entries holding embedded objects; see "Embedded object types" below.</offset>
+<offset number="36" name="xxx9" data-size="4" state="undefined">Unknown.</offset>
+<offset number="40" name="xxx10" data-size="4" state="undefined">Unknown.</offset>
+<offset number="44" name="xxx11" data-size="4" state="undefined">Unknown.</offset>
+<offset number="48" name="xxx12" data-size="4" state="undefined">Unknown.</offset>
+<offset number="52" name="xxx13" data-size="4" state="undefined">Unknown.</offset>
+</offset-table>
+</p>
+<p>
+<value-table head-number="Type" head-name="Name" head-value="Meaning">
+<value number="1" name="DCPICT">A picture or other embedded (non-text) object.</value>
+<value number="2" name="DCTEXT">A text story.</value>
+<value number="3" name="DCSECT">A chapter (section) marker within the dictionary, used to count chapters when locating directory-mode story files; see "Directory layout and story files".</value>
+<value number="4" name="DCBRANCH">A branch. Not otherwise interpreted by the converter.</value>
+</value-table>
+</p>
+</subsection>
+
+<subsection title="Master dictionary (mdict1)">
+<p>
+The master dictionary (mdict1 in the file header) is an array of
+32-bit file-offset integers, one per dictionary entry plus one trailing
+sentinel entry. Entry N gives the byte offset, within the original
+input file, at which dictionary entry N's story or picture data begins;
+the corresponding data's length is found by subtracting entry N's
+offset from entry N+1's offset (which is why the array carries one more
+entry than there are dictionary records). This table is only used to
+locate data in single-file documents; in directory mode, story data is
+instead found by name within the document's directory structure (see
+"Directory layout and story files"), though the master dictionary is
+still consulted to compute a story's length.
+</p>
+</subsection>
+
+<subsection title="Embedded object types">
+<p>
+For a DCPICT entry, the types field's low 12 bits (or, within the 0xAFF
+family described below, an inner 12-bit sub-code) identify the kind of
+foreign data embedded at that dictionary entry:
+</p>
+<p>
+<value-table head-number="Code" head-value="Embedded object type">
+<value number="0xFF5">EPS (Encapsulated PostScript). Given a dedicated header format; see "EPS embedded object data".</value>
+<value number="0xAFF">A member of the "Draw-like" application family, identified more precisely by an inner 12-bit sub-code taken from bits 12-23 of types (falling back to the outer code itself if that sub-code is zero): 0xFF9 or 0xC85 or 0xAFF itself all resolve to Draw; 0xBCF to Tablemate; 0xD91 to Equasor; 0xB98 to Formulix; 0xC37 to Eureka; 0xB84 to DiagramIt; 0xB7D to TabCalc; 0xB83 to GraphMate; any other sub-code is treated generically as "Data". These twelve-bit codes closely resemble RISC OS filetype numbers; for example, 0xAFF is the standard Draw filetype, which is consistent with a Draw file having been embedded using its native RISC OS filetype as the class code.</value>
+<value number="0xD94">ArtWorks.</value>
+<value number="(other)">Treated generically as "Data": the raw bytes are embedded without a recognised application association.</value>
+</value-table>
+</p>
+</subsection>
+
+<subsection title="EPS embedded object data">
+<p>
+An EPS-tagged story's raw data (as read from the input file or a
+directory-mode StoryN file) begins with a header the converter partly
+reads and partly leaves unexamined:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0-11" data-size="12" state="undefined">Unknown; not read by the converter.</offset>
+<offset number="12" name="length" data-size="4">Length, in bytes, of the actual EPS content that follows the header.</offset>
+<offset number="16-51" data-size="36" state="undefined">Unknown; not read by the converter.</offset>
+<offset number="52-67" data-size="16" state="undefined">Unknown; not read by the converter before it is overwritten. The converter reuses this part of its own read buffer, in place, to build a replacement header for its DDL output, so nothing about its original on-disk content can be recovered from the conversion source.</offset>
+<offset number="68" name="name" data-size="variable">A null-terminated string (padded to a four-byte boundary), consistent with the embedded object's original filename or an EPS preview name.</offset>
+<offset number="(after name)" name="(EPS data)" data-size="variable" state="content">The raw EPS content itself, length bytes long, as given by the length field at offset 12.</offset>
+</offset-table>
+</p>
+<p>
+When producing its own DDL output for an EPS object, the converter
+constructs a fresh header of its own, distinct from the one just
+described: a 4-byte overall length (the replacement header's own size,
+rounded up to a multiple of four, plus the EPS content length), a
+4-byte copy of the source's content length, and two zeroed 4-byte
+fields, followed by the same name string read from the source and then
+the EPS content itself. This output header is a converter construction
+for the DDL format, not a description of a second on-disk Impression
+structure.
+</p>
+</subsection>
+
+<subsection title="Directory layout and story files">
+<p>
+In directory-mode documents (see "Document storage: single file versus
+directory mode"), the bulk data referenced by the object dictionary is
+held in files alongside <filename>!DocData</filename>, laid out as
+follows:
+</p>
+<p>
+<list type="unordered">
+<item><p><filename type="riscos">MasterChap</filename> holds the master
+pages' own text and pictures: a file called <filename type="riscos">Text</filename>,
+holding every DCTEXT chunk belonging to the master pages (see below),
+and one file called <filename type="riscos">StoryN</filename> per
+DCPICT dictionary entry belonging to the master pages, where N is that
+entry's id field.</p></item>
+<item><p>Each chapter has its own directory, named
+<filename type="riscos">ChapterN</filename> where N is that chapter's
+createn field (see "Section object (XSECT)"), holding its own
+<filename type="riscos">Text</filename> and
+<filename type="riscos">StoryN</filename> files in the same way.</p></item>
+</list>
+</p>
+<p>
+Whether a given dictionary entry belongs to the master pages or to a
+particular chapter is determined by counting DCSECT-typed entries in
+the object dictionary that precede it: zero such entries means the
+entry belongs to the master pages (MasterChap); otherwise, the count
+gives a zero-based chapter index, which is then matched against
+successive XSECT object records in the main object-record stream to
+find that chapter's createn value.
+</p>
+<p>
+A chapter's <filename type="riscos">Text</filename> file is a
+concatenation of chunks, each prefixed by an eight-byte header:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="len" data-size="4">Total length of this chunk, in bytes, including this eight-byte header.</offset>
+<offset number="4" name="id" data-size="4">Chunk identifier, matched against a DCTEXT dictionary entry's id field.</offset>
+</offset-table>
+</p>
+<p>
+A story's text is located within the file by scanning chunks
+sequentially from the start, comparing each chunk's id against the
+target dictionary entry's id, and skipping forward by (chunk length -
+8) bytes whenever it does not match.
+</p>
+</subsection>
+</section>
+
+<section title="Text Story Data">
+<p>
+A text story's data, however it is located (see "Object Dictionary"),
+is a sequence of line records, each beginning with an eight-byte
+ilinestr header:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="xx1" data-size="1" state="undefined">Unknown.</offset>
+<offset number="1-3" name="prevlen" data-size="3">Length of the preceding line record (24-bit little-endian). Not used by the converter.</offset>
+<offset number="4" name="xx2" data-size="1">Low three bits select this line record's kind; see the following table. The remaining bits are unknown; the source itself notes uncertainty here ("low nibble 1, 2 page style info? 5, normal line").</offset>
+<offset number="5-7" name="currlen" data-size="3">Length of this line record, including this eight-byte header (24-bit little-endian). A value of zero terminates the story.</offset>
+</offset-table>
+</p>
+<p>
+<value-table head-number="xx2 &amp; 0x7" head-value="Line record kind">
+<value number="0x2">Frame-reference line; see "Frame-reference lines" below.</value>
+<value number="0x5">Text-content line; see "Text-content lines" below.</value>
+<value number="(other)">Present in real documents but skipped over unread by the converter; purpose undetermined.</value>
+</value-table>
+</p>
+
+<subsection title="Frame-reference lines">
+<p>
+A frame-reference line's payload begins with a single 32-bit integer:
+a byte offset identifying, within the appropriate object-record
+stream, the text or blank frame through which this story's text flows
+at this point. (In directory mode, this offset is adjusted relative to
+the start of the enclosing chapter's own object records rather than the
+document as a whole.) Building up the sequence of these records across
+a story's lines yields the frame chain later emitted as a DDL
+textchain. Any further bytes in the line's payload, beyond this first
+integer, are not examined by the converter.
+</p>
+</subsection>
+
+<subsection title="Text-content lines">
+<p>
+A text-content line's payload always begins with 16 bytes that are
+skipped without interpretation; their purpose (possibly cached
+per-line ruler or style state) is not established. Interpretation of
+the actual content, a mixture of literal text bytes and inline control
+codes, begins at payload byte 16 and continues to the end of the line.
+</p>
+<p>
+Bytes with a value of 32 or more are literal text, copied directly to
+the output (with '"' and '\' backslash-escaped when the converter emits
+them inside a quoted DDL string). Bytes below 32 introduce inline
+control codes:
+</p>
+<p>
+<value-table head-number="Code" head-name="Name" head-value="Meaning and payload">
+<value number="0x5" name="CTRL_E">Single byte, no payload. Purpose undetermined.</value>
+<value number="0xB" name="CTRL_K">Page/chapter/paragraph number marker. Payload: one 4-byte-aligned integer, whose low byte selects the number kind (1 = current page number, 2 = current chapter number, 4 = a numbered-list/heading value, whose specific numbering record is identified by the remaining 24 bits, a tag looked up in the numbering table; see "Paragraph and Heading Numbering").</value>
+<value number="0xD" name="CTRL_M">Single byte, no payload. Paragraph break. A pending paragraph break is only emitted once further content follows, so trailing or consecutive CTRL_M bytes do not each produce a separate empty paragraph.</value>
+<value number="0xE" name="CTRL_N">Single byte, no payload. Forces text to continue at the top of the next frame or page.</value>
+<value number="0x12" name="CTRL_R">Tab-stop marker. Payload: a 4-byte-aligned run of integers terminated by a zero value; only a single tab is emitted in the output regardless of how many integers the payload contains, so the meaning of individual entries beyond the first is undetermined.</value>
+<value number="0x13" name="CTRL_S">Embedded-frame or merge-field marker. Payload: a 4-byte-aligned length integer (the total byte length of the following tagged data, including this length integer's own four bytes), followed by a tagged record whose first field is a discriminator: 1 (SEMBED) selects an embedstr record, 2 (SMERGE) selects a mergestr record; see "Embedded and merge markers" below.</value>
+<value number="0x15" name="CTRL_U">Payload: two 4-byte-aligned integers, read and skipped. Purpose undetermined.</value>
+<value number="0x1D" name="CTRL_]">"Vertical and horizontal kerning" marker, per the source's own comment. Payload: four 4-byte-aligned integers (apparently two coordinate-like pairs), read and skipped entirely; kerning adjustments are not reproduced in the converter's output.</value>
+<value number="0x7 / 0x8" name="CTRL_G / CTRL_H">"Styles on" / "styles off" markers. Payload: a 4-byte-aligned count integer (the byte length of the following list, though the converter instead scans for a terminator), followed by a zero-terminated list of 4-byte-aligned integers, each holding a style-table slot number in its low byte. In the main text-writing pass, both codes are handled identically: every style currently on an internal "active styles" stack is closed (emitting a style-removal marker for each), the stack is replaced with the newly listed styles, and a style-application marker is emitted for each of those. In an earlier scan used only to determine which styles are actually used in the document, CTRL_H instead removes the listed styles from the "used" set, distinguishing it from CTRL_G in that pass only. This suggests CTRL_G marks the start, and CTRL_H the end, of a run of text using the named style(s), even though the main writer does not need to distinguish them once it knows the full replacement set at each marker.</value>
+<value number="0x1, 0x2, 0x16, 0x17, 0x18, 0x1A" name="CTRL_A, CTRL_B, CTRL_V, CTRL_W, CTRL_X, CTRL_Z">Payload: a zero-terminated list of 4-byte-aligned integers, in the same shape as CTRL_G/CTRL_H's list but without a preceding count. Entirely skipped by the converter; individual meanings undetermined, though their proximity to CTRL_G/CTRL_H in the control-code space makes character-level attribute markers (as opposed to named styles) a plausible, unconfirmed guess.</value>
+<value number="(other, &lt; 32)">Not explicitly handled; treated as a single consumed byte with no special meaning.</value>
+</value-table>
+</p>
+</subsection>
+
+<subsection title="Embedded and merge markers">
+<p>
+Both record kinds referenced from a CTRL_S marker (see above) begin
+with the same discriminator field, so that only its value need be
+checked before choosing which structure follows:
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="type" data-size="4">Discriminator: 1 for an embedstr (embedded frame reference), 2 for a mergestr (merge-field reference).</offset>
+</offset-table>
+</p>
+<p>
+The embedstr record (20 bytes total):
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="type" data-size="4">1, identifying this as an embedstr.</offset>
+<offset number="4" name="xx2" data-size="4" state="undefined">Unknown.</offset>
+<offset number="8" name="embedtag" data-size="4">Matches the embedtag field of the frame (see "Frame object common layout") that should be placed inline at this point in the text.</offset>
+<offset number="12" name="xxx" data-size="4" state="undefined">Unknown.</offset>
+<offset number="16" name="xxy" data-size="4" state="undefined">Unknown.</offset>
+</offset-table>
+</p>
+<p>
+The mergestr record (12 bytes plus a variable-length string):
+</p>
+<p>
+<offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
+<offset number="0" name="type" data-size="4">2, identifying this as a mergestr.</offset>
+<offset number="4" name="xx1" data-size="4" state="undefined">Unknown.</offset>
+<offset number="8" name="xx2" data-size="4" state="undefined">Unknown.</offset>
+<offset number="12" name="string" data-size="variable">Null-terminated name of the merge field, for example a database column name. Emitted in the converter's DDL output as a merge-field reference formula built from this name.</offset>
+</offset-table>
+</p>
+</subsection>
+
+<subsection title="Repeating and chained frames">
+<p>
+Ordinary (non-repeating) stories are linked to their frames purely
+through the frame-reference lines described above. Repeating frames
+(the "repeating" flag bit in the frame flags word; see "Frame flags
+word") are handled differently: each new frame instance that flows
+from a repeating master-page frame is recorded, in the order
+encountered, into a chain associated with that frame's dictionary
+entry, and a chapter's set of such chains is flushed to the output as
+one DDL textchain per dictionary entry once every frame on that
+chapter's pages has been processed. Successive uses of the same
+repeating frame are distinguished in the output using the "generation"
+counter mentioned in "Frame identifiers and epochs".
+</p>
+</subsection>
+</section>
+
+<section title="Keyboard Shortcut Encoding">
+<p>
+A style's key field (see "Style record fixed header (stylestr)") is a
+RISC OS internal key code identifying the keyboard shortcut assigned to
+apply that style. The converter maps a subset of code values, and
+ranges of values, to shortcut names as follows; any value not listed
+produces no recognised shortcut name.
+</p>
+<p>
+<value-table head-number="Key code" head-value="Shortcut">
+<value number="0">(none; no shortcut assigned)</value>
+<value number="0x1-0x1A">Ctrl+&lt;letter&gt;, where the letter is 0x40 plus the key code (Ctrl+A .. Ctrl+Z).</value>
+<value number="0x1B-0x1F">Ctrl+[, Ctrl+\, Ctrl+], Ctrl+^, Ctrl+_ respectively.</value>
+<value number="0x180">Print</value>
+<value number="0x181-0x189">F1-F9</value>
+<value number="0x18A">Tab</value>
+<value number="0x18B">Copy</value>
+<value number="0x18C-0x18F">Ctrl+Left, Ctrl+Right, Ctrl+Down, Ctrl+Up</value>
+<value number="0x190">Shift+Print</value>
+<value number="0x191-0x199">Shift+F1 - Shift+F9</value>
+<value number="0x19A">Shift+Tab</value>
+<value number="0x19B">Shift+Copy</value>
+<value number="0x19C-0x19F">Shift+Ctrl+Left, Shift+Ctrl+Right, Shift+Ctrl+Down, Shift+Ctrl+Up</value>
+<value number="0x1A0">Ctrl+Print</value>
+<value number="0x1A1-0x1A9">Ctrl+F1 - Ctrl+F9</value>
+<value number="0x1AA">Ctrl+Tab</value>
+<value number="0x1AB">Ctrl+Copy</value>
+<value number="0x1AC-0x1AF">Ctrl+Left, Ctrl+Right, Ctrl+Down, Ctrl+Up (a second, separately-named range identical in effect to 0x18C-0x18F in the conversion source)</value>
+<value number="0x1B0">Ctrl+Shift+Print</value>
+<value number="0x1B1-0x1B9">Ctrl+Shift+F1 - Ctrl+Shift+F9</value>
+<value number="0x1BA">Ctrl+Shift+Tab</value>
+<value number="0x1BB">Ctrl+Shift+Copy</value>
+<value number="0x1BC-0x1BF">Ctrl+Shift+Left, Ctrl+Shift+Right, Ctrl+Shift+Down, Ctrl+Shift+Up</value>
+<value number="0x1CA-0x1CC">F10-F12</value>
+<value number="0x1CD">Insert</value>
+<value number="0x1DA-0x1DC">Shift+F10 - Shift+F12</value>
+<value number="0x1DD">Shift+Insert</value>
+<value number="0x1EA-0x1EC">Ctrl+F10 - Ctrl+F12</value>
+<value number="0x1ED">Ctrl+Insert</value>
+<value number="0x1FA-0x1FC">Ctrl+Shift+F10 - Ctrl+Shift+F12</value>
+<value number="0x1FD">Ctrl+Shift+Insert</value>
+</value-table>
+</p>
+</section>
+
+<section title="Unresolved and Undocumented Areas">
+<p>
+<fixme>
+This section consolidates every field and code path in this chapter
+whose purpose is unconfirmed or entirely unknown, gathered here for
+convenience alongside the fuller, in-context notes given at each
+field's own definition.
+</fixme>
+</p>
+<p>
+<list type="unordered">
+<item><p>File header: v1, v2 (offsets 0, 4); the 188-byte block at offset
+12; xx1 (offset 200); the 72-byte block at offset 204; colour2, colour3
+(offsets 280, 284); x3, x4, x5 (offsets 296, 304); x8, x9, x10 (offsets
+316, 324); dict2, mdict2 (offsets 332, 340); masterpages2 (offset 348);
+and the unaccounted-for region between mainpages1 and mainpages2.</p></item>
+<item><p>Object record header: tx1, tx2, tx3, lx1, lx3.</p></item>
+<item><p>Frame object common layout: the leading word (xxxx0); most of
+the flags-word bits described as reserved in "Frame flags word" and
+"Frame group flags word"; xxxx30, xxxx32, xxxx33; and the trailing
+28-byte reserved block.</p></item>
+<item><p>Page object: xxx1, xxx2, xxx4, xxx5.</p></item>
+<item><p>Picture frame: the exact byte order of the lpi/psscreen/psx0
+word; the trailing 32-byte reserved block; opcode 6 (curve) of the
+irregular-boundary path, and any extension sub-record kind other than
+the irregular boundary itself.</p></item>
+<item><p>Section object: the leading word (xxxx0); copyprev; the 64-byte
+reserved block at offset 16; the 32-byte reserved block at offset
+84.</p></item>
+<item><p>Branch object: the entire 40-byte body.</p></item>
+<item><p>Colour table: colour flags bits 2-6; the exact bit packing of
+the HSV channel encoding (reproduced from the conversion source but not
+independently confirmed); xx3, xx4, xx5.</p></item>
+<item><p>Character and paragraph styles: roughly thirty individual
+"xxxNNN" bits across both presence-flags words (each listed
+individually at its own definition above); xxx4, xxx5; b1, b2; contents
+and index (plausible but unconfirmed meanings); and the "further four
+bytes" the source notes can apparently follow the trailing colour
+words.</p></item>
+<item><p>Object dictionary: type1, type2, type3; xxx2-xxx5; len (its
+value is never read); xxx7; xxx9-xxx13.</p></item>
+<item><p>EPS embedded object data: bytes 0-11 and 52-67 of the raw
+on-disk header (the latter is additionally overwritten in place by the
+converter before it can be further examined).</p></item>
+<item><p>Text-content lines: the 16-byte preamble at the start of every
+line's payload; CTRL_E; the individual entries of a CTRL_R tab-stop
+list beyond the first; CTRL_U; CTRL_] (beyond its general description
+as a kerning marker); and CTRL_A, CTRL_B, CTRL_V, CTRL_W, CTRL_X,
+CTRL_Z in full.</p></item>
+<item><p>Paragraph and heading numbering: styles other than decimal
+(types 1-5) are recognised on disk but the converter does not implement
+their formatted output; this is a known gap in the converter, not an
+unidentified part of the format.</p></item>
+</list>
+</p>
+</section>
+
+<section title="Examples">
+
+<subsection title="Locating the colour table">
+<p>
+Given a document's header, the on-disk colour table is found and
+walked as follows:
+</p>
+<p>
+<extended-example type="c">
+Locating and iterating over a document's colour table.
+<br/><br/>
+<userinput>icolourstr * col = (icolourstr*)(docdata + docdata-&gt;colour1);</userinput><br/>
+<userinput>int ncol = (docdata-&gt;tints - docdata-&gt;colour1) / sizeof(icolourstr);</userinput><br/>
+<userinput>int n;</userinput><br/>
+<userinput>for (n = 0; n &lt; ncol; n++, col++)</userinput><br/>
+<userinput>{</userinput><br/>
+<userinput>&#32;&#32;if (*col-&gt;name == 0) continue;      /* unused slot */</userinput><br/>
+<userinput>&#32;&#32;if (col-&gt;flags &amp; 0x2)</userinput><br/>
+<userinput>&#32;&#32;{</userinput><br/>
+<userinput>&#32;&#32;&#32;&#32;/* tint entry: base colour index, tint amount in col-&gt;k */</userinput><br/>
+<userinput>&#32;&#32;}</userinput><br/>
+<userinput>&#32;&#32;else</userinput><br/>
+<userinput>&#32;&#32;{</userinput><br/>
+<userinput>&#32;&#32;&#32;&#32;/* base colour: model selected by (col-&gt;y &amp; 0x3) */</userinput><br/>
+<userinput>&#32;&#32;}</userinput><br/>
+<userinput>}</userinput>
+</extended-example>
+</p>
+</subsection>
+
+<subsection title="Reading a story's data">
+<p>
+For a single-file document, a dictionary entry's story data is
+located, and its length found, using the master dictionary:
+</p>
+<p>
+<extended-example type="c">
+Locating a dictionary entry's data in a single-file document.
+<br/><br/>
+<userinput>int * mdict = (int*)(docdata + docdata-&gt;mdict1);</userinput><br/>
+<userinput>int offset = mdict[dcindex];</userinput><br/>
+<userinput>int length = mdict[dcindex + 1] - mdict[dcindex];</userinput><br/>
+<userinput>fseek(inputfp, offset, SEEK_SET);</userinput><br/>
+<userinput>/* read *length* bytes: an ilinestr-framed sequence for a</userinput><br/>
+<userinput>&#32;&#32;DCTEXT entry, or raw picture data for a DCPICT entry */</userinput>
+</extended-example>
+</p>
+</subsection>
+</section>
+
+</chapter>
+
+<!-- MetaData -->
+<meta>
+ <maintainer>
+  <email name="Charles Ferguson (Gerph)" address="gerph@gerph.org" />
+ </maintainer>
+ <disclaimer>
+    <p>
+    &copy; Charles Ferguson, 2026. Released under the MIT licence.
+    </p>
+    <p>
+    This description of the Impression document format is a reverse
+    engineering exercise, reconstructed from the source of the TransIMP
+    Impression-to-OvationPro converter. It is not based on, and should
+    not be taken to represent, any specification published by
+    Computer Concepts or any successor holder of rights to Impression.
+    </p>
+ </disclaimer>
+
+ <history>
+  <revision number="1" author="Charles Ferguson (Gerph)" date="15 Aug 2026" title="Initial version">
+    <change>Reconstructed the Impression document format from the TransIMP
+    conversion source held in this repository, covering the file header,
+    object-record streams, frame types, colour table, style table,
+    paragraph numbering, object dictionary, and text story data, with
+    unidentified fields marked as such throughout.</change>
+  </revision>
+ </history>
+
+</meta>
+</riscos-prm>
