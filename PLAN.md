@@ -125,7 +125,7 @@ riscos-impression/
 - [x] Stage 6 — Full document assembly
 - [x] Stage 7 — Conversion framework, logging, embedded-format stubs
 - [x] Stage 8 — OvProDDL output (reference converter)
-- [ ] Stage 9 — Native PDF output
+- [x] Stage 9 — Native PDF output
 - [ ] Stage 10 — Scrolling HTML output
 - [ ] Stage 11 — Paged-media HTML output
 - [ ] Stage 12 — CLI and polish
@@ -260,6 +260,31 @@ riscos-impression/
   draw a placeholder box in the picture's place, and attach the raw EPS
   bytes as a non-rendered embedded file, both logged clearly.
 * Commit: *"Add native PDF output converter"*.
+* Confirmed the document's coordinate unit empirically while building this
+  stage: millipoints (1/1000 PDF point), verified against a real A4 master
+  page's exact PDF-point dimensions. Documented in
+  docs/impression-documents.xml (see the note under "Frame object common
+  layout"); this made frame placement a direct divide-by-1000 with no
+  Y-flip needed (Impression's own coordinates are already bottom-left,
+  Y-up, matching PDF's native page space).
+* Real-corpus validation (all 46 documents in examples/, cross-checked
+  structurally with `pypdf` as a local, non-dependency validation tool --
+  not added to pyproject.toml) found and fixed two real bugs before this
+  stage was considered done: (a) master-page furniture and master-linked
+  frames were drawn using the *content* page's origin, when master pages
+  actually keep their own, entirely separate absolute coordinate canvas
+  (confirmed empirically: content pages within one chapter share one
+  contiguous vertical canvas, but master pages live in a different
+  object-record stream with their own origin) -- fixed by re-basing
+  master-sourced geometry onto the master page's own origin rather than
+  the content page's. (b) A paragraph's tab stop can be defined (by a
+  shared style) far beyond the width of the particular frame it's used
+  in; wrapping treated a tab as zero-width and only discovered its real
+  jump distance at render time, letting the rest of the line run
+  hundreds of points past the page edge -- fixed by tracking real
+  absolute X position through tabs during wrapping itself, forcing a
+  line wrap before an overflowing tab, and treating the tab as a no-op
+  if even a fresh line still can't reach its target.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: shared style→CSS and colour→CSS mapping used by

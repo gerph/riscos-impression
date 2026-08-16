@@ -297,9 +297,19 @@ The XTEXT, XBLANK, XGUIDE, and XGROUP object bodies share an identical
 same 104 bytes and then extends it (see "Picture frame (XPICT)").
 </p>
 <p>
+Every coordinate and dimension throughout this format (frame and page
+boxes, insets, and picture shift/boundary-path coordinates alike) is in
+the same drawing-coordinate unit: millipoints, i.e. thousandths of a
+PDF/PostScript point (1/72000 inch). This was not previously confirmed
+by name, but is confirmed empirically: an A4 master page in a real
+document gives a page outer box of 595275 x 841889 units, which is
+exactly A4's PDF-point dimensions (595.276 x 841.890 pt) scaled by
+1000.
+</p>
+<p>
 <offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
 <offset number="0" name="xxxx0" data-size="4" state="undefined">Unknown.</offset>
-<offset number="4" name="x0" data-size="4">Left edge of the frame's outer box, in the document's drawing-coordinate units.</offset>
+<offset number="4" name="x0" data-size="4">Left edge of the frame's outer box, in the document's drawing-coordinate units (millipoints; see above).</offset>
 <offset number="8" name="y0" data-size="4">Bottom edge of the frame's outer box.</offset>
 <offset number="12" name="x1" data-size="4">Right edge of the frame's outer box.</offset>
 <offset number="16" name="y1" data-size="4">Top edge of the frame's outer box.</offset>
@@ -383,7 +393,7 @@ the following bits:
 <p>
 <offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
 <offset number="0" name="xxxx0" data-size="4" state="undefined">Unknown.</offset>
-<offset number="4" name="x0" data-size="4">Left edge of the page's outer box.</offset>
+<offset number="4" name="x0" data-size="4">Left edge of the page's outer box, in millipoints; see the unit note under "Frame object common layout".</offset>
 <offset number="8" name="y0" data-size="4">Bottom edge of the page's outer box.</offset>
 <offset number="12" name="x1" data-size="4">Right edge of the page's outer box.</offset>
 <offset number="16" name="y1" data-size="4">Top edge of the page's outer box.</offset>
