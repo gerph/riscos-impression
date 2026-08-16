@@ -1079,6 +1079,59 @@ def test_forced_page_break_advances_to_the_next_container_leaving_the_skipped_on
     assert "Third" in text_in(3)
 
 
+def test_side_by_side_containers_do_not_share_a_page_floor():
+    """Regression test: a real document (ForDad from the local
+    moreexamples/ corpus) chains four caption frames laid out two-by-
+    two on one page (top-left, top-right, bottom-left, bottom-right),
+    each following the previous with a PageBreakMark. advance_container
+    used to clamp a freshly-entered container's starting Y down to the
+    lowest point *any* earlier container on the same page had reached
+    (page_floor, keyed by page_key) -- correct for the documented case
+    of a narrow frame chaining into a full-width one below it (whose
+    box genuinely, horizontally overlaps), but wrong for side-by-side
+    cells that never overlap at all: the top-right frame inherited the
+    top-left's own leftover Y position, leaving it almost no room, and
+    its own content (which fits easily in its full height) overflowed
+    into a third container that should have stayed empty -- landing
+    "Through rain," visually below "Through sunshine," instead of
+    beside it. A later container must only inherit an earlier one's
+    floor when their X-ranges actually overlap (not just touch at a
+    shared edge)."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    document = _document(styles=[body])
+    converter = PDFConverter(document)
+
+    containers = [
+        (1, 1, 0.0, 0.0, 100.0, 100.0),  # left
+        (2, 1, 100.0, 0.0, 200.0, 100.0),  # right, same page, touching (not overlapping) edge
+        (3, 1, 200.0, 0.0, 300.0, 100.0),  # only reachable if the bug regresses
+    ]
+    paragraphs = (
+        # Six lines in the left container push its own Y most of the
+        # way down, well past where the right container's own content
+        # would land if it wrongly inherited that position.
+        Paragraph(items=(Run(text="X", style_slots=()),)),
+        *[Paragraph(items=()) for _ in range(5)],
+        Paragraph(items=(Run(text="X", style_slots=()), PageBreakMark())),
+        # Three lines' worth of text: fits comfortably in the right
+        # container's own full height, but not in the sliver left by
+        # the (buggy) inherited floor.
+        Paragraph(items=(Run(text="One Two Three Four Five Six Seven Eight Nine Ten", style_slots=()),)),
+    )
+    assignments = converter._flow_paragraphs_into_containers(paragraphs, 0, containers, None)
+
+    def text_in(key):
+        return "".join(
+            tok.text for entry in assignments[key] for tok in entry[0] if tok.kind in ("word", "space")
+        )
+
+    right_text = text_in(2)
+    assert "One" in right_text and "Ten" in right_text
+    assert text_in(3) == ""
+
+
 def test_master_anchored_story_renders_independently_without_erroring(tmp_path):
     """Regression test: a real document (funcspec from the local
     examples/ corpus) has stories repeated, unlinked, across several

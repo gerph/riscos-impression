@@ -985,6 +985,43 @@ riscos-impression/
   pages), so a fourth page isn't something this fix can manufacture;
   flagged back to the user rather than guessed at further.
 
+* **Post-Stage-14 fix (9)**: the user supplied a real reference image
+  (ForDad-RealPage1.png) showing ForDad (from the local moreexamples/
+  corpus) as a proper 2x2 grid of weather-icon captions ("Through
+  sunshine," / "Through rain," over "Through storms," / "And through
+  snow..."), but the PDF had "Through rain," rendered below "Through
+  sunshine," in the same column instead of beside it, and logged an
+  unexpected "text overflowed... and was clipped". ForDad's four
+  caption frames are chained (dictionary entry 4, frame_chain of 4
+  members) via the same PageBreakMark mechanism fixed in (8), one per
+  quadrant. Traced to `_flow_paragraphs_into_containers`'s
+  `page_floor`: a map from *page_key* to the lowest Y any container on
+  that page had reached, meant (per its own docstring) for the case of
+  a narrow frame chaining into a full-width one below it, whose box
+  genuinely, horizontally overlaps -- but it was applied indiscrimin-
+  ately to *any* two containers sharing a page, including these four
+  side-by-side grid cells, which never overlap at all. Advancing from
+  the top-left cell to the top-right one wrongly clamped the top-
+  right's fresh Y down to wherever the top-left's own content had
+  reached, starving it of most of its own height; its own content
+  (which fits its full height easily) then overflowed into a third
+  container that should have stayed empty, and the real second
+  container was left with nothing -- exactly the "landed one frame
+  over, real frame sitting empty" pattern from fix (8), but caused by
+  a different mechanism this time. Fixed by keying the floor tracking
+  by *container*, not by page, and only letting a later container
+  inherit an earlier one's floor when their X-ranges genuinely overlap
+  (not merely touch at a shared edge) -- `advance_container` now scans
+  only-already-visited containers on the same page for that overlap
+  before applying any floor. One new regression test drives
+  `_flow_paragraphs_into_containers` directly with two side-by-side,
+  same-page containers plus a third "only reachable if the bug
+  regresses" one, confirmed to fail against the pre-fix code (the
+  right container's content was clipped rather than placed) before
+  being fixed. Full suite (312 tests) green; re-validated across all
+  111 real documents with 0 crashes; visually confirmed against ForDad
+  -- the PDF now matches the reference image's 2x2 grid exactly.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

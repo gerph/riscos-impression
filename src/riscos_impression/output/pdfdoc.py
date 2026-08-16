@@ -1746,16 +1746,24 @@ class PDFConverter(Converter):
         frames on the *same* page, where the second's box geometrically
         overlaps the first's. Starting the second at its own top edge in
         that case would visually collide with content already placed by
-        the first, so a container sharing an earlier container's
-        page_key never starts higher than the lowest point that page has
-        reached so far."""
+        the first, so a container never starts higher than the lowest
+        point reached by an earlier container on the same page whose
+        own X-range actually overlaps its own (see advance_container) --
+        deliberately NOT any earlier same-page container regardless of
+        position: side-by-side grid cells (e.g. several frames chained
+        across a page laid out two-by-two, each getting its own quarter
+        of the page -- confirmed against a real document) never
+        visually overlap, so an earlier cell's leftover Y position must
+        not constrain a later one that merely happens to share a page."""
         obstacles_by_key = obstacles_by_key or {}
         assignments: dict[int, list] = {key: [] for key, *_ in containers}
         if not containers:
             return assignments
 
         body_style = self.resolve_style([])
-        page_floor: dict[int, float] = {}
+        #: Lowest Y each container's own content has reached so far,
+        #: keyed by container key (NOT page_key) -- see advance_container.
+        container_floor: dict[int, float] = {}
         container_index = 0
         key, page_key, cx0, cy0, cx1, cy1 = containers[0]
         y_cursor = cy1
@@ -1773,7 +1781,28 @@ class PDFConverter(Converter):
             if container_index >= len(containers):
                 return False
             key, page_key, cx0, cy0, cx1, cy1 = containers[container_index]
-            y_cursor = min(cy1, page_floor.get(page_key, cy1))
+            # Only a genuinely earlier container on the SAME page whose
+            # own X-range actually overlaps this one's (not just meets
+            # at a shared edge) can constrain where this one starts --
+            # see the docstring's "narrow frame beside an obstacle
+            # chaining into a full-width one below it" case. Without
+            # this check, side-by-side grid cells on one page (sharing
+            # a page_key but never visually overlapping, confirmed
+            # against a real document: ForDad's four caption frames,
+            # laid out two-by-two) would wrongly inherit an unrelated
+            # neighbour's own leftover Y position, starving them of
+            # most of their own height and, in turn, triggering a
+            # second, unintended container advance for content that
+            # would otherwise have fit perfectly in the one right
+            # beside it.
+            floor = cy1
+            for prior_key, prior_page_key, pcx0, _pcy0, pcx1, _pcy1 in containers[:container_index]:
+                if prior_page_key != page_key or pcx1 <= cx0 or pcx0 >= cx1:
+                    continue
+                prior_floor = container_floor.get(prior_key)
+                if prior_floor is not None:
+                    floor = min(floor, prior_floor)
+            y_cursor = min(cy1, floor)
             first_line_pending = True
             return True
 
@@ -1873,7 +1902,7 @@ class PDFConverter(Converter):
                     embed_y0 = y_cursor - embed_height
                     assignments[key].append(("embed", pict, embed_x0, embed_y0, embed_x1, embed_y1))
                     y_cursor = embed_y0
-                    page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
+                    container_floor[key] = min(container_floor.get(key, y_cursor), y_cursor)
                     placed_any_line = True
                     first_line_pending = False
                     is_first_line = False
@@ -1958,7 +1987,7 @@ class PDFConverter(Converter):
                 placed_any_line = True
                 y_cursor -= drop
                 first_line_pending = False
-                page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
+                container_floor[key] = min(container_floor.get(key, y_cursor), y_cursor)
                 assignments[key].append(
                     (line, line_start, cx0, right_edge, y_cursor, bool(tokens), para_style.alignment)
                 )
