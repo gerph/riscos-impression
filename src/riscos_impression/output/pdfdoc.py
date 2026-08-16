@@ -960,7 +960,10 @@ class PDFConverter(Converter):
         return appearance, (master_page_box.x0 + master_page_box.bleed, master_page_box.y0 + master_page_box.bleed)
 
     def _repel_obstacles_for_page(
-        self, page: PageGroup, exclude: Optional[Frame] = None
+        self,
+        page: PageGroup,
+        exclude: Optional[Frame] = None,
+        own_box: Optional[tuple[float, float, float, float]] = None,
     ) -> list[tuple[float, float, float, float]]:
         """Every repel-flagged frame's own repel box (exx0..exy1 -- not
         its plain outer box; see "Frame object common layout" in
@@ -972,9 +975,25 @@ class PDFConverter(Converter):
         given, is filtered out of the returned rects by identity -- a
         frame that's itself repel-flagged (e.g. a text frame meant to
         push *other* frames' text away from it) must not obstruct its
-        own text when it's the one currently being laid out. Used by
-        _flow_paragraphs_into_containers to shrink a text line's
-        available width around an obstacle (dynamic text repel)."""
+        own text when it's the one currently being laid out.
+
+        *own_box*, if given, additionally drops any obstacle whose own
+        rect *fully encloses* it -- confirmed against a real document
+        (FieldWork): a chapter's own main body-text frame is itself
+        repel-flagged (so *its own* text correctly flows around the
+        smaller picture/caption frames layered within its box), but
+        that's a one-way relationship -- those smaller frames must not
+        in turn treat the much larger, merely-containing body frame as
+        an obstacle to *themselves*, or (since a small frame's own box
+        sits entirely inside the big one) the narrowing logic below
+        has no usable width left at all and flows zero lines. A
+        genuine side-by-side obstacle (the normal picture-repel case)
+        only partially overlaps the frame being laid out, never fully
+        contains it, so this never affects that case.
+
+        Used by _flow_paragraphs_into_containers to shrink a text
+        line's available width around an obstacle (dynamic text
+        repel)."""
         cached = self._repel_obstacles.get(id(page))
         if cached is None:
             default_origin = (page.page.x0 + page.page.bleed, page.page.y0 + page.page.bleed)
@@ -1002,9 +1021,14 @@ class PDFConverter(Converter):
             cached = pairs
             self._repel_obstacles[id(page)] = cached
 
-        if exclude is None:
-            return [rect for _frame, rect in cached]
-        return [rect for frame, rect in cached if frame is not exclude]
+        def fully_encloses(rect: tuple[float, float, float, float]) -> bool:
+            if own_box is None:
+                return False
+            ox0, oy0, ox1, oy1 = rect
+            bx0, by0, bx1, by1 = own_box
+            return ox0 <= bx0 and oy0 <= by0 and ox1 >= bx1 and oy1 >= by1
+
+        return [rect for frame, rect in cached if frame is not exclude and not fully_encloses(rect)]
 
     def _draw_frame(
         self,
@@ -1644,7 +1668,9 @@ class PDFConverter(Converter):
                 self._story_layouts[layout_key] = layout
                 lines = layout.get(id(frame), [])
             else:
-                obstacles_by_key = {id(frame): self._repel_obstacles_for_page(page, exclude=frame)}
+                obstacles_by_key = {
+                    id(frame): self._repel_obstacles_for_page(page, exclude=frame, own_box=(x0, y0, x1, y1))
+                }
                 assignments = self._flow_paragraphs_into_containers(
                     story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], chapter, obstacles_by_key
                 )
@@ -1798,7 +1824,7 @@ class PDFConverter(Converter):
             if box is None:
                 continue
             containers.append((id(cframe), id(member_page), *box))
-            obstacles_by_key[id(cframe)] = self._repel_obstacles_for_page(member_page, exclude=cframe)
+            obstacles_by_key[id(cframe)] = self._repel_obstacles_for_page(member_page, exclude=cframe, own_box=box)
 
         if not containers:
             return {}

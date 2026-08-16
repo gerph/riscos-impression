@@ -1544,6 +1544,69 @@ def test_repel_flagged_frame_does_not_obstruct_its_own_text(tmp_path):
     assert b"(Visible) Tj" in data
 
 
+def test_repel_flagged_frame_does_not_obstruct_a_frame_it_fully_encloses(tmp_path):
+    # Regression test: a real document (FieldWork) has 3 picture
+    # captions (and 2 diagram labels) that never appeared at all.
+    # Traced to their own small frames sitting entirely inside a much
+    # larger, also repel-flagged frame -- the chapter's own main
+    # body-text container, which needs to repel *its own* text around
+    # the smaller frames layered within it, but was *also* being
+    # treated as an obstacle to those smaller frames' own text in the
+    # other direction. Since a small frame's own box sits entirely
+    # inside the big one, narrowing left no usable width anywhere,
+    # silently dropping all of its text -- unlike the genuine
+    # picture-repel case, which only partially overlaps.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    # The chapter's own main body-text frame: repel-flagged, covering
+    # virtually the whole page.
+    container = _frame(
+        x0=0, y0=0, x1=100000, y1=150000,
+        exx0=0, exy0=0, exx1=100000, exy1=150000,
+        repel=True, dictionary_index=0,
+    )
+    # A small caption frame entirely inside the container's own box.
+    caption = _frame(
+        x0=40000, y0=40000, x1=60000, y1=60000,
+        exx0=40000, exy0=40000, exx1=60000, exy1=60000,
+        repel=True, dictionary_index=1,
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, container), _frame_record(1108, caption)),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.extend([
+        DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0),
+        DictionaryEntry(index=1, type=DictionaryEntryType.TEXT, id=1, types=0),
+    ])
+    stories = {
+        0: Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Body", style_slots=()),)),)),
+        1: Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Caption", style_slots=()),)),)),
+    }
+    document.story = lambda entry: stories[entry.index]
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Body) Tj" in data
+    assert b"(Caption) Tj" in data
+
+
 def test_master_furniture_is_rebased_onto_the_content_page(tmp_path):
     """Regression test: a master page keeps its own, entirely separate
     absolute coordinate canvas (confirmed empirically -- real documents
