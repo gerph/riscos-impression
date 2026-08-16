@@ -28,11 +28,24 @@ frame's own real width, which this format deliberately never tracks
 edge) maps directly to CSS margin-right regardless, and is applied
 normally (unlike html_paged.py, which additionally has the frame's
 real width available for the positive case too).
+
+A tab, unlike right_indent, does NOT need the frame's own real width
+to position at all -- a style's own declared tab stops are absolute
+point offsets from the paragraph's own left margin, independent of
+frame or viewport width -- so tabs still jump to their own declared
+stop here (an ordinary, in-flow inline-block spacer, sized by
+measuring the upcoming segment's width ahead of time for a centre/
+right/decimal stop; mirrors html_paged.py's own, already-validated
+mechanism and pdfdoc.py's _segment_width/_tab_target_x exactly). Only
+the actual visual column alignment across rows of different widths is
+approximate here, same as everywhere else in this format, since a
+browser -- not this converter -- does the real text measurement.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from riscos_impression.model.dictionary import DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter
@@ -49,6 +62,8 @@ from riscos_impression.model.story import (
     Story,
     TabMark,
 )
+from riscos_impression.model.styles import Style
+from riscos_impression.output import font_metrics
 from riscos_impression.output.html_base import (
     HTML5Converter,
     css_style_attr,
@@ -63,6 +78,74 @@ p { margin: 0 0 1em 0; }
 section.chapter { margin-bottom: 3em; }
 img { vertical-align: middle; }
 """
+
+#: Millipoints per CSS point; see docs/impression-documents.xml's note
+#: under "Frame object common layout".
+UNIT = 1000.0
+
+#: Used only when a style carries no font_size at all, matching
+#: pdfdoc.py's own _DEFAULT_FONT_SIZE_16THS (10pt).
+_DEFAULT_FONT_SIZE_16THS = 160
+
+#: RISC OS font name substring -> font_metrics.WIDTHS_256PT family, for
+#: _approx_width's own estimate of an upcoming tab segment's width. A
+#: *duplicate*, self-contained copy of pdfdoc.py's/html_paged.py's own
+#: metrics font-selection, not shared with either (matching this
+#: project's convention of independent converters).
+_METRICS_FAMILY_HINTS = [
+    ("trinity", "Times"),
+    ("times", "Times"),
+    ("homerton", "Helvetica"),
+    ("corpus", "Courier"),
+]
+_AVERAGE_WIDTH_FACTOR = {"Helvetica": 0.52, "Times": 0.46, "Courier": 0.6}
+_RISCOS_METRICS_FONT = {
+    "Helvetica": {
+        (False, False): "Homerton.Medium",
+        (True, False): "Homerton.Bold",
+        (False, True): "Homerton.Medium.Oblique",
+        (True, True): "Homerton.Bold.Oblique",
+    },
+    "Times": {
+        (False, False): "Trinity.Medium",
+        (True, False): "Trinity.Bold",
+        (False, True): "Trinity.Medium.Italic",
+        (True, True): "Trinity.Bold.Italic",
+    },
+}
+
+
+def _metrics_base_family(font_style_name: Optional[str]) -> str:
+    name = (font_style_name or "").lower()
+    for hint, family in _METRICS_FAMILY_HINTS:
+        if hint in name:
+            return family
+    return "Helvetica"
+
+
+def _approx_width(text: str, style: Style) -> float:
+    """Estimated width (in points) of *text* set in *style* -- a
+    duplicate, self-contained copy of pdfdoc.py's/html_paged.py's own
+    _approx_width, used here only to size an in-flow tab spacer, never
+    to position anything with pixel precision (a browser does the real
+    text measurement natively)."""
+    size = (style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
+    family = _metrics_base_family(style.font_style_name)
+    variants = _RISCOS_METRICS_FONT.get(family)
+    if variants is not None:
+        name = (style.font_style_name or "").lower()
+        is_bold = bool(style.bold) or "bold" in name
+        is_italic = bool(style.italic) or "italic" in name or "oblique" in name
+        metrics_font = variants[(is_bold, is_italic)]
+        total_per_mille = 0.0
+        for ch in text:
+            per_mille = font_metrics.char_width_per_mille(metrics_font, ch)
+            if per_mille is None:
+                break
+            total_per_mille += per_mille
+        else:
+            return total_per_mille / 1000.0 * size
+    return len(text) * size * _AVERAGE_WIDTH_FACTOR.get(family, 0.5)
 
 
 class ScrollingHTMLConverter(HTML5Converter):
@@ -181,6 +264,12 @@ class ScrollingHTMLConverter(HTML5Converter):
         para_attr = css_style_attr(paragraph_css_properties(para_style))
         p_open = f'<p style="{para_attr}">' if para_attr else "<p>"
 
+        items = paragraph.items
+        tab_stops = sorted(para_style.tab_stops, key=lambda ts: ts.position) if para_style.tab_stops else []
+        left_indent_pt = (para_style.left_indent or 0) / UNIT
+        first_indent_pt = (para_style.first_indent or 0) / UNIT
+        cursor_pt = left_indent_pt + first_indent_pt
+
         def flush() -> None:
             if not buffer:
                 return
@@ -190,32 +279,83 @@ class ScrollingHTMLConverter(HTML5Converter):
             spans.append(f'<span style="{attr}">{text}</span>' if attr else text)
             buffer.clear()
 
-        for item in paragraph.items:
+        def append_measured(text: str) -> None:
+            nonlocal cursor_pt
+            buffer.append(text)
+            cursor_pt += _approx_width(text, current_style)
+
+        def segment_width(start_index: int, base_style) -> float:
+            # Approx width of the run of items from *start_index* up to
+            # (not including) the next TabMark or the end of the
+            # paragraph -- needed to work out where a centre/right/
+            # decimal tab's segment should *start*, since its target
+            # stop describes where the segment ends (or its middle
+            # sits), not where it begins. Mirrors html_paged.py's own,
+            # already-validated segment_width (and pdfdoc.py's own
+            # _segment_width) exactly.
+            total = 0.0
+            style = base_style
+            for later in items[start_index:]:
+                if isinstance(later, TabMark):
+                    break
+                if isinstance(later, Run):
+                    style = self.resolve_style(later.style_slots)
+                    total += _approx_width(later.text, style)
+                elif isinstance(later, PageNumberMark):
+                    pass  # meaningless in a scrolling document; contributes no width here either
+                elif isinstance(later, ChapterNumberMark):
+                    total += _approx_width(str(self._chapter_number), style)
+                elif isinstance(later, HeadingNumberMark):
+                    total += _approx_width(self._resolve_number_text(later.tag, dictionary_index), style)
+                elif isinstance(later, EmbedMark):
+                    frame = self._embed_frame_for_tag(later.embed_tag, chapter)
+                    if frame is not None:
+                        total += max(0.0, (frame.x1 - frame.x0) / UNIT)
+            return total
+
+        for idx, item in enumerate(items):
             if isinstance(item, Run):
                 style = self.resolve_style(item.style_slots)
                 if style != current_style:
                     flush()
                     current_style = style
-                buffer.append(item.text)
+                append_measured(item.text)
             elif isinstance(item, PageNumberMark):
                 pass  # page numbers are a paginated-layout concept; meaningless in a scrolling document
             elif isinstance(item, ChapterNumberMark):
-                buffer.append(str(self._chapter_number))
+                append_measured(str(self._chapter_number))
             elif isinstance(item, HeadingNumberMark):
-                buffer.append(self._resolve_number_text(item.tag, dictionary_index))
+                append_measured(self._resolve_number_text(item.tag, dictionary_index))
             elif isinstance(item, TabMark):
-                # Unlike html_paged.py, this converter has no frame
-                # width of its own to position an absolute tab stop
-                # against (see the module docstring's own note on
-                # right_indent for the same underlying limitation), so
-                # a tab can only ever be a plain visual gap here, not a
-                # real jump to the style's own declared stop. A literal
-                # tab character would otherwise collapse to nothing
-                # under HTML's default whitespace handling; wrapping it
-                # in white-space: pre preserves the browser's own
-                # (unaligned, but at least visible) default tab width.
+                # A tab jumps to the FIRST declared stop past the
+                # current cursor position (mirrors html_paged.py's own,
+                # already-validated tab handling and pdfdoc.py's own
+                # _next_tab_stop exactly) via an ordinary, in-flow
+                # inline-block spacer -- a literal tab character would
+                # otherwise collapse to nothing under HTML's default
+                # whitespace handling. A centre/right/decimal stop
+                # measures its own upcoming segment's width ahead of
+                # time so the spacer can land that segment centred on,
+                # or ending at, the stop rather than starting there.
                 flush()
-                spans.append('<span style="white-space:pre">\t</span>')
+                stop_pt, kind = None, 0
+                for ts in tab_stops:
+                    candidate = ts.position / UNIT
+                    if candidate > cursor_pt + 0.5:
+                        stop_pt, kind = candidate, ts.kind
+                        break
+                if stop_pt is None:
+                    stop_pt = (int(cursor_pt / 36.0) + 1) * 36.0  # half-inch default pitch
+                if kind == 0:
+                    target_pt = stop_pt
+                else:
+                    width = segment_width(idx + 1, current_style)
+                    target_pt = stop_pt - (width / 2.0 if kind == 1 else width)  # 1=centre, 2/3=right/decimal
+                target_pt = max(target_pt, cursor_pt)
+                spacer_width = target_pt - cursor_pt
+                if spacer_width > 0.005:
+                    spans.append(f'<span style="display:inline-block;width:{spacer_width:.2f}pt"></span>')
+                cursor_pt = target_pt
             elif isinstance(item, PageBreakMark):
                 pass  # no page concept in a scrolling document
             elif isinstance(item, MergeMark):
@@ -223,11 +363,22 @@ class ScrollingHTMLConverter(HTML5Converter):
             elif isinstance(item, EmbedMark):
                 flush()
                 spans.append(self._render_embed(item.embed_tag, chapter))
+                frame = self._embed_frame_for_tag(item.embed_tag, chapter)
+                if frame is not None:
+                    cursor_pt += max(0.0, (frame.x1 - frame.x0) / UNIT)
         flush()
 
         if not spans:
             return f"{p_open}&nbsp;</p>\n"
         return f"{p_open}{''.join(spans)}</p>\n"
+
+    def _embed_frame_for_tag(self, embed_tag: int, chapter: Chapter) -> Optional[Frame]:
+        for page in chapter.pages:
+            for record in page.records:
+                value = record.value
+                if isinstance(value, Frame) and value.embed_tag == embed_tag:
+                    return value
+        return None
 
     def _render_embed(self, embed_tag: int, chapter: Chapter) -> str:
         for page in chapter.pages:

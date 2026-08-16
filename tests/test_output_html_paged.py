@@ -1,3 +1,5 @@
+import re
+
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
@@ -242,11 +244,12 @@ def test_tab_positions_text_at_the_styles_own_tab_stop_not_a_literal_tab_charact
     # right-aligning "Issue F" -- a literal tab character collapses to
     # nothing under HTML's default whitespace handling, so the browser
     # never actually jumped to the style's own declared right tab
-    # stop. The Nth tab in a paragraph is now positioned at the Nth
-    # entry of the style's own tab ruler instead, each its own
-    # absolutely-positioned span within the paragraph's own box
-    # (centred/right-aligned on its stop via a CSS transform, needing
-    # no width measurement of its own).
+    # stop. Each tab now inserts an ordinary, in-flow inline-block
+    # spacer (see test_right_tabbed_segment_lands_via_an_in_flow_
+    # spacer_not_position_absolute for why a centre/right tab's own
+    # segment must stay in flow rather than becoming position:absolute)
+    # sized to land the *following* segment centred/right-aligned on
+    # its stop, measuring that segment's own width ahead of time.
     document = _document(styles=[_style(0, is_body_text=True, font_size=160)])
     converter = PagedHTMLConverter(document, export_pdf=False)
     style = _style(
@@ -262,12 +265,20 @@ def test_tab_positions_text_at_the_styles_own_tab_stop_not_a_literal_tab_charact
 
     html = converter._render_items(items, 0, None, style, 510.24)
 
-    assert "Sheet 1" in html
-    assert (
-        '<span style="position:absolute;left:255.12pt;white-space:nowrap;'
-        'transform:translateX(-50%)"></span>' in html
-    )
-    assert 'left:507.40pt;white-space:nowrap;transform:translateX(-100%)' in html
+    assert "position:absolute" not in html
+    assert ">Sheet 1<" in html
+
+    sheet1_width = _approx_width("Sheet 1", style)
+    issuef_width = _approx_width("Issue F", style)
+    spacers = [float(w) for w in re.findall(r"display:inline-block;width:([\d.]+)pt", html)]
+    assert len(spacers) == 2
+    # First tab (centre stop 255.12pt) lands an EMPTY segment (nothing
+    # between the two adjacent tabs) centred on the stop -- i.e. just
+    # AT the stop, since an empty segment has no width to centre.
+    assert round(sheet1_width + spacers[0], 1) == 255.1
+    # Second tab (right stop 507.40pt) lands "Issue F" ending AT the
+    # stop.
+    assert round(sheet1_width + spacers[0] + spacers[1] + issuef_width, 1) == 507.4
     assert ">Issue F<" in html
 
 
@@ -351,20 +362,28 @@ def test_tab_skips_a_stop_the_cursor_has_already_passed():
     assert round(long_width + spacer_width(long_row), 1) == 150.0
 
 
-def test_right_tabbed_segment_does_not_double_count_its_own_width():
-    # A right-tab's own segment is rendered position: absolute -- out
-    # of normal flow -- so its own text width must NOT additionally
-    # advance the cursor a second tab has to search past (cursor_pt is
-    # already set to that stop's own position when the governing tab
-    # is processed). Confirmed against a real document (PCI_Spec): a
-    # numbered-contents row's own two-digit chapter number ("10"-"14",
-    # right-aligned) is wider than a single digit's, and before this
-    # fix that extra width pushed the cursor for the *next* tab in the
-    # same row (a left tab for the chapter name) far enough to skip
-    # over its own, nearer stop entirely and land on the page-number
-    # column's stop instead -- the "chapter names overlapping/
-    # misplaced" symptom. This mirrors that row's own three-stop
-    # right/left/right ruler, with only the first segment's width
+def test_right_tabbed_segment_lands_via_an_in_flow_spacer_not_position_absolute():
+    # Regression test: PCISpec-HTMLPagedContents3.png showed the
+    # Contents list's chapter numbers not right-aligning at all in the
+    # rendered HTML, even though fix (20) (see the double-counting
+    # comment this replaces) had already made the SECOND and THIRD
+    # tabs in each row land on the correct stops. Root cause: a right/
+    # centre/decimal tab's own segment was rendered position:absolute
+    # -- removed from normal flow -- anchored via a CSS "left" relative
+    # to the <p>'s own box. Confirmed directly against Prince's own
+    # rendering of an isolated repro: a hanging-indent paragraph's
+    # negative text-indent (needed so the chapter number sits left of
+    # the chapter name's own margin) turns out to *also* shift every
+    # position:absolute descendant on the paragraph's first line by
+    # the text-indent amount -- so the number rendered nowhere near
+    # its intended stop, clustered far to the left instead. Right/
+    # centre/decimal tabs now measure their own upcoming segment's
+    # width ahead of time and render an ordinary, in-flow inline-block
+    # spacer instead (mirroring pdfdoc.py's own already-working
+    # _segment_width/_tab_target_x) -- nothing is ever removed from
+    # flow, so the text-indent quirk never applies. This mirrors the
+    # real Contents list's own three-stop right/left/right ruler, with
+    # only the first segment's width (1 vs 2 digit chapter number)
     # varying between the two rows.
     style = _style(
         1,
@@ -403,19 +422,36 @@ def test_right_tabbed_segment_does_not_double_count_its_own_width():
         0, None, style, 510.24,
     )
 
-    import re
+    assert "position:absolute" not in single_digit_row
+    assert "position:absolute" not in double_digit_row
 
-    def spans(html: str) -> list[str]:
-        return re.findall(r'style="([^"]*)"', html)
+    def checkpoints(html: str, *texts: str) -> list[float]:
+        # This row's own tab kinds, in order, are right/left/right: the
+        # first and third checkpoints are recorded AFTER their text (a
+        # right tab aligns the segment's own END to the stop), the
+        # second BEFORE its text (a left tab aligns the segment's own
+        # START to the stop) -- starting from the paragraph's own
+        # initial cursor position (left_indent + first_indent, i.e.
+        # this hanging-indent paragraph's first-line start).
+        spacers = [float(w) for w in re.findall(r"display:inline-block;width:([\d.]+)pt", html)]
+        assert len(spacers) == len(texts) == 3
+        total = (121889 - 93544) / 1000.0  # left_indent_pt + first_indent_pt for this style
+        total += spacers[0] + _approx_width(texts[0], style)
+        checkpoint1 = total
+        total += spacers[1]
+        checkpoint2 = total
+        total += _approx_width(texts[1], style) + spacers[2] + _approx_width(texts[2], style)
+        checkpoint3 = total
+        return [round(checkpoint1, 1), round(checkpoint2, 1), round(checkpoint3, 1)]
 
-    # Both rows' second (chapter-name) tab must resolve to the SAME
-    # left-tab spacer stop, and their third (page-number) tab to the
-    # SAME right-tab position -- regardless of the first segment's own
-    # (1 vs 2 digit) width.
-    assert "display:inline-block;width:8.50pt" in single_digit_row
-    assert "display:inline-block;width:8.50pt" in double_digit_row
-    assert single_digit_row.count("left:274.96pt") == 1
-    assert double_digit_row.count("left:274.96pt") == 1
+    # Both rows must land their chapter number (1 vs 2 digit) ending AT
+    # stop1, their chapter name starting AT stop2 (same left-tab spacer
+    # stop regardless of the number's own width), and their page number
+    # ending AT stop3 (same right-tab position regardless of the
+    # chapter name's own width) -- three checkpoints, identical between
+    # the two rows despite every segment's own width differing.
+    assert checkpoints(single_digit_row, "1", "History", "2") == [113.4, 121.9, 396.8]
+    assert checkpoints(double_digit_row, "10", "External Dependencies", "7") == [113.4, 121.9, 396.8]
     assert ">External Dependencies<" in double_digit_row
     assert ">7<" in double_digit_row
 
@@ -456,7 +492,7 @@ def test_left_tab_stays_in_normal_flow_and_does_not_overlap_later_rows(tmp_path)
     # The description stays in normal flow (able to wrap and
     # contribute height), not removed from it as a position: absolute
     # segment would be.
-    assert "position: relative" in html  # still set on the <p> itself, harmless without any absolute children
+    assert "position: relative" not in html  # no longer needed: no absolute-positioned children exist any more
 
 
 def test_real_multi_frame_chain_flows_text_across_frames(tmp_path):

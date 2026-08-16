@@ -698,9 +698,6 @@ class PagedHTMLConverter(HTML5Converter):
         if is_continuation:
             props.pop("text-indent", None)
             props.pop("margin-top", None)
-        # position: relative so any tab-positioned segment below (see
-        # TabMark) anchors to this <p>'s own box, not the page.
-        props["position"] = "relative"
         para_attr = css_style_attr(props)
         p_open = f'<p style="{para_attr}">' if para_attr else "<p>"
 
@@ -708,7 +705,6 @@ class PagedHTMLConverter(HTML5Converter):
         buffer: list[str] = []
         current_style = self.resolve_style([])
         tab_stops = sorted(para_style.tab_stops, key=lambda ts: ts.position) if para_style.tab_stops else []
-        tab_span_open = False
         # A tab jumps to the FIRST declared stop past the current
         # cursor position, not simply "the Nth tab uses the Nth
         # declared stop" -- confirmed against a real document
@@ -740,27 +736,37 @@ class PagedHTMLConverter(HTML5Converter):
         def append_measured(text: str) -> None:
             nonlocal cursor_pt
             buffer.append(text)
-            if not tab_span_open:
-                # A centre/right/decimal-governed segment is rendered
-                # position: absolute -- out of normal flow entirely, so
-                # (matching a browser's own layout, and pdfdoc.py's own
-                # x = the segment's own already-aligned right edge,
-                # which coincides with the stop by construction) its
-                # own text must NOT advance the cursor a second time on
-                # top of the stop position cursor_pt was already set to
-                # when the tab was processed. Confirmed against a real
-                # document (PCI_Spec): a numbered-contents row's own
-                # two-digit chapter number ("10"-"14", right-aligned)
-                # is wider than a single digit's, and adding its width
-                # here on top of its own stop pushed the cursor for the
-                # *next* tab in the same row far enough to skip over
-                # the chapter-name column's own (nearer) left stop
-                # entirely, landing it on the page-number column's
-                # right stop instead -- exactly the "chapter names
-                # overlapping/misplaced" symptom reported.
-                cursor_pt += _approx_width(text, current_style)
+            cursor_pt += _approx_width(text, current_style)
 
-        for item in items:
+        def segment_width(start_index: int, base_style) -> float:
+            # Approx width of the run of items from *start_index* up to
+            # (not including) the next TabMark or the end of the
+            # paragraph -- needed to work out where a centre/right/
+            # decimal tab's segment should *start*, since its target
+            # stop describes where the segment ends (or its middle
+            # sits), not where it begins. Mirrors pdfdoc.py's own,
+            # already-validated _segment_width exactly.
+            total = 0.0
+            style = base_style
+            for later in items[start_index:]:
+                if isinstance(later, TabMark):
+                    break
+                if isinstance(later, Run):
+                    style = self.resolve_style(later.style_slots)
+                    total += _approx_width(later.text, style)
+                elif isinstance(later, PageNumberMark):
+                    total += _approx_width(str(self._page_number), style)
+                elif isinstance(later, ChapterNumberMark):
+                    total += _approx_width(str(self._chapter_number), style)
+                elif isinstance(later, HeadingNumberMark):
+                    total += _approx_width(self._resolve_number_text(later.tag, dictionary_index), style)
+                elif isinstance(later, EmbedMark):
+                    frame = self._embed_frame_for_tag(later.embed_tag, chapter)
+                    if frame is not None:
+                        total += max(0.0, (frame.x1 - frame.x0) / UNIT)
+            return total
+
+        for idx, item in enumerate(items):
             if isinstance(item, Run):
                 style = self.resolve_style(item.style_slots)
                 if style != current_style:
@@ -779,31 +785,41 @@ class PagedHTMLConverter(HTML5Converter):
                 # nothing more than a single space -- not a jump to the
                 # style's own declared tab stop.
                 #
-                # A LEFT stop (kind 0) is rendered as an inline-block
-                # spacer of the right width, jumping the cursor forward
-                # while staying in NORMAL document flow -- confirmed
-                # against a real document (PCI_Spec): an earlier version
-                # made every tab kind position:absolute, which
-                # contributes nothing to its own paragraph's height, so
-                # a left-tabbed row whose own (often multi-line)
-                # description wrapped past one line visually overlaid
-                # every row that followed it. A centre/right/decimal
-                # stop (kind 1/2/3; decimal simplified to right,
-                # matching pdfdoc.py's own convention) still needs
-                # position: absolute plus a CSS transform, since
-                # centring/right-aligning on a point needs to know its
-                # own eventual rendered width, which isn't available
-                # without taking it out of flow -- assumed short enough
-                # in practice not to wrap (true of the right-aligned
-                # footer text this was confirmed against). Either way,
-                # the CSS "left" position is relative to the <p>'s own
-                # (margin-shifted) box, not the frame's left edge, so
-                # left_indent_pt is subtracted back out of the
-                # frame-relative stop position computed above.
+                # Every tab kind renders as an inline-block spacer,
+                # staying in NORMAL document flow throughout -- an
+                # earlier version instead made centre/right/decimal
+                # stops position:absolute (needed, it seemed, since
+                # right-aligning on a point needs to know the segment's
+                # own eventual width, not available without measuring
+                # ahead), anchored via a CSS "left" computed relative to
+                # the <p>'s own box. That broke two ways, both confirmed
+                # against a real document (PCI_Spec's numbered Contents
+                # list, which right-aligns a chapter number before a
+                # left-tabbed chapter name): (1) a hanging-indent
+                # paragraph's negative text-indent -- needed so the
+                # chapter number can sit left of the chapter name's own
+                # left margin -- turned out to *also* shift every
+                # position:absolute descendant on the paragraph's first
+                # line by the text-indent amount (confirmed directly
+                # against Prince's own rendering of an isolated repro;
+                # the CSS spec says an explicitly-positioned absolute
+                # box's containing-block edge shouldn't be affected by
+                # text-indent, but real engines evidently do this
+                # anyway), so the number rendered nowhere near its
+                # intended stop; (2) removing the number from flow
+                # entirely meant it contributed no width for the
+                # *following* left tab's spacer to measure from, which
+                # (using cursor_pt as if the number really were in flow)
+                # computed a spacer far too short, landing the chapter
+                # name right after the paragraph's own hanging-indent
+                # start rather than after the number. Measuring the
+                # upcoming segment's width ahead of time (mirroring
+                # pdfdoc.py's own already-working _segment_width/
+                # _tab_target_x) and folding it into an ordinary,
+                # in-flow spacer sidesteps both: nothing is ever removed
+                # from flow, so cursor_pt tracking stays exact and the
+                # text-indent quirk never applies.
                 flush()
-                if tab_span_open:
-                    spans.append("</span>")
-                    tab_span_open = False
                 stop_pt, kind = None, 0
                 for ts in tab_stops:
                     candidate = ts.position / UNIT
@@ -812,19 +828,20 @@ class PagedHTMLConverter(HTML5Converter):
                         break
                 if stop_pt is None:
                     stop_pt = (int(cursor_pt / 36.0) + 1) * 36.0  # half-inch default pitch
-                css_left_pt = stop_pt - left_indent_pt
                 if kind == 0:
-                    spacer_width = max(0.0, css_left_pt - (cursor_pt - left_indent_pt))
-                    if spacer_width:
-                        spans.append(f'<span style="display:inline-block;width:{spacer_width:.2f}pt"></span>')
+                    target_pt = stop_pt
                 else:
-                    transform = "translateX(-50%)" if kind == 1 else "translateX(-100%)"
-                    spans.append(
-                        f'<span style="position:absolute;left:{css_left_pt:.2f}pt;white-space:nowrap;'
-                        f'transform:{transform}">'
-                    )
-                    tab_span_open = True
-                cursor_pt = stop_pt
+                    width = segment_width(idx + 1, current_style)
+                    target_pt = stop_pt - (width / 2.0 if kind == 1 else width)  # 1=centre, 2/3=right/decimal
+                # Never move backward past the tab's own current
+                # position: a segment too wide to fit even at its own
+                # natural stop just starts immediately after the tab
+                # instead (mirrors pdfdoc.py's own _tab_target_x).
+                target_pt = max(target_pt, cursor_pt)
+                spacer_width = target_pt - cursor_pt
+                if spacer_width > 0.005:
+                    spans.append(f'<span style="display:inline-block;width:{spacer_width:.2f}pt"></span>')
+                cursor_pt = target_pt
             elif isinstance(item, PageBreakMark):
                 pass  # a real chain's forced breaks are handled by _flow_chained_story; elsewhere, no page concept to act on
             elif isinstance(item, MergeMark):
@@ -832,9 +849,10 @@ class PagedHTMLConverter(HTML5Converter):
             elif isinstance(item, EmbedMark):
                 flush()
                 spans.append(self._render_embed(item.embed_tag, chapter))
+                frame = self._embed_frame_for_tag(item.embed_tag, chapter)
+                if frame is not None:
+                    cursor_pt += max(0.0, (frame.x1 - frame.x0) / UNIT)
         flush()
-        if tab_span_open:
-            spans.append("</span>")
 
         if not spans:
             return f"{p_open}&nbsp;</p>\n"

@@ -1513,6 +1513,93 @@ riscos-impression/
   green; re-validated across all 111 real documents (both html-paged
   and html-scroll) with 0 crashes.
 
+* **Post-Stage-14 fix (22)**: PCISpec-HTMLPagedContents3.png showed
+  fix (20)'s tab-stop-selection fix hadn't actually restored right
+  alignment at all -- the Contents list's chapter numbers were still
+  clustered flush-left rather than right-aligned near the chapter
+  names, for every row, not just 10-14. Root cause, found by building
+  an isolated repro and rendering it through Prince (the paged-media
+  engine available in this environment, standing in for a real
+  browser): a centre/right/decimal tab's segment was rendered
+  `position:absolute`, anchored via a CSS `left` computed relative to
+  the `<p>`'s own box -- and a hanging-indent paragraph's own negative
+  `text-indent` (needed so the chapter number sits left of the chapter
+  name's own margin) turns out to *also* shift every
+  `position:absolute` descendant on the paragraph's first line by the
+  text-indent amount. (The CSS spec says an explicitly-positioned
+  absolute box's containing-block edge shouldn't be affected by
+  text-indent at all; Prince's own rendering of an isolated two-
+  paragraph repro -- one without text-indent, one with, both
+  containing an identically-positioned absolute span -- showed
+  otherwise: the "left" value came out shifted by exactly the
+  text-indent amount in the second case, not the first. Given the
+  underlying quirk isn't specific to any one property this project
+  controls, other engines rendering the same markup can't be assumed
+  to differ.) A second, compounding bug: because the right-tabbed
+  segment was removed from flow entirely, it contributed no width for
+  a *following* left tab's own spacer to measure from, so that spacer
+  (computed from `cursor_pt`, which assumed normal in-flow behaviour)
+  landed the chapter name right after the paragraph's own hanging-
+  indent start rather than after the (elsewhere-positioned) number.
+
+  Fixed by removing `position:absolute` from tab handling entirely:
+  every tab kind, including centre/right/decimal, now renders as an
+  ordinary, in-flow inline-block spacer. A centre/right/decimal tab
+  measures its own upcoming segment's width ahead of time (a small
+  look-ahead helper, `segment_width`, scanning `items` from just past
+  the tab up to the next `TabMark`/end) so the spacer can be sized to
+  land that segment centred on, or ending at, the stop rather than
+  starting there -- mirroring pdfdoc.py's own already-working
+  `_segment_width`/`_tab_target_x` (this project's real reference
+  for tab-stop arithmetic, since PDF's absolute coordinate model was
+  never vulnerable to this particular quirk in the first place). Since
+  nothing is ever removed from flow any more, `cursor_pt` tracking
+  stays exact throughout and the text-indent quirk never applies; the
+  `<p>`'s own `position: relative` (only ever needed to anchor the
+  now-removed absolute children) was dropped too.
+
+  While implementing this, realised `html_scrolling.py`'s tabs (a
+  plain, unaligned literal tab character, per its own docstring) had
+  been under-scoped from the start: the stated reason -- "this format
+  tracks no frame width" -- is true for `right_indent` (an inset from
+  the frame's own *right* edge, needing the real frame width to
+  resolve), but a tab stop's own declared position is an absolute
+  point offset from the paragraph's own *left* margin, needing no
+  frame width at all. Ported the same in-flow spacer/look-ahead
+  mechanism there too (a duplicated, self-contained `_approx_width`
+  plus `segment_width`, matching this project's convention of
+  independent converters) -- scrolling HTML's chapter numbers now
+  right-align the same way paged HTML's do.
+
+  Verified against the real document by rendering the regenerated
+  paged HTML through Prince to PDF and extracting text span bounding
+  boxes: chapter 1's "1" and chapter 10's "10" now both end within
+  ~1.7pt of each other (the small residual gap being this project's
+  own `_approx_width` heuristic vs. a real renderer's exact glyph
+  metrics, the same known-and-accepted imprecision every other
+  numeric validation in this project has -- not a structural
+  placement bug), and every row's chapter name now starts at the same
+  column. Also re-rendered the scrolling HTML through Prince and
+  confirmed the same visual alignment there.
+
+  Two new/rewritten regression tests (one per converter, each
+  confirmed to fail against the pre-fix code -- html_paged.py's by
+  reverting just that file and re-running, html_scrolling.py's
+  because `_approx_width` didn't exist there pre-fix at all):
+  `test_right_tabbed_segment_lands_via_an_in_flow_spacer_not_position_absolute`
+  and `test_tab_lands_on_declared_stop_via_an_in_flow_spacer`, both
+  mirroring the real Contents list's own three-stop right/left/right
+  ruler with two rows differing only in the first segment's width (1
+  vs 2 digit chapter number), checking three checkpoints -- number
+  end, name start, page-number end -- land identically regardless.
+  Three pre-existing html_paged.py tests that asserted on the old
+  `position:absolute`/`transform` CSS were rewritten to check the new
+  spacer-based output instead (their own underlying intent --
+  consistent stop landing across differently-sized labels -- was
+  unchanged, only the mechanism being asserted on). Full suite (338
+  tests) green; re-validated across all 111 real documents (both
+  html-paged and html-scroll) with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run
