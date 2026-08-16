@@ -1395,6 +1395,55 @@ riscos-impression/
   own "On Entry:"/"On Exit:" rows now use inline-block spacers, staying
   in normal flow.
 
+* **Post-Stage-14 fix (19)**: the user supplied two more reference
+  images (PCI_Spec-RealContents.png vs PCISpec-HTMLPagedContents.png)
+  showing PCI_Spec's title block ("Distribution:", "Title:", "Issue:",
+  ...) landing its own values in two visibly different columns
+  depending on the label's own length, and its numbered Contents list
+  similarly scrambled. Fixes (17)/(18) mapped "the Nth tab in a
+  paragraph" to "the Nth declared tab stop" -- correct only when a
+  style's own tab ruler never has more than one stop a single tab
+  could reasonably reach, but wrong in general: real tab stops are
+  reached by jumping to the *first declared stop past the current
+  cursor position*, not by counting how many tabs have been typed so
+  far. A style whose own ruler has several stops (the Contents list's
+  own numbered-heading style has three) means two rows with a single
+  tab each, but different amounts of text before it, can legitimately
+  land on two different stops -- exactly the "wrong tab stops" the
+  user described. `_render_items` now tracks an approximate running
+  cursor position (`cursor_pt`, via `_approx_width`, already used for
+  chain-flow height estimation) across each paragraph's own runs and
+  marks/tabs, mirroring pdfdoc.py's own `_next_tab_stop` exactly, and
+  picks the first stop the cursor hasn't already passed -- falling
+  back to the same fixed default pitch pdfdoc.py uses when a paragraph
+  has more tabs than its style declares stops for. Also fixed a
+  related, smaller bug this surfaced: the CSS `left` position for a
+  tab-positioned segment is relative to the `<p>` element's own
+  (already `margin-left`-shifted) box, not the frame's left edge, so a
+  style's own `left_indent` needed subtracting back out of each
+  computed stop position -- previously omitted, silently
+  double-counting `left_indent` for any tab-containing paragraph that
+  also had one.
+
+  Numerically cross-checked the *entire* re-converted title block and
+  Contents list against the already-validated PDF converter's own
+  output for the exact same real document: every value in the title
+  block now lands at the identical frame-relative X (212.6pt)
+  regardless of label length, and the Contents list's own chapter
+  number/name/page-number columns match PDF to within sub-point
+  rounding on every row checked. (The Contents heading's own position,
+  which the user also flagged as looking wrong, turned out to match
+  the PDF converter's own already-trusted output exactly too -- not a
+  new bug from this fix, and out of scope for it if it's wrong at all.)
+
+  Two new regression tests: the real, single-stop title-block ruler
+  (confirming per-row convergence on one stop despite very different
+  label widths) and a genuinely multi-stop synthetic ruler (confirming
+  a longer label's own cursor position skips a stop a shorter label
+  would have landed on) -- both confirmed to fail against the pre-fix
+  code before being fixed. Full suite (335 tests) green; re-validated
+  across all 111 real documents with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

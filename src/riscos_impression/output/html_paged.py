@@ -708,9 +708,25 @@ class PagedHTMLConverter(HTML5Converter):
         buffer: list[str] = []
         current_style = self.resolve_style([])
         tab_stops = sorted(para_style.tab_stops, key=lambda ts: ts.position) if para_style.tab_stops else []
-        tab_index = 0
         tab_span_open = False
-        prev_boundary_pt = 0.0
+        # A tab jumps to the FIRST declared stop past the current
+        # cursor position, not simply "the Nth tab uses the Nth
+        # declared stop" -- confirmed against a real document
+        # (PCI_Spec): a style's own tab ruler can have many closely-
+        # spaced stops (e.g. a table-column ruler shared by a whole
+        # title block), so two rows each with a single tab, but
+        # different-length labels before it, can legitimately land on
+        # two different stops. cursor_pt tracks an approximate running
+        # X position (frame-relative, i.e. measured from the left
+        # margin, matching how tab_stops' own positions and pdfdoc.py's
+        # own tab_base_x convention are both declared) via
+        # _approx_width, mirroring pdfdoc.py's own _next_tab_stop --
+        # only ever reset for a new paragraph, so a mid-paragraph
+        # line-wrap (which this converter, unlike pdfdoc.py, doesn't
+        # control or know about) isn't accounted for.
+        left_indent_pt = (para_style.left_indent or 0) / UNIT
+        first_indent_pt = (para_style.first_indent or 0) / UNIT
+        cursor_pt = left_indent_pt + first_indent_pt
 
         def flush() -> None:
             if not buffer:
@@ -721,28 +737,29 @@ class PagedHTMLConverter(HTML5Converter):
             spans.append(f'<span style="{attr}">{text}</span>' if attr else text)
             buffer.clear()
 
+        def append_measured(text: str) -> None:
+            nonlocal cursor_pt
+            buffer.append(text)
+            cursor_pt += _approx_width(text, current_style)
+
         for item in items:
             if isinstance(item, Run):
                 style = self.resolve_style(item.style_slots)
                 if style != current_style:
                     flush()
                     current_style = style
-                buffer.append(item.text)
+                append_measured(item.text)
             elif isinstance(item, PageNumberMark):
-                buffer.append(str(self._page_number))
+                append_measured(str(self._page_number))
             elif isinstance(item, ChapterNumberMark):
-                buffer.append(str(self._chapter_number))
+                append_measured(str(self._chapter_number))
             elif isinstance(item, HeadingNumberMark):
-                buffer.append(self._resolve_number_text(item.tag, dictionary_index))
+                append_measured(self._resolve_number_text(item.tag, dictionary_index))
             elif isinstance(item, TabMark):
                 # HTML collapses whitespace by default, so a literal
                 # tab character (the previous approach here) renders as
                 # nothing more than a single space -- not a jump to the
-                # style's own declared tab stop. The Nth tab in a
-                # paragraph maps to the Nth entry of the style's own
-                # tab ruler (sorted by position; falling back to a
-                # fixed default pitch, matching pdfdoc.py's own
-                # fallback, for a tab beyond the ruler's last entry).
+                # style's own declared tab stop.
                 #
                 # A LEFT stop (kind 0) is rendered as an inline-block
                 # spacer of the right width, jumping the cursor forward
@@ -760,32 +777,36 @@ class PagedHTMLConverter(HTML5Converter):
                 # own eventual rendered width, which isn't available
                 # without taking it out of flow -- assumed short enough
                 # in practice not to wrap (true of the right-aligned
-                # footer text this was confirmed against).
+                # footer text this was confirmed against). Either way,
+                # the CSS "left" position is relative to the <p>'s own
+                # (margin-shifted) box, not the frame's left edge, so
+                # left_indent_pt is subtracted back out of the
+                # frame-relative stop position computed above.
                 flush()
                 if tab_span_open:
                     spans.append("</span>")
                     tab_span_open = False
-                if tab_index < len(tab_stops):
-                    stop = tab_stops[tab_index]
-                    stop_pt = stop.position / UNIT
-                    kind = stop.kind
-                else:
-                    stop_pt = 36.0 * (tab_index + 1)  # half-inch default pitch
-                    kind = 0
-                tab_index += 1
+                stop_pt, kind = None, 0
+                for ts in tab_stops:
+                    candidate = ts.position / UNIT
+                    if candidate > cursor_pt + 0.5:
+                        stop_pt, kind = candidate, ts.kind
+                        break
+                if stop_pt is None:
+                    stop_pt = (int(cursor_pt / 36.0) + 1) * 36.0  # half-inch default pitch
+                css_left_pt = stop_pt - left_indent_pt
                 if kind == 0:
-                    spacer_width = max(0.0, stop_pt - prev_boundary_pt)
+                    spacer_width = max(0.0, css_left_pt - (cursor_pt - left_indent_pt))
                     if spacer_width:
                         spans.append(f'<span style="display:inline-block;width:{spacer_width:.2f}pt"></span>')
-                    prev_boundary_pt = stop_pt
                 else:
                     transform = "translateX(-50%)" if kind == 1 else "translateX(-100%)"
                     spans.append(
-                        f'<span style="position:absolute;left:{stop_pt:.2f}pt;white-space:nowrap;'
+                        f'<span style="position:absolute;left:{css_left_pt:.2f}pt;white-space:nowrap;'
                         f'transform:{transform}">'
                     )
                     tab_span_open = True
-                    prev_boundary_pt = stop_pt
+                cursor_pt = stop_pt
             elif isinstance(item, PageBreakMark):
                 pass  # a real chain's forced breaks are handled by _flow_chained_story; elsewhere, no page concept to act on
             elif isinstance(item, MergeMark):

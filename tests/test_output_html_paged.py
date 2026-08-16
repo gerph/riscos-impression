@@ -3,7 +3,7 @@ from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
 from riscos_impression.model.story import EmbedMark, Paragraph, Run, Story, TabMark
 from riscos_impression.model.styles import TabStop
-from riscos_impression.output.html_paged import PagedHTMLConverter
+from riscos_impression.output.html_paged import PagedHTMLConverter, _approx_width
 
 from tests.test_output_ovprodll import _picture
 from tests.test_output_base import _document, _frame, _frame_record, _header, _section, _style
@@ -271,6 +271,86 @@ def test_tab_positions_text_at_the_styles_own_tab_stop_not_a_literal_tab_charact
     assert ">Issue F<" in html
 
 
+def test_tab_jumps_to_the_first_stop_past_the_current_cursor_position():
+    # Regression test: the user reported PCI_Spec's title block
+    # ("Distribution:", "Title:", "Issue:", ...) landing its own values
+    # in two different columns depending on the label's own length, not
+    # the single, consistent column the reference document shows. The
+    # earlier fix mapped "the Nth tab in a paragraph" to "the Nth
+    # declared tab stop" -- which happened to work for a single-stop
+    # ruler (this one -- the real style's own tab ruler for these
+    # rows), but only by coincidence: "tab 0 -> stop 0" and "first stop
+    # past the cursor" agree whenever there's only one stop to choose
+    # from at all. The real bug this masked (see the sibling test
+    # below, with a genuinely multi-stop ruler) is that a tab must jump
+    # to the first declared stop *past the current cursor position*,
+    # mirroring pdfdoc.py's own _next_tab_stop, not simply consume
+    # stops in declaration order -- this test just confirms the
+    # single-stop, real-document case still lands correctly.
+    style = _style(1, font_size=192, tab_stops=(TabStop(kind=0, position=212598),))
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160), style])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    short_row = converter._render_items(
+        (Run(text="Issue:", style_slots=(1,)), TabMark(), Run(text="F", style_slots=(1,))), 0, None, style, 510.24,
+    )
+    long_row = converter._render_items(
+        (Run(text="Distribution:", style_slots=(1,)), TabMark(), Run(text="COMPANY", style_slots=(1,))),
+        0, None, style, 510.24,
+    )
+
+    # Both rows' own label width plus spacer width must land the value
+    # at the SAME declared stop (212.598pt), even though "Issue:" and
+    # "Distribution:" are very different widths.
+    import re
+
+    def spacer_width(html: str) -> float:
+        return float(re.search(r"display:inline-block;width:([\d.]+)pt", html).group(1))
+
+    landing_short = _approx_width("Issue:", style) + spacer_width(short_row)
+    landing_long = _approx_width("Distribution:", style) + spacer_width(long_row)
+    assert round(landing_short, 1) == round(landing_long, 1) == 212.6
+    assert ">F<" in short_row
+    assert ">COMPANY<" in long_row
+
+
+def test_tab_skips_a_stop_the_cursor_has_already_passed():
+    # A genuinely multi-stop ruler: a short label lands on the first
+    # stop past its own (small) cursor position, but a longer label
+    # that's already past that first stop by the time its own tab is
+    # reached skips it entirely and lands on the next one instead --
+    # the property the single-stop, real-document test above can't
+    # exercise on its own (see its own docstring): with only one
+    # declared stop, "the Nth tab uses the Nth stop" and "the first
+    # stop past the cursor" always agree by coincidence.
+    style = _style(1, font_size=160, tab_stops=(TabStop(kind=0, position=60000), TabStop(kind=0, position=150000)))
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160), style])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+
+    short_width = _approx_width("Hi", style)
+    long_width = _approx_width("A longer label that runs past 60pt", style)
+    assert short_width < 60.0 < long_width  # sanity: the fixture text actually exercises both cases
+
+    short_row = converter._render_items(
+        (Run(text="Hi", style_slots=(1,)), TabMark(), Run(text="value", style_slots=(1,))), 0, None, style, 300.0,
+    )
+    long_row = converter._render_items(
+        (
+            Run(text="A longer label that runs past 60pt", style_slots=(1,)),
+            TabMark(),
+            Run(text="value", style_slots=(1,)),
+        ),
+        0, None, style, 300.0,
+    )
+
+    import re
+
+    def spacer_width(html: str) -> float:
+        return float(re.search(r"display:inline-block;width:([\d.]+)pt", html).group(1))
+
+    assert round(short_width + spacer_width(short_row), 1) == 60.0
+    assert round(long_width + spacer_width(long_row), 1) == 150.0
+
+
 def test_left_tab_stays_in_normal_flow_and_does_not_overlap_later_rows(tmp_path):
     # Regression test: the user supplied a reference image (PCISpec-
     # HTMLPagedOverwrite.png) showing PCI_Spec's "On Entry:"/"On Exit:"
@@ -296,7 +376,13 @@ def test_left_tab_stays_in_normal_flow_and_does_not_overlap_later_rows(tmp_path)
     html = converter._render_items(items, 0, None, style, 300.0)
 
     assert "position:absolute" not in html
-    assert '<span style="display:inline-block;width:144.00pt"></span>' in html
+    # The spacer's own width accounts for "R0"'s own rendered width
+    # (not simply the declared stop position itself): a tab jumps to
+    # the first stop past the *current cursor position*, not always
+    # the same fixed distance regardless of what came before it (see
+    # test_tab_jumps_to_the_first_stop_past_the_current_cursor_position
+    # for the real-document bug this was confirmed against).
+    assert '<span style="display:inline-block;width:131.22pt"></span>' in html
     assert ">A long wrapping description<" in html
     # The description stays in normal flow (able to wrap and
     # contribute height), not removed from it as a position: absolute
