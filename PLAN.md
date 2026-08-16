@@ -128,7 +128,7 @@ riscos-impression/
 - [x] Stage 9 — Native PDF output
 - [x] Stage 10 — Scrolling HTML output
 - [x] Stage 11 — Paged-media HTML output
-- [ ] Stage 11.5 — Markdown output
+- [x] Stage 11.5 — Markdown output
 - [ ] Stage 12 — CLI and polish
 - [ ] Stage 13 (follow-up) — Real-document audit
 
@@ -405,9 +405,29 @@ riscos-impression/
   bordered frames (consistent rows/columns by position) on one page as
   a Markdown table; anything that doesn't look like a clean grid falls
   back to plain paragraphs.
-* Pictures are left as simple placeholders (e.g. `[Draw]`, matching the
+* Pictures are left as simple placeholders (e.g. `[draw]`, matching the
   other converters' own placeholder labelling) -- no inline image
   support, Markdown isn't the place for it.
+* Found and fixed one real modelling mistake while building the heading
+  heuristic: `Converter.resolve_style()`'s cascade result always
+  reports `is_body_text=True` and `paragraph_apply=False`, regardless
+  of which named style was actually applied -- both are non-cascading
+  fields, inherited from the body style by construction, so they're
+  meaningless to check on a *resolved* style. Fixed by keying the
+  heading heuristic off whether a run's own `style_slots` is non-empty
+  (a named style was applied at all) rather than those two fields, then
+  using the resolved font size for the ratio. Verified against a real
+  document (PBServer2 from examples/): all five of its real headings
+  ("Pinboard Server (v1.02)", "Introduction", "Pinboard server
+  specification", "Messages for version 1.02", "Messages summary for
+  version 1.02") are picked out correctly, at plausible relative levels.
+* Real-corpus validation (all 48 documents in examples/): 0 crashes, 0
+  errors; 43/48 documents produced at least one heading. No document in
+  this corpus has four or more bordered text/blank frames on one page
+  (confirmed by direct inspection), so the table detector is never
+  exercised by real data here -- covered instead by two synthetic
+  tests, a clean 2x2 grid that's recognised and a similar-looking but
+  misaligned one that correctly falls back to plain paragraphs.
 * Commit: *"Add best-effort Markdown output converter"*.
 
 ### Stage 12 — CLI and polish
