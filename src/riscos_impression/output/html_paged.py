@@ -563,11 +563,30 @@ class PagedHTMLConverter(HTML5Converter):
         or a PageBreakMark-delimited slice of one) will occupy at
         *width_pt* -- counting wrapped lines via _approx_width the same
         way pdfdoc.py's own line-wrapping would; see
-        _flow_items_into_containers."""
+        _flow_items_into_containers.
+
+        right_indent gets the same oversized-value fallback
+        paragraph_css_properties applies when actually rendering (see
+        its own docstring): dropped entirely rather than trusted
+        verbatim if it wouldn't leave _MIN_USABLE_WIDTH of the frame's
+        own width. Regression test: a real document (PCI_Spec from the
+        local examples/ corpus) has a table/history-list style whose
+        right_indent is authored for a much wider frame -- almost
+        exactly equal to the actual frame's own width -- collapsing
+        the *measured* width to nothing while the *rendered* CSS
+        correctly dropped it and used the frame's own full width. That
+        mismatch made every word estimate its own line, wildly
+        inflating each row's estimated height and splitting a nine-row
+        history table (which fits easily in one frame -- confirmed
+        against the PDF converter's own output, all on one page) across
+        three separate frames three pages apart, each pulling in
+        unrelated pictures from whichever frame the overflow landed on."""
         line_height = paragraph_line_height_pt(para_style)
         left_indent = (para_style.left_indent or 0) / UNIT
         right_indent = (para_style.right_indent or 0) / UNIT
         first_indent = (para_style.first_indent or 0) / UNIT
+        if right_indent and width_pt - left_indent - right_indent < _MIN_USABLE_WIDTH:
+            right_indent = 0.0
         available = max(_MIN_USABLE_WIDTH, width_pt - left_indent - right_indent)
 
         x = first_indent

@@ -1202,6 +1202,33 @@ riscos-impression/
   confirmed structurally (visible text length and `<p>` count both
   non-zero, up from empty).
 
+* **Post-Stage-14 fix (14)**: immediately after fix (13), the user
+  found the new chain flow itself misbehaving in PCI_Spec: a nine-row
+  revision-history table (0.0.1 through 0.0.9) that fits entirely on
+  one page in the PDF was split across three separate pages three
+  frames apart in paged HTML, with unrelated DrawFile pictures from
+  whichever frame the overflow landed on appearing mixed in. Traced to
+  `_estimate_slice_height_pt` not applying the same oversized-
+  right-indent fallback `paragraph_css_properties` already does when
+  actually rendering (fix (11)/(12)'s own `_MIN_USABLE_WIDTH_PT`
+  clamp): the history table's own style has a `right_indent` almost
+  exactly equal to the frame's own width (the same PCI_Spec style
+  already known from pdfdoc.py's own `test_oversized_right_indent_
+  falls_back_to_the_full_container_width`), so the *measured* width
+  collapsed to a ~10pt sliver while the *rendered* CSS correctly
+  dropped the indent and used the frame's own full width -- nearly
+  every word in the estimate wrapped onto its own line, wildly
+  inflating each row's estimated height. Fixed by applying the
+  identical fallback (drop right_indent if it would leave less than
+  `_MIN_USABLE_WIDTH` of the frame's own width) before estimating.
+  One new regression test (`_estimate_slice_height_pt` with an
+  oversized vs. a zero right_indent on the same text must produce the
+  same estimate), confirmed to fail against the pre-fix code (120pt vs
+  48pt) before being fixed. Full suite (326 tests) green; re-validated
+  across all 111 real documents with 0 crashes; PCI_Spec's history
+  table now lands entirely on one page, matching the PDF converter's
+  own output exactly.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

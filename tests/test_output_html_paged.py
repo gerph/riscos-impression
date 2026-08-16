@@ -238,6 +238,34 @@ def test_real_multi_frame_chain_flows_text_across_frames(tmp_path):
     assert not any("doesn't resolve against this chapter" in e.message for e in converter.log.entries)
 
 
+def test_estimate_slice_height_drops_an_oversized_right_indent():
+    # Regression test: a real document (PCI_Spec from the local
+    # examples/ corpus) has a history-table style whose right_indent is
+    # authored for a much wider frame -- almost exactly equal to the
+    # actual frame's own width. paragraph_css_properties already drops
+    # a right_indent that oversized when actually rendering (see its
+    # own docstring), but _estimate_slice_height_pt didn't apply the
+    # same fallback: it measured against a squeezed ~10pt sliver of
+    # width while the browser would render at the frame's own full
+    # width, so nearly every word estimated its own line. That mismatch
+    # wildly inflated the estimated height of a nine-row history table
+    # that fits easily in one frame (confirmed against the PDF
+    # converter's own output, all on one page), splitting it across
+    # three separate frames/pages instead. The estimate with an
+    # oversized right_indent must match the estimate with none at all.
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160)])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    items = (Run(text="0.0.1 25 June 1997 Initial draft released as issue one", style_slots=()),)
+
+    oversized = _style(1, font_size=160, left_indent=20000, right_indent_raw=95000)
+    normal = _style(2, font_size=160, left_indent=20000, right_indent_raw=0)
+
+    height_oversized = converter._estimate_slice_height_pt(items, oversized, 100.0, None)
+    height_normal = converter._estimate_slice_height_pt(items, normal, 100.0, None)
+
+    assert height_oversized == height_normal
+
+
 def test_export_pdf_logs_when_no_tool_is_available(tmp_path, monkeypatch):
     import riscos_impression.output.html_paged as html_paged_module
 
