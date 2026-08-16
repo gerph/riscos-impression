@@ -401,6 +401,60 @@ def _document_with_one_text_frame(*, text="Hello"):
     return document, PDFConverter
 
 
+def test_draw_box_only_draws_the_present_edges():
+    """Regression test: a real document's footer frame (PCI_Spec) has
+    only its top and bottom borders present (border0/border3), with
+    border1/border2 (left/right) both 0xFF -- but the whole frame
+    still came out with all four edges drawn, since _draw_box always
+    stroked a full rectangle whenever *any* edge was present. The
+    border0..3-to-physical-edge mapping (top/left/right/bottom) was
+    confirmed empirically against this same real document earlier in
+    this project's development."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, PDFConverter_ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(
+        x0=0, y0=0, x1=100000, y1=50000,
+        border0=1, border1=0xFF, border2=0xFF, border3=1,  # top + bottom only
+        border_colour_word=0,
+    )
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    # Top edge (y=50) and bottom edge (y=0) as horizontal line segments.
+    assert "0 50 m 100 50 l S" in content
+    assert "0 0 m 100 0 l S" in content
+    # No vertical (left/right) edge segments at all.
+    assert "0 0 m 0 50 l S" not in content
+    assert "100 0 m 100 50 l S" not in content
+    # And no full-rectangle stroke (the old, wrong behaviour).
+    assert " re S" not in content
+
+
+def test_draw_box_draws_all_four_edges_when_all_present():
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=1, border1=1, border2=1, border3=1, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    assert "0 50 m 100 50 l S" in content
+    assert "0 0 m 100 0 l S" in content
+    assert "0 0 m 0 50 l S" in content
+    assert "100 0 m 100 50 l S" in content
+
+
 def test_first_line_baseline_uses_ascent_not_full_line_height(tmp_path):
     from riscos_impression.output.pdfdoc import _ascent_pt, _fmt
 

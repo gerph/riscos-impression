@@ -1049,10 +1049,29 @@ class PDFConverter(Converter):
             self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(w)} {_fmt(h)} re f\n")
 
         if frame.has_border:
+            # Each edge is independent (0xFF = absent, anything else
+            # present; see docs/impression-documents.xml, "Frame object
+            # common layout" -- border0=top, border1=left, border2=
+            # right, border3=bottom, confirmed empirically against a
+            # real document and the user's own reading of Impression's
+            # ruler dialog), so a full rectangle stroke is wrong
+            # whenever fewer than all four are set -- confirmed against
+            # a real document (PCI_Spec's own footer frame, top+bottom
+            # only) where it drew two extra, entirely fictional side
+            # borders.
             border_colour = frame.border_colour(self.document.colours)
             self._content.append(_stroke_colour_op(border_colour))
             self._content.append(f"{_fmt(self.border_width_pt)} w\n")
-            self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(w)} {_fmt(h)} re S\n")
+            edges = []
+            if frame.border0 != 0xFF:  # top
+                edges.append(f"{_fmt(x0)} {_fmt(y1)} m {_fmt(x1)} {_fmt(y1)} l S\n")
+            if frame.border1 != 0xFF:  # left
+                edges.append(f"{_fmt(x0)} {_fmt(y0)} m {_fmt(x0)} {_fmt(y1)} l S\n")
+            if frame.border2 != 0xFF:  # right
+                edges.append(f"{_fmt(x1)} {_fmt(y0)} m {_fmt(x1)} {_fmt(y1)} l S\n")
+            if frame.border3 != 0xFF:  # bottom
+                edges.append(f"{_fmt(x0)} {_fmt(y0)} m {_fmt(x1)} {_fmt(y0)} l S\n")
+            self._content.append("".join(edges))
 
     def _boundary_clip_path(self, pict: PictureFrame, boundary) -> str:
         cx_doc = (pict.x0 + pict.x1) // 2

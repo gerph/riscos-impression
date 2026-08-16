@@ -52,6 +52,38 @@ def test_convert_produces_a_paged_page_with_positioned_frame(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_frame_border_only_emits_the_present_edges(tmp_path):
+    """Regression test: a real document's footer frame (PCI_Spec) has
+    only its top and bottom borders present, with left/right both
+    0xFF -- but the whole frame still came out with a uniform CSS
+    `border` on all four edges, since has_border only gated whether to
+    emit a border at all, not which edges. The border0..3-to-physical-
+    edge mapping (top/left/right/bottom) was confirmed empirically
+    against this same real document earlier in this project's
+    development."""
+    frame = _frame(
+        x0=10000, y0=20000, x1=60000, y1=70000, dictionary_index=0,
+        border0=1, border1=0xFF, border2=0xFF, border3=1,  # top + bottom only
+        border_colour_word=0,
+    )
+    document, _, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "border-top:" in text
+    assert "border-bottom:" in text
+    assert "border-left:" not in text
+    assert "border-right:" not in text
+    assert "border:" not in text  # the old uniform shorthand
+
+
 def test_master_linked_frame_uses_the_master_pages_own_origin(tmp_path):
     """Regression test mirroring the PDF converter's own fix: a
     master-linked frame's substituted appearance comes from the master

@@ -886,6 +886,24 @@ riscos-impression/
   diagrams, in both PDF and HTML/SVG output, that every pointer line
   now ends in a real, correctly-oriented arrowhead instead of a plain
   line end or a stray filled bar.
+* **Post-Stage-14 fix (6)**: the confirmed border0..3-to-physical-edge
+  mapping (fix (7) of Stage 9's own addenda: border0=top, border1=
+  left, border2=right, border3=bottom) had only been applied to the
+  format documentation and the *gate* for whether to draw a border at
+  all (`Frame.has_border`); the actual drawing code in both
+  `pdfdoc.py` (`_draw_box`) and `html_paged.py` (`_render_frame`)
+  still unconditionally drew/styled all four edges together whenever
+  *any* one was present. The user spotted this directly: PCI_Spec's
+  own footer frame (top and bottom borders only) still had its left
+  and right edges drawn. Fixed by checking each of
+  border0/1/2/3 != 0xFF independently: `pdfdoc.py` now draws each
+  present edge as its own line segment instead of a single full-
+  rectangle stroke; `html_paged.py` now emits the matching per-edge
+  CSS property (`border-top`/`border-left`/`border-right`/`border-
+  bottom`) instead of the uniform `border` shorthand. Re-validated
+  against all 48 real documents (PDF and paged HTML): 0 crashes.
+  Visually confirmed against PCI_Spec that the footer frame now shows
+  only its real top and bottom rules, with no fictional side borders.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a

@@ -202,8 +202,22 @@ class PagedHTMLConverter(HTML5Converter):
         if fill_css:
             styles.append(f"background-color: {fill_css}")
         if appearance.has_border:
+            # Each edge is independent (0xFF = absent; see
+            # docs/impression-documents.xml, "Frame object common
+            # layout" -- border0=top, border1=left, border2=right,
+            # border3=bottom, confirmed empirically against a real
+            # document), so a uniform `border` shorthand is wrong
+            # whenever fewer than all four are set.
             border_css = colour_to_css(appearance.border_colour(self.document.colours)) or "#000000"
-            styles.append(f"border: {self.border_width_pt:.1f}pt solid {border_css}")
+            border_spec = f"{self.border_width_pt:.1f}pt solid {border_css}"
+            if appearance.border0 != 0xFF:
+                styles.append(f"border-top: {border_spec}")
+            if appearance.border1 != 0xFF:
+                styles.append(f"border-left: {border_spec}")
+            if appearance.border2 != 0xFF:
+                styles.append(f"border-right: {border_spec}")
+            if appearance.border3 != 0xFF:
+                styles.append(f"border-bottom: {border_spec}")
         h_inset = max(0.0, appearance.hinset / UNIT)
         v_inset = max(0.0, appearance.vinset / UNIT)
         if h_inset or v_inset:
