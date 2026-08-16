@@ -1322,6 +1322,55 @@ riscos-impression/
   history table still lands entirely on one page (now for the actually
   correct reason), confirmed structurally.
 
+* **Post-Stage-14 fix (17)**: the user reported PCI_Spec's paged HTML
+  footer ("Sheet 1 / Issue F ****LIVE****") not right-aligning "Issue
+  F", and only appearing on the first two pages, then vanishing from
+  every later one. Two distinct bugs:
+
+  - `_render_text_frame`'s `_rendered_dictionary_indices` set
+    deduplicated by dictionary_index across the *whole document*, not
+    per occurrence. That's correct for a real, chapter-anchored chain
+    (now handled separately and correctly via `_chain_html`'s own
+    per-frame cache), but wrong for independently-repeated master
+    content (a running footer, whose frame_chain doesn't resolve
+    against any one chapter): a master's own furniture frame is
+    literally the same Frame object on every page that uses that
+    master, so deduplicating by dictionary_index (or even by frame
+    identity) both fail the same way -- only the very first page
+    showing that master's footer ever rendered it, every later one was
+    silently skipped. Removed the dedup entirely for this path; every
+    occurrence now renders fresh and independently, matching pdfdoc.py's
+    own already-established handling for the identical case.
+  - Tabs were emitted as a literal `&#9;` character, which HTML's
+    default whitespace handling collapses to nothing more than a
+    single space -- never a jump to the style's own declared tab
+    stop. The Nth tab in a paragraph is now positioned at the Nth
+    entry of the style's own tab ruler (sorted by position; a tab
+    beyond the ruler's last entry falls back to a fixed default
+    pitch), each its own `position: absolute` span within the
+    paragraph's own box (`position: relative`, added unconditionally)
+    -- a centre/right/decimal stop (decimal simplified to right,
+    matching pdfdoc.py's own convention) uses a CSS `transform` to
+    centre/right-align on its stop without needing to know any other
+    segment's own rendered width. Cross-checked numerically against
+    the already-validated PDF converter's own output for this exact
+    real paragraph: "Issue F ****LIVE****"'s own right edge in the PDF
+    sits at exactly 530.08pt from the frame's own left edge, precisely
+    matching the new HTML `left:530.08pt; transform:translateX(-100%)`.
+    Scrolling HTML has no frame width of its own to position an
+    absolute tab stop against (same limitation as right_indent, fix
+    (16)), so a tab there is left as a plain visual gap instead (a
+    literal tab character wrapped in `white-space: pre`, at least
+    visible now rather than fully collapsing) -- not a real fix, just
+    a smaller, honest improvement over full collapse.
+
+  Two new regression tests (multi-page independent rendering; tab
+  positioning against a real tab ruler), both confirmed to fail
+  against the pre-fix code before being fixed. Full suite (332 tests)
+  green; re-validated across all 111 real documents with 0 crashes in
+  both HTML formats; PCI_Spec's footer now appears on all 8 pages with
+  "Issue F ****LIVE****" correctly right-aligned.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

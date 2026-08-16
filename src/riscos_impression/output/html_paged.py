@@ -196,7 +196,6 @@ class PagedHTMLConverter(HTML5Converter):
     def begin_document(self) -> None:
         self._chapter_number = 0
         self._page_number = 0
-        self._rendered_dictionary_indices: set[int] = set()
         self._chain_warned: set[int] = set()
         self._dictionary_by_index = {entry.index: entry for entry in self.document.dictionary}
         self._pages_html: list[str] = []
@@ -389,9 +388,6 @@ class PagedHTMLConverter(HTML5Converter):
         if cached_chain is not None:
             return cached_chain.pop(id(frame), "")
 
-        if entry.index in self._rendered_dictionary_indices:
-            return ""
-
         story = None
         with self.catch("story", location=f"dictionary entry {entry.index}"):
             story = self.document.story(entry)
@@ -405,21 +401,31 @@ class PagedHTMLConverter(HTML5Converter):
             if chain_html is not None:
                 self._chain_html[entry.index] = chain_html
                 return chain_html.pop(id(frame), "")
-            # Not a real chain after all (e.g. independently-repeated
-            # master content whose frame_chain is anchored to the master
-            # page it's defined on, not this chapter -- see
-            # _flow_chained_story) -- fall back to the single-frame
-            # handling this converter always used before.
+            # Not a real chain after all -- e.g. independently-repeated
+            # master content (a running header/footer, say), whose
+            # frame_chain is anchored to the master page it's defined
+            # on, not this chapter (see _flow_chained_story). Every
+            # occurrence across every page/chapter that uses that
+            # master gets its own fresh, independent render below, the
+            # same as pdfdoc.py's own established handling for this
+            # case (see its own test_master_anchored_story_renders_
+            # independently_without_erroring) -- deduplicating by
+            # dictionary_index here once left a real document's own
+            # running footer showing on only the very first page it
+            # appeared on, then disappearing from every later one,
+            # since a master's own furniture frame is literally the
+            # same object on every page that uses that master, and
+            # deduplicating by *frame* identity would have failed the
+            # exact same way.
             if entry.index not in self._chain_warned:
                 self._chain_warned.add(entry.index)
                 self.log.best_effort(
                     "story",
                     "story's frame_chain doesn't resolve against this chapter's own "
-                    "pages; rendered fresh in this one frame only, not flowed",
+                    "pages; rendered fresh in every occurrence's own frame, not flowed",
                     location=f"dictionary entry {entry.index}",
                 )
 
-        self._rendered_dictionary_indices.add(entry.index)
         return self._render_story(story, entry.index, chapter, content_width_pt)
 
     # -- Multi-frame chain flow -------------------------------------------
@@ -692,12 +698,18 @@ class PagedHTMLConverter(HTML5Converter):
         if is_continuation:
             props.pop("text-indent", None)
             props.pop("margin-top", None)
+        # position: relative so any tab-positioned segment below (see
+        # TabMark) anchors to this <p>'s own box, not the page.
+        props["position"] = "relative"
         para_attr = css_style_attr(props)
         p_open = f'<p style="{para_attr}">' if para_attr else "<p>"
 
         spans: list[str] = []
         buffer: list[str] = []
         current_style = self.resolve_style([])
+        tab_stops = sorted(para_style.tab_stops, key=lambda ts: ts.position) if para_style.tab_stops else []
+        tab_index = 0
+        tab_span_open = False
 
         def flush() -> None:
             if not buffer:
@@ -722,8 +734,40 @@ class PagedHTMLConverter(HTML5Converter):
             elif isinstance(item, HeadingNumberMark):
                 buffer.append(self._resolve_number_text(item.tag, dictionary_index))
             elif isinstance(item, TabMark):
+                # HTML collapses whitespace by default, so a literal
+                # tab character (the previous approach here) renders as
+                # nothing more than a single space -- not a jump to the
+                # style's own declared tab stop. The Nth tab in a
+                # paragraph is positioned at the Nth entry of the
+                # style's own tab ruler (sorted by position; falling
+                # back to a fixed default pitch, matching pdfdoc.py's
+                # own fallback, for a tab beyond the ruler's last
+                # entry), each segment absolutely positioned within the
+                # paragraph's own box (position: relative, set above)
+                # so it doesn't need to know any other segment's own
+                # rendered width -- a centre/right/decimal tab (kind
+                # 1/2/3; decimal simplified to right, matching
+                # pdfdoc.py's own convention) is centred/right-aligned
+                # on its stop via a CSS transform, which needs no
+                # width measurement of its own either.
                 flush()
-                spans.append("&#9;")
+                if tab_span_open:
+                    spans.append("</span>")
+                if tab_index < len(tab_stops):
+                    stop = tab_stops[tab_index]
+                    stop_pt = stop.position / UNIT
+                    kind = stop.kind
+                else:
+                    stop_pt = 36.0 * (tab_index + 1)  # half-inch default pitch
+                    kind = 0
+                tab_index += 1
+                tab_style = [f"position:absolute", f"left:{stop_pt:.2f}pt", "white-space:nowrap"]
+                if kind == 1:
+                    tab_style.append("transform:translateX(-50%)")
+                elif kind in (2, 3):
+                    tab_style.append("transform:translateX(-100%)")
+                spans.append(f'<span style="{";".join(tab_style)}">')
+                tab_span_open = True
             elif isinstance(item, PageBreakMark):
                 pass  # a real chain's forced breaks are handled by _flow_chained_story; elsewhere, no page concept to act on
             elif isinstance(item, MergeMark):
@@ -732,6 +776,8 @@ class PagedHTMLConverter(HTML5Converter):
                 flush()
                 spans.append(self._render_embed(item.embed_tag, chapter))
         flush()
+        if tab_span_open:
+            spans.append("</span>")
 
         if not spans:
             return f"{p_open}&nbsp;</p>\n"

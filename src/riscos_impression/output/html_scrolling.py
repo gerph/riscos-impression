@@ -190,8 +190,18 @@ class ScrollingHTMLConverter(HTML5Converter):
             elif isinstance(item, HeadingNumberMark):
                 buffer.append(self._resolve_number_text(item.tag, dictionary_index))
             elif isinstance(item, TabMark):
+                # Unlike html_paged.py, this converter has no frame
+                # width of its own to position an absolute tab stop
+                # against (see the module docstring's own note on
+                # right_indent for the same underlying limitation), so
+                # a tab can only ever be a plain visual gap here, not a
+                # real jump to the style's own declared stop. A literal
+                # tab character would otherwise collapse to nothing
+                # under HTML's default whitespace handling; wrapping it
+                # in white-space: pre preserves the browser's own
+                # (unaligned, but at least visible) default tab width.
                 flush()
-                spans.append("&#9;")
+                spans.append('<span style="white-space:pre">\t</span>')
             elif isinstance(item, PageBreakMark):
                 pass  # no page concept in a scrolling document
             elif isinstance(item, MergeMark):

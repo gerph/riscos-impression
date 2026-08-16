@@ -1,7 +1,8 @@
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import EmbedMark, Paragraph, Run, Story
+from riscos_impression.model.story import EmbedMark, Paragraph, Run, Story, TabMark
+from riscos_impression.model.styles import TabStop
 from riscos_impression.output.html_paged import PagedHTMLConverter
 
 from tests.test_output_ovprodll import _picture
@@ -183,6 +184,91 @@ def test_unresolvable_frame_chain_falls_back_to_single_frame_and_logs_once(tmp_p
 
     assert "Body" in text
     assert sum(1 for e in converter.log.entries if "doesn't resolve against this chapter" in e.message) == 1
+
+
+def test_independently_repeated_master_content_renders_on_every_page(tmp_path):
+    # Regression test: the user reported a real document's own running
+    # footer (PCI_Spec, "Sheet 1 / Issue F ****LIVE****") appeared on
+    # only the first couple of pages, then vanished from every later
+    # one. A master-linked frame is literally the same Frame object on
+    # every page that uses that master, but the text it carries (not a
+    # real, chapter-anchored chain -- its frame_chain doesn't resolve;
+    # see _flow_chained_story) must render fresh, independently, in
+    # every page's own occurrence -- deduplicating by dictionary_index
+    # (the previous behaviour) left only the very first page with the
+    # footer at all, matching how pdfdoc.py already treats this same
+    # case (see its own test_master_anchored_story_renders_
+    # independently_without_erroring).
+    body = _style(0, is_body_text=True, font_size=160)
+    frame1 = _frame(x0=0, y0=0, x1=100000, y1=20000, dictionary_index=0)
+    frame2 = _frame(x0=0, y0=0, x1=100000, y1=20000, dictionary_index=0)
+    page1 = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame1),),
+    )
+    page2 = PageGroup(
+        page=Page(x0=0, y0=150000, x1=100000, y1=300000, bleed=0, master_page_name=""),
+        offset=2000,
+        records=(_frame_record(2008, frame2),),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page1, page2)
+    )
+    document = _document(chapters=[chapter], master_pages=[master_page], styles=[body], header=header)
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    # frame_chain=(824,) doesn't resolve to any real frame record here
+    # (matching independently-repeated master content).
+    story = Story(frame_chain=(824,), paragraphs=(Paragraph(items=(Run(text="Footer", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert text.count("Footer") == 2
+
+
+def test_tab_positions_text_at_the_styles_own_tab_stop_not_a_literal_tab_character():
+    # Regression test: the user reported a real document's own footer
+    # ("Sheet 1" / "Issue F ****LIVE****", tab-separated) not
+    # right-aligning "Issue F" -- a literal tab character collapses to
+    # nothing under HTML's default whitespace handling, so the browser
+    # never actually jumped to the style's own declared right tab
+    # stop. The Nth tab in a paragraph is now positioned at the Nth
+    # entry of the style's own tab ruler instead, each its own
+    # absolutely-positioned span within the paragraph's own box
+    # (centred/right-aligned on its stop via a CSS transform, needing
+    # no width measurement of its own).
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160)])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    style = _style(
+        1, font_size=160,
+        tab_stops=(TabStop(kind=1, position=255120), TabStop(kind=2, position=507400)),
+    )
+    items = (
+        Run(text="Sheet 1", style_slots=()),
+        TabMark(),
+        TabMark(),
+        Run(text="Issue F", style_slots=()),
+    )
+
+    html = converter._render_items(items, 0, None, style, 510.24)
+
+    assert "Sheet 1" in html
+    assert (
+        '<span style="position:absolute;left:255.12pt;white-space:nowrap;'
+        'transform:translateX(-50%)"></span>' in html
+    )
+    assert 'left:507.40pt;white-space:nowrap;transform:translateX(-100%)' in html
+    assert ">Issue F<" in html
 
 
 def test_real_multi_frame_chain_flows_text_across_frames(tmp_path):
