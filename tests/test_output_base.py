@@ -23,6 +23,7 @@ def _style(index, is_body_text=False, **overrides):
         is_index_entry_style=False,
         is_effect=False,
         shows_on_style_menu=False,
+        text_back_colour=False,
         tabs=0,
     )
     fields.update(overrides)
@@ -165,7 +166,7 @@ def test_resolve_frame_chain_single_file_mode():
 
     story = Story(frame_chain=(1008 - 900,), paragraphs=())
     frames = converter.resolve_frame_chain(story, chapter=chapter)
-    assert frames == [frame]
+    assert [r.value for r in frames] == [frame]
 
 
 def test_resolve_frame_chain_directory_mode_adjusts_by_chapter_offset():
@@ -184,7 +185,7 @@ def test_resolve_frame_chain_directory_mode_adjusts_by_chapter_offset():
     # record (offset=900), so 1008 - 900 = 108 is what's stored on disk.
     story = Story(frame_chain=(108,), paragraphs=())
     frames = converter.resolve_frame_chain(story, chapter=chapter)
-    assert frames == [frame]
+    assert [r.value for r in frames] == [frame]
 
 
 def test_resolve_frame_chain_unresolved_offset_is_logged_not_raised():
@@ -218,7 +219,7 @@ def test_resolve_frame_chain_master_pages():
     converter = Converter(_document(master_pages=[master_page], header=header))
     story = Story(frame_chain=(108 - 50,), paragraphs=())
     frames = converter.resolve_frame_chain(story, master=True)
-    assert frames == [frame]
+    assert [r.value for r in frames] == [frame]
 
 
 def test_default_convert_walk_calls_hooks_in_order(tmp_path):

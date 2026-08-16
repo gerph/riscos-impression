@@ -90,6 +90,11 @@ class Style:
     is_index_entry_style: bool
     is_effect: bool
     shows_on_style_menu: bool
+    #: flags1 bit 23. Gates whether background_colour() actually resolves
+    #: a colour, independently of whether textcolour2 (which only gates
+    #: the colour word's presence) is set; see the module docstring and
+    #: docs/impression-documents.xml's note on this field.
+    text_back_colour: bool
     tabs: int
 
     # One-byte fields, in on-disk order.
@@ -183,7 +188,7 @@ class Style:
     def background_colour(self, colours: Sequence[Colour]) -> Optional[Colour]:
         if self.background_colour_word is None:
             return None
-        if self.is_effect:
+        if self.is_effect or not self.text_back_colour:
             return None  # effect styles can't set a background colour
         return decode_colour_word(self.background_colour_word, colours)
 
@@ -221,6 +226,7 @@ def _decode_style_body(data: bytes, offset: int, index: int, is_body_text: bool)
     tabs = header["tabs"]
     is_effect = binary.bit(flags1, 28)
     shows_on_style_menu = binary.bit(flags1, 30)
+    text_back_colour = binary.bit(flags1, 23)
 
     def present1(bit: int) -> bool:
         return binary.bit(flags1, bit) or is_body_text
@@ -359,6 +365,7 @@ def _decode_style_body(data: bytes, offset: int, index: int, is_body_text: bool)
         is_index_entry_style=header["is_index_entry_style"],
         is_effect=is_effect,
         shows_on_style_menu=shows_on_style_menu,
+        text_back_colour=text_back_colour,
         tabs=tabs,
         auto_indent=auto_indent,
         font_name_selector0=font_name_selector0,

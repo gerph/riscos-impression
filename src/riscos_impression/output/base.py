@@ -61,6 +61,7 @@ _NON_CASCADING_STYLE_FIELDS = frozenset(
         "is_index_entry_style",
         "is_effect",
         "shows_on_style_menu",
+        "text_back_colour",
         "tabs",
         "tab_stops",
         "unknown",
@@ -139,10 +140,12 @@ class Converter:
 
     def resolve_frame_chain(
         self, story: Story, *, chapter: Optional[Chapter] = None, master: bool = False
-    ) -> list[Frame]:
+    ) -> list[ObjectRecord]:
         """Resolve a Story's frame_chain (raw byte offsets; see
-        model.story.Story) to the actual Frame objects they reference, in
-        story order.
+        model.story.Story) to the actual object records they reference,
+        in story order (records rather than bare Frame values, since a
+        record's offset is usually what a caller needs next -- to build
+        a DDL-style identifier, for example).
 
         A raw offset is never docdata-absolute by itself: the
         conversion source resolves it as masterpages1 + offset (for a
@@ -169,16 +172,16 @@ class Converter:
                 chapter.offset if self.document.source.directory_mode else header.mainpages2
             )
 
-        frames = []
+        records = []
         for raw_offset in story.frame_chain:
             record = index.get(raw_offset + adjustment)
             if record is not None and isinstance(record.value, Frame):
-                frames.append(record.value)
+                records.append(record)
             else:
                 self.log.error(
                     "story", f"frame chain offset {raw_offset} did not resolve to a frame"
                 )
-        return frames
+        return records
 
     # -- Default chapter/page/frame walk -----------------------------------
 
