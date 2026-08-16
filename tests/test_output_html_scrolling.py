@@ -6,6 +6,7 @@ from riscos_impression.output.html_scrolling import ScrollingHTMLConverter
 
 from tests.test_output_ovprodll import _picture
 from tests.test_output_base import _document, _frame, _frame_record, _header, _section, _style
+from tests.fixtures.drawfile_builders import build_drawfile, build_path, close_line, end_path, line, move
 
 
 def _document_with_frames(records, *, styles=None):
@@ -66,12 +67,12 @@ def test_repeated_dictionary_index_renders_once(tmp_path):
     assert text.count("Once") == 1
 
 
-def test_picture_frame_renders_placeholder_image(tmp_path):
+def test_non_drawfile_picture_frame_renders_placeholder_image(tmp_path):
     picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
     document, _ = _document_with_frames([_frame_record(1008, picture)])
     dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
     document.dictionary.append(dict_entry)
-    document.picture_bytes = lambda entry: b"Draw" + b"\x00" * 40  # a minimal, valid-enough DrawFile header
+    document.picture_bytes = lambda entry: b"NOPE" + b"\x00" * 40  # not a DrawFile, not a sprite either
 
     converter = ScrollingHTMLConverter(document)
     out = tmp_path / "out.html"
@@ -80,6 +81,26 @@ def test_picture_frame_renders_placeholder_image(tmp_path):
 
     assert "<img src=\"data:image/svg+xml;base64," in text
     assert any(e.area == "picture" for e in converter.log.entries)
+
+
+def test_drawfile_picture_frame_renders_as_real_svg_content(tmp_path):
+    picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
+    document, _ = _document_with_frames([_frame_record(1008, picture)])
+    dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.append(dict_entry)
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "<svg " in text
+    assert "<path " in text
+    assert "<img" not in text
+    assert not converter.log.has_errors()
 
 
 def test_merge_and_chapter_number_marks(tmp_path):

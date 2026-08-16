@@ -37,12 +37,21 @@ ConversionLog rather than guessed at silently:
   starts its own content higher up than the earlier member's bottom
   edge. Only running out of frames in the chain entirely -- text that
   still doesn't fit anywhere -- is logged and clipped.
-* DrawFile and Sprite pictures are drawn as a labelled placeholder box
-  (this package's decoders for both are stub bounding-box readers, see
-  formats/drawfile.py and formats/sprite.py; there's no pixel or
-  vector data available to actually rasterise). ArtWorks pictures are
-  a full stub (formats/artworks.py) and always render as a
-  placeholder. EPS pictures also render as a placeholder box, but with
+* DrawFile pictures are rendered as real PDF vector content (paths --
+  fill/stroke colour, width, winding rule -- and single-line text, via
+  formats/drawfile.py's object decoder), mapping the DrawFile's own
+  bounding box on to the target frame's box. Dash patterns and precise
+  cap/join styles are parsed but not honoured (lines render solid with
+  default caps/joins); a Sprite object embedded *within* a DrawFile,
+  and any other undecoded object type (text area, options, transformed
+  text/sprite), still falls back to a labelled placeholder box for just
+  that object, logged once per picture. A picture that isn't a valid
+  DrawFile at all -- Sprite pictures, and anything else -- still
+  renders as a labelled placeholder box (formats/sprite.py is a stub
+  bounding-box reader only; there's no pixel data available to
+  rasterise). ArtWorks pictures are a full stub (formats/artworks.py)
+  and always render as a placeholder. EPS pictures also render as a
+  placeholder box, but with
   their raw PostScript content attached to the page as an embedded
   file annotation -- PDF has no reliable native mechanism to render
   arbitrary embedded EPS/PostScript (the legacy "PS XObject" facility
@@ -76,7 +85,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
-from riscos_impression.formats.drawfile import DrawFile
+from riscos_impression.formats.drawfile import (
+    DrawFile,
+    DrawGroup,
+    DrawPath,
+    DrawPathOpCode,
+    DrawSprite,
+    DrawTagged,
+    DrawText,
+    colour_rgb,
+)
 from riscos_impression.formats.eps import EPSObject
 from riscos_impression.formats.sprite import SpriteArea
 from riscos_impression.log import ConversionLog
@@ -109,6 +127,9 @@ from riscos_impression.output.base import Converter
 
 #: Millipoints per PDF point; see the module docstring.
 UNIT = 1000.0
+
+#: Draw units (1/256 OS unit, itself 1/180 inch) to PDF points.
+_DRAW_UNIT_TO_PT = 72.0 / (180.0 * 256.0)
 
 _DEFAULT_FONT_SIZE_16THS = 160  # 10pt, used when a style carries no font_size at all.
 
@@ -226,16 +247,13 @@ def _base_family(font_style_name: Optional[str]) -> str:
     return "Helvetica"
 
 
-def choose_standard_font(style: Style) -> str:
-    """Best-effort mapping from a resolved style's RISC OS font name
-    (plus its bold/italic override flags) to one of the 14 standard PDF
-    fonts; see the module docstring."""
-    family = _base_family(style.font_style_name)
+def _standard_font_for(font_style_name: Optional[str], bold: bool, italic: bool) -> str:
+    family = _base_family(font_style_name)
     if family in ("Symbol", "ZapfDingbats"):
         return family
-    name = (style.font_style_name or "").lower()
-    is_bold = bool(style.bold) or "bold" in name
-    is_italic = bool(style.italic) or "italic" in name or "oblique" in name
+    name = (font_style_name or "").lower()
+    is_bold = bold or "bold" in name
+    is_italic = italic or "italic" in name or "oblique" in name
     if family == "Times":
         if is_bold and is_italic:
             return "Times-BoldItalic"
@@ -251,6 +269,13 @@ def choose_standard_font(style: Style) -> str:
         (True, True): "-BoldOblique",
     }[(is_bold, is_italic)]
     return family + suffix
+
+
+def choose_standard_font(style: Style) -> str:
+    """Best-effort mapping from a resolved style's RISC OS font name
+    (plus its bold/italic override flags) to one of the 14 standard PDF
+    fonts; see the module docstring."""
+    return _standard_font_for(style.font_style_name, bool(style.bold), bool(style.italic))
 
 
 def _approx_width(text: str, style: Style) -> float:
@@ -313,6 +338,15 @@ def _stroke_colour_op(colour: Optional[Colour]) -> str:
         return f"{_fmt(c)} {_fmt(m)} {_fmt(y)} {_fmt(k)} K\n"
     r, g, b = _to_rgb(colour)
     return f"{_fmt(r)} {_fmt(g)} {_fmt(b)} RG\n"
+
+
+def _draw_rgb_op(word: int, stroke: bool) -> str:
+    """A `rg`/`RG` operator for a raw Draw palette word (see
+    formats/drawfile.py's colour_rgb) -- DrawFile colours are always
+    plain RGB, unlike the document's own colour table."""
+    r, g, b = colour_rgb(word)
+    op = "RG" if stroke else "rg"
+    return f"{_fmt(r / 255)} {_fmt(g / 255)} {_fmt(b / 255)} {op}\n"
 
 
 # ---------------------------------------------------------------------------
@@ -783,12 +817,7 @@ class PDFConverter(Converter):
         if kind is EmbeddedObjectType.DRAW:
             draw = DrawFile.from_bytes(data)
             if draw is not None:
-                self._draw_placeholder(x0, y0, x1, y1, "Draw")
-                self.log.best_effort(
-                    "picture",
-                    "DrawFile picture rendered as a placeholder box; vector "
-                    "content is not decoded by this converter",
-                )
+                self._draw_drawfile_picture(draw, x0, y0, x1, y1)
                 return
             sprite = SpriteArea.from_bytes(data)
             self._draw_placeholder(x0, y0, x1, y1, "Sprite")
@@ -815,6 +844,122 @@ class PDFConverter(Converter):
         self._draw_placeholder(x0, y0, x1, y1, label)
         self.log.best_effort(
             "picture", f"{label} picture rendered as a placeholder box; not decoded by this converter"
+        )
+
+    # -- DrawFile pictures -----------------------------------------------------
+
+    def _draw_drawfile_picture(self, draw: DrawFile, x0: float, y0: float, x1: float, y1: float) -> None:
+        """Render a decoded DrawFile's objects directly as PDF vector
+        content, mapping its own declared bounding box onto the target
+        frame's box (stretch to fit, matching how a Sprite object fills
+        its own bounding box per the DrawFile format itself). See the
+        module docstring for what's approximated (dash patterns, caps/
+        joins) versus what's a genuine placeholder (Sprite objects
+        embedded within the file, and any other undecoded object type)."""
+        bounds = draw.bounds
+        sx = (x1 - x0) / bounds.width if bounds.width else 1.0
+        sy = (y1 - y0) / bounds.height if bounds.height else 1.0
+
+        def to_pt(dx: int, dy: int) -> tuple[float, float]:
+            return x0 + (dx - bounds.x0) * sx, y0 + (dy - bounds.y0) * sy
+
+        self._content.append("q\n")
+        self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(x1 - x0)} {_fmt(y1 - y0)} re W n\n")
+        notes: list[str] = []
+        for obj in draw.objects:
+            self._draw_drawfile_object(obj, draw.fonts, to_pt, (sx, sy), notes)
+        self._content.append("Q\n")
+        for note in dict.fromkeys(notes):  # de-duplicate, keep first-seen order
+            self.log.best_effort("picture", note)
+
+    def _draw_drawfile_object(self, obj, fonts: dict, to_pt, scale: tuple[float, float], notes: list[str]) -> None:
+        if isinstance(obj, DrawPath):
+            self._draw_drawfile_path(obj, to_pt, scale)
+            if obj.dashed:
+                notes.append("dashed DrawFile path lines are rendered solid; dash patterns are not reproduced")
+        elif isinstance(obj, DrawText):
+            self._draw_drawfile_text(obj, fonts, to_pt, scale)
+        elif isinstance(obj, DrawGroup):
+            for child in obj.objects:
+                self._draw_drawfile_object(child, fonts, to_pt, scale, notes)
+        elif isinstance(obj, DrawTagged):
+            if obj.inner is not None:
+                self._draw_drawfile_object(obj.inner, fonts, to_pt, scale, notes)
+        elif isinstance(obj, DrawSprite):
+            sx0, sy0 = to_pt(obj.bounds.x0, obj.bounds.y0)
+            sx1, sy1 = to_pt(obj.bounds.x1, obj.bounds.y1)
+            self._draw_placeholder(min(sx0, sx1), min(sy0, sy1), max(sx0, sx1), max(sy0, sy1), "Sprite")
+            notes.append(
+                "a Sprite object embedded within a DrawFile picture is drawn as a "
+                "placeholder box; pixel data is not decoded"
+            )
+        else:  # DrawUnknown -- text area, options, transformed text/sprite, or unrecognised
+            notes.append(
+                "one or more DrawFile object types (e.g. text area, options, transformed "
+                "text/sprite) within a picture were not decoded and are omitted"
+            )
+
+    def _draw_drawfile_path(self, path: DrawPath, to_pt, scale: tuple[float, float]) -> None:
+        has_fill = path.fill_colour is not None
+        has_stroke = path.stroke_colour is not None
+        if (not has_fill and not has_stroke) or not path.ops:
+            return
+
+        path_parts = []
+        for op in path.ops:
+            if op.code in (DrawPathOpCode.MOVE, DrawPathOpCode.MOVE_INTERNAL, DrawPathOpCode.GAP):
+                x, y = to_pt(op.x, op.y)
+                path_parts.append(f"{_fmt(x)} {_fmt(y)} m\n")
+            elif op.code is DrawPathOpCode.LINE:
+                x, y = to_pt(op.x, op.y)
+                path_parts.append(f"{_fmt(x)} {_fmt(y)} l\n")
+            elif op.code is DrawPathOpCode.CURVE:
+                cx1, cy1 = to_pt(op.cx1, op.cy1)
+                cx2, cy2 = to_pt(op.cx2, op.cy2)
+                ex, ey = to_pt(op.x, op.y)
+                path_parts.append(f"{_fmt(cx1)} {_fmt(cy1)} {_fmt(cx2)} {_fmt(cy2)} {_fmt(ex)} {_fmt(ey)} c\n")
+            elif op.code is DrawPathOpCode.CLOSE_LINE:
+                path_parts.append("h\n")
+            # CLOSE_GAP: no direct PDF equivalent needed -- the next MOVE/GAP
+            # starts a fresh subpath anyway.
+        if not path_parts:
+            return
+
+        style_parts = []
+        if has_fill:
+            style_parts.append(_draw_rgb_op(path.fill_colour, stroke=False))
+        if has_stroke:
+            style_parts.append(_draw_rgb_op(path.stroke_colour, stroke=True))
+            line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
+            width_pt = path.line_width * _DRAW_UNIT_TO_PT * line_scale if path.line_width else 0.3
+            style_parts.append(f"{_fmt(max(0.1, width_pt))} w\n")
+
+        op_code = {(True, True): "B", (True, False): "f", (False, True): "S"}[(has_fill, has_stroke)]
+        if has_fill and path.even_odd:
+            op_code += "*"
+
+        self._content.append("".join(style_parts) + "".join(path_parts) + f"{op_code}\n")
+
+    def _draw_drawfile_text(self, text: DrawText, fonts: dict, to_pt, scale: tuple[float, float]) -> None:
+        if not text.text.strip() or text.size_y <= 0:
+            return
+        sx, sy = scale
+        size_pt = (text.size_y / 640.0) * abs(sy)
+        if size_pt <= 0.01:
+            return
+        # The DrawFile's own x/y font-size ratio, composed with the
+        # picture's own (possibly non-uniform) sx/sy scale, becomes a
+        # single PDF horizontal-scaling percentage (Tz) -- always set
+        # explicitly, never left to inherit from a previous text run,
+        # since Tz is graphics-state and would otherwise leak into
+        # whatever text is drawn next within this picture's own q/Q.
+        hscale_pct = 100.0 * (text.size_x * sx) / (text.size_y * sy) if sy else 100.0
+        pdf_font = _standard_font_for(fonts.get(text.font_number), bold=False, italic=False)
+        x, y = to_pt(text.baseline_x, text.baseline_y)
+        colour_op = _draw_rgb_op(text.colour, stroke=False) if text.colour is not None else "0 0 0 rg\n"
+        self._content.append(
+            f"{colour_op}BT {_fmt(hscale_pct)} Tz /{self._font_resource_name[pdf_font]} {_fmt(size_pt)} Tf "
+            f"{_fmt(x)} {_fmt(y)} Td {_pdf_str(text.text)} Tj ET\n"
         )
 
     def _draw_placeholder(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:

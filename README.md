@@ -30,9 +30,10 @@ can then render that model to:
   from relative font size and (when a page's bordered frames form a clean
   grid) simple tables.
 
-Embedded `DrawFile`, `Sprite`, and `ArtWorks` pictures are decoded on a
-best-effort basis (see `src/riscos_impression/formats/`); anything not fully
-supported is logged, not silently dropped or fatal.
+Embedded `DrawFile` pictures are decoded and rendered as real vector content
+(paths and text) in the PDF and HTML outputs; `Sprite` and `ArtWorks` pictures
+render as a labelled placeholder box (see `src/riscos_impression/formats/`).
+Anything not fully supported is logged, not silently dropped or fatal.
 
 See [`PLAN.md`](PLAN.md) for the staged build plan and current progress.
 
@@ -71,9 +72,10 @@ riscos-impression convert MyDocument --format pdf -o MyDocument.pdf
 
 ## Status
 
-Stages 0-12 of [`PLAN.md`](PLAN.md) are complete: the decoder, all five
-output converters, and this CLI. Stage 13 (auditing `examples/` for a
-sanitised, committable test-fixture subset) is an open follow-up.
+Stages 0-12 and 14 of [`PLAN.md`](PLAN.md) are complete: the decoder, all
+five output converters, this CLI, and real DrawFile picture rendering.
+Stage 13 (auditing `examples/` for a sanitised, committable test-fixture
+subset) is an open follow-up.
 
 ## Development
 

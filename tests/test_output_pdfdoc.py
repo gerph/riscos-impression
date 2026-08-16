@@ -20,6 +20,18 @@ from riscos_impression.output.pdfdoc import (
 
 # Reuse the test helpers already established for the OvProDDL converter's tests.
 from tests.test_output_ovprodll import _picture
+from tests.fixtures.drawfile_builders import (
+    build_drawfile,
+    build_font_table,
+    build_group,
+    build_path,
+    build_sprite,
+    build_text,
+    close_line,
+    end_path,
+    line,
+    move,
+)
 from tests.test_output_base import _document, _frame, _frame_record, _header, _section, _style
 
 
@@ -573,11 +585,9 @@ def test_master_furniture_is_rebased_onto_the_content_page(tmp_path):
     assert not converter.log.has_errors()
 
 
-def test_picture_frame_renders_a_placeholder_and_logs_best_effort(tmp_path):
-    from riscos_impression.output.pdfdoc import PDFConverter
-
+def _picture_document(picture_bytes: bytes, *, x0=0, y0=0, x1=100000, y1=100000):
     document, _unused = _document_with_one_text_frame()
-    picture = _picture(x0=0, y0=0, x1=100000, y1=100000, dictionary_index=1)
+    picture = _picture(x0=x0, y0=y0, x1=x1, y1=y1, dictionary_index=1)
     page = PageGroup(
         page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
         offset=1000,
@@ -597,10 +607,102 @@ def test_picture_frame_renders_a_placeholder_and_logs_best_effort(tmp_path):
     document.header = header
     dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
     document.dictionary.append(dict_entry)
-    document.picture_bytes = lambda entry: b"Draw" + b"\x00" * 40  # a minimal, valid-enough DrawFile header
+    document.picture_bytes = lambda entry: picture_bytes
+    return document
+
+
+def test_picture_frame_with_an_empty_drawfile_renders_cleanly(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    # A valid header with no object stream at all -- a legitimately empty
+    # drawing, not a decoding failure, so nothing should be logged either.
+    document = _picture_document(b"Draw" + b"\x00" * 40)
 
     converter = PDFConverter(document)
     out = tmp_path / "out.pdf"
     converter.convert(out)
 
-    assert any(e.area == "picture" for e in converter.log.entries)
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_path_renders_as_real_vector_fill_content(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(2560, 0) + line(2560, 2560) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 2560, 2560), fill_colour=0x0000FF00)  # red fill (&BBGGRR00: R=0xFF)
+    document = _picture_document(build_drawfile(path, bounds=(0, 0, 2560, 2560)))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"\nf\n" in data  # a real fill paint operator, not the placeholder's stroked box
+    assert b"(\\[Draw\\])" not in data  # the old placeholder's label text
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_sub_object_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000)))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"([Sprite])" in data
+    assert any("Sprite object embedded within a DrawFile" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_text_object_renders_using_the_font_tables_own_name(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    fonts = build_font_table({1: "Trinity.Bold"})
+    text = build_text(text="Hello", font_number=1, baseline_x=100, baseline_y=100)
+    document = _picture_document(build_drawfile(fonts + text, bounds=(0, 0, 1000, 1000)))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Hello) Tj" in data
+    # "Trinity" maps to the Times family, and the font table marks this one bold.
+    assert b"/BaseFont /Times-Bold" in data
+
+
+def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(2560, 0) + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 2560, 100), stroke_colour=0x000000FF, dashed=True)
+    document = _picture_document(build_drawfile(path, bounds=(0, 0, 2560, 100)))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"\nS\n" in data  # stroked, since there's no fill colour
+    assert any("dash patterns are not reproduced" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_group_and_unknown_object_types_are_handled(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    from tests.fixtures.drawfile_builders import build_unknown
+
+    ops = move(0, 0) + line(500, 0) + line(500, 500) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 500, 500), fill_colour=0x00FF0000)
+    group = build_group("G", path + build_unknown(11, bounds=(0, 0, 500, 500)), bounds=(0, 0, 500, 500))
+    document = _picture_document(build_drawfile(group, bounds=(0, 0, 500, 500)))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"\nf\n" in data
+    assert any("were not decoded and are omitted" in e.message for e in converter.log.entries)

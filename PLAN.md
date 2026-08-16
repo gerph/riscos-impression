@@ -27,7 +27,11 @@ object model, and renders that model out as:
 `DrawFile`, `Sprite`, and `ArtWorks` (the embedded-picture formats Impression
 documents reference) start as stub decoders and get filled in later; EPS gets
 fuller treatment from the start since `docs/impression-documents.xml` already
-describes its embedding layout precisely. Every place the converters can't do
+describes its embedding layout precisely. DrawFile got its own full decoder
+and real PDF/SVG rendering in Stage 14, once a real-corpus survey showed it
+accounts for essentially every embedded picture in practice; Sprite and
+ArtWorks remain stubs (bounding-box-only placeholders). Every place the
+converters can't do
 a full, faithful job (irregular picture boundaries, non-decimal numbering
 styles, unimplemented picture formats, undecoded style/frame fields) must be
 "best effort": don't crash, and log clearly what was approximated or skipped,
@@ -131,6 +135,7 @@ riscos-impression/
 - [x] Stage 11.5 — Markdown output
 - [x] Stage 12 — CLI and polish
 - [ ] Stage 13 (follow-up) — Real-document audit
+- [x] Stage 14 — Real DrawFile decoding and PDF/SVG rendering
 
 ## Stages
 
@@ -450,6 +455,70 @@ riscos-impression/
   Verified all five converters against the same empty-document fixture
   after the fix: none crash.
 * Commit: *"Add command-line interface"*.
+
+### Stage 14 — Real DrawFile decoding and PDF/SVG rendering
+* Prompted by a real-corpus survey (see `docs/impression-documents.xml`,
+  "Embedded object types"): every one of 113 embedded pictures across the
+  48-document local corpus classified as DrawFile, so a real decoder
+  covers essentially every picture actually in use, not just a slice.
+* Verified the on-disc DrawFile format against the official PRM
+  (https://www.riscos.com/support/developers/prm/fileformats.html) before
+  writing the parser, since the `riscos-output` skill's own
+  `drawfile-format.md` reference turned out to have several genuine
+  errors (wrong header field sizes/offsets, wrong object type numbers,
+  a missing Group-object name field, wrong path-style bit layout, wrong
+  units for the Text object's font-size fields). Fixed those in a local
+  shadow skill (`ai skill new riscos-output`) rather than the installed
+  copy, and left a note of the correction in that shadow for future
+  reference.
+* `formats/drawfile.py`: rewritten from a bounding-box-only stub into a
+  real object-stream decoder -- font tables, paths (fill/stroke colour,
+  width, winding rule, move/line/curve/close ops), single-line text,
+  groups and tagged objects (both recursed into). Sprite objects
+  embedded within a DrawFile, and any other object type (text area,
+  options, transformed text/sprite, or unrecognised), are kept as a
+  bounding box only, matching the existing Sprite/ArtWorks stub scope.
+  A corrupt/truncated object stream stops parsing rather than raising,
+  returning whatever was already decoded.
+* `output/pdfdoc.py`: DrawFile pictures are now rendered as real PDF
+  vector content (`m`/`l`/`c`/`h` path construction, `f`/`S`/`B`
+  painting with the correct winding-rule variant, `BT...Tj...ET` text
+  using the existing standard-14 font-matching logic against the
+  DrawFile's own font-table name), mapping the file's own bounding box
+  onto the target frame's box. A Sprite object embedded within a
+  DrawFile, or any other undecoded object type, still falls back to a
+  placeholder box for just that object, logged once per picture. A
+  picture that isn't a valid DrawFile at all still falls back to
+  today's placeholder box entirely, as before.
+* `output/html_base.py`: a parallel inline-SVG renderer, shared by both
+  HTML converters, mirroring pdfdoc.py's approach closely -- the main
+  difference is SVG's Y-down coordinate convention needing an explicit
+  flip (PDF's own convention already matches Draw's Y-up one), and
+  skipping pdfdoc.py's `Tz`-based horizontal text-scaling support (SVG
+  has no equally direct equivalent without first knowing a run's
+  natural glyph width; a deliberately narrower simplification for a
+  rare case).
+* Dash patterns and precise cap/join styles are parsed (so the path data
+  that follows them still decodes at the right offset) but not honoured
+  in rendering -- lines render solid with default caps/joins, logged
+  once per picture rather than per path.
+* Markdown output is unchanged, as directed -- it keeps its existing
+  `[draw]` bracket placeholder regardless of a picture's real content.
+* New shared test fixture builders (`tests/fixtures/drawfile_builders.py`)
+  for constructing synthetic DrawFile bytes (font tables, paths, text,
+  groups, tagged objects, sprites, unknown types), used by the parser's
+  own tests and both the PDF and HTML renderer tests.
+* Real-corpus validation (all 48 documents in `examples/`): 0 crashes,
+  0 conversion errors, and 0 leftover `[Draw]`/`[Draw picture...]`
+  placeholders across every format -- every one of the 113 DrawFile
+  pictures found (2395 paths, 1280 text objects, 523 groups, 24
+  embedded sprites, 30 unrecognised sub-objects) parsed successfully.
+  Visually spot-checked the richest example (`Int_spec`, a hardware
+  interface spec with a hand-drawn block diagram) by rasterising the
+  PDF output and comparing its SVG output's path data directly: both
+  reproduce the diagram's boxes and connecting lines correctly and
+  match each other's coordinates.
+* Commit: *"Add real DrawFile decoding and PDF/SVG rendering"*.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a

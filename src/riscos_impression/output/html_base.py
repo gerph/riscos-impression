@@ -1,11 +1,28 @@
-"""Shared HTML5 output helpers: colour/style -> CSS mapping and picture
-placeholder rendering, used by both the scrolling and paged-media HTML5
-converters.
+"""Shared HTML5 output helpers: colour/style -> CSS mapping, DrawFile
+picture rendering, and placeholder rendering, used by both the
+scrolling and paged-media HTML5 converters.
 
 Unlike the PDF converter, HTML output does no line-wrapping or text
 layout of its own at all -- a browser's own rendering engine handles
 that natively from the CSS this module produces, so there is no
 equivalent of pdfdoc.py's approximate-metrics wrapping concern here.
+
+DrawFile pictures are rendered as an inline SVG fragment (paths --
+fill/stroke colour, width, winding rule -- and single-line text, via
+formats/drawfile.py's object decoder), mapping the DrawFile's own
+bounding box on to the picture's own width/height. This mirrors
+pdfdoc.py's own DrawFile rendering closely, with two differences: SVG's
+Y-down coordinate convention needs an explicit flip (PDF's own
+convention already matches Draw's Y-up one directly), and text with a
+non-square x/y font-size ratio is rendered at its plain y-based size
+rather than reproduced (pdfdoc.py can do this cheaply via PDF's `Tz`
+horizontal-scaling operator; SVG has no equally direct equivalent
+without first knowing the glyphs' own natural width). Dash patterns and
+precise cap/join styles are parsed but not honoured, matching
+pdfdoc.py; a Sprite object embedded *within* a DrawFile, and any other
+undecoded object type, still falls back to a placeholder for just that
+object. A picture that isn't a valid DrawFile at all still falls back
+to the labelled placeholder image below.
 """
 
 from __future__ import annotations
@@ -14,7 +31,16 @@ import base64
 import html as _html
 from typing import Optional
 
-from riscos_impression.formats.drawfile import DrawFile
+from riscos_impression.formats.drawfile import (
+    DrawFile,
+    DrawGroup,
+    DrawPath,
+    DrawPathOpCode,
+    DrawSprite,
+    DrawTagged,
+    DrawText,
+    colour_rgb,
+)
 from riscos_impression.formats.eps import EPSObject
 from riscos_impression.formats.sprite import SpriteArea
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
@@ -26,6 +52,9 @@ from riscos_impression.output.base import Converter
 #: under "Frame object common layout" (the same confirmed unit pdfdoc.py
 #: uses).
 UNIT = 1000.0
+
+#: Draw units (1/256 OS unit, itself 1/180 inch) to CSS points.
+_DRAW_UNIT_TO_PT = 72.0 / (180.0 * 256.0)
 
 
 def escape_html(text: str) -> str:
@@ -77,12 +106,25 @@ _FAMILY_HINTS = [
 _DEFAULT_FONT_STACK = '"Helvetica Neue", Helvetica, Arial, sans-serif'
 
 
-def font_family_css(style: Style) -> str:
-    name = (style.font_style_name or "").lower()
+def _font_family_css_for_name(font_style_name: Optional[str]) -> str:
+    name = (font_style_name or "").lower()
     for hint, stack in _FAMILY_HINTS:
         if hint in name:
             return stack
     return _DEFAULT_FONT_STACK
+
+
+def font_family_css(style: Style) -> str:
+    return _font_family_css_for_name(style.font_style_name)
+
+
+def _draw_colour_to_css(word: Optional[int]) -> Optional[str]:
+    """A CSS "#rrggbb" colour for a raw Draw palette word (see
+    formats/drawfile.py's colour_rgb), or None for "no colour"."""
+    if word is None:
+        return None
+    r, g, b = colour_rgb(word)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def style_css_properties(style: Style, colours) -> dict[str, str]:
@@ -172,13 +214,9 @@ class HTML5Converter(Converter):
             return self._placeholder_img("EPS", width_pt, height_pt)
 
         if kind is EmbeddedObjectType.DRAW:
-            if DrawFile.from_bytes(data) is not None:
-                self.log.best_effort(
-                    "picture",
-                    "DrawFile picture rendered as a placeholder box; vector content "
-                    "is not decoded by this converter",
-                )
-                return self._placeholder_img("Draw", width_pt, height_pt)
+            draw = DrawFile.from_bytes(data)
+            if draw is not None:
+                return self._drawfile_svg(draw, width_pt, height_pt)
             if SpriteArea.from_bytes(data) is None:
                 self.log.error(
                     "picture", "picture classified as a drawable format but decoded as neither DrawFile nor Sprite"
@@ -206,3 +244,127 @@ class HTML5Converter(Converter):
             f'width="{width_pt:.1f}" height="{height_pt:.1f}" '
             f'style="width: {width_pt:.1f}pt; height: {height_pt:.1f}pt;">'
         )
+
+    # -- DrawFile pictures -----------------------------------------------------
+
+    def _drawfile_svg(self, draw: DrawFile, width_pt: float, height_pt: float) -> str:
+        """A decoded DrawFile's objects as an inline SVG fragment,
+        mapping the DrawFile's own bounding box on to the picture's own
+        width/height (stretch to fit, matching PDFConverter's own
+        DrawFile rendering and the DrawFile format's own "a Sprite
+        object fills its bounding box" convention). See the module
+        docstring and pdfdoc.py's own DrawFile section for what's
+        approximated versus a genuine placeholder."""
+        bounds = draw.bounds
+        sx = width_pt / bounds.width if bounds.width else 1.0
+        sy = height_pt / bounds.height if bounds.height else 1.0
+
+        def to_svg(dx: int, dy: int) -> tuple[float, float]:
+            # SVG is Y-down from the top-left; Draw is Y-up from the
+            # bottom-left, so the Y axis needs flipping (unlike
+            # pdfdoc.py, which shares PDF's own Y-up convention).
+            return (dx - bounds.x0) * sx, height_pt - (dy - bounds.y0) * sy
+
+        parts = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt:.1f}pt" '
+            f'height="{height_pt:.1f}pt" viewBox="0 0 {width_pt:.1f} {height_pt:.1f}">'
+        ]
+        notes: list[str] = []
+        for obj in draw.objects:
+            self._drawfile_svg_object(obj, draw.fonts, to_svg, (sx, sy), parts, notes)
+        parts.append("</svg>")
+        for note in dict.fromkeys(notes):  # de-duplicate, keep first-seen order
+            self.log.best_effort("picture", note)
+        return "".join(parts)
+
+    def _drawfile_svg_object(self, obj, fonts: dict, to_svg, scale, parts: list[str], notes: list[str]) -> None:
+        if isinstance(obj, DrawPath):
+            self._drawfile_svg_path(obj, to_svg, scale, parts)
+            if obj.dashed:
+                notes.append("dashed DrawFile path lines are rendered solid; dash patterns are not reproduced")
+        elif isinstance(obj, DrawText):
+            self._drawfile_svg_text(obj, fonts, to_svg, scale, parts)
+        elif isinstance(obj, DrawGroup):
+            for child in obj.objects:
+                self._drawfile_svg_object(child, fonts, to_svg, scale, parts, notes)
+        elif isinstance(obj, DrawTagged):
+            if obj.inner is not None:
+                self._drawfile_svg_object(obj.inner, fonts, to_svg, scale, parts, notes)
+        elif isinstance(obj, DrawSprite):
+            px0, py0 = to_svg(obj.bounds.x0, obj.bounds.y0)
+            px1, py1 = to_svg(obj.bounds.x1, obj.bounds.y1)
+            rx0, rx1 = sorted((px0, px1))
+            ry0, ry1 = sorted((py0, py1))
+            parts.append(
+                f'<rect x="{rx0:.1f}" y="{ry0:.1f}" width="{rx1 - rx0:.1f}" height="{ry1 - ry0:.1f}" '
+                f'fill="none" stroke="#999999" stroke-width="1"/>'
+                f'<text x="{(rx0 + rx1) / 2:.1f}" y="{(ry0 + ry1) / 2:.1f}" font-size="9" fill="#666666" '
+                f'text-anchor="middle" dominant-baseline="middle">[Sprite]</text>'
+            )
+            notes.append(
+                "a Sprite object embedded within a DrawFile picture is drawn as a "
+                "placeholder box; pixel data is not decoded"
+            )
+        else:  # DrawUnknown -- text area, options, transformed text/sprite, or unrecognised
+            notes.append(
+                "one or more DrawFile object types (e.g. text area, options, transformed "
+                "text/sprite) within a picture were not decoded and are omitted"
+            )
+
+    def _drawfile_svg_path(self, path: DrawPath, to_svg, scale, parts: list[str]) -> None:
+        has_fill = path.fill_colour is not None
+        has_stroke = path.stroke_colour is not None
+        if (not has_fill and not has_stroke) or not path.ops:
+            return
+
+        d_parts = []
+        for op in path.ops:
+            if op.code in (DrawPathOpCode.MOVE, DrawPathOpCode.MOVE_INTERNAL, DrawPathOpCode.GAP):
+                x, y = to_svg(op.x, op.y)
+                d_parts.append(f"M {x:.2f} {y:.2f}")
+            elif op.code is DrawPathOpCode.LINE:
+                x, y = to_svg(op.x, op.y)
+                d_parts.append(f"L {x:.2f} {y:.2f}")
+            elif op.code is DrawPathOpCode.CURVE:
+                cx1, cy1 = to_svg(op.cx1, op.cy1)
+                cx2, cy2 = to_svg(op.cx2, op.cy2)
+                ex, ey = to_svg(op.x, op.y)
+                d_parts.append(f"C {cx1:.2f} {cy1:.2f} {cx2:.2f} {cy2:.2f} {ex:.2f} {ey:.2f}")
+            elif op.code is DrawPathOpCode.CLOSE_LINE:
+                d_parts.append("Z")
+            # CLOSE_GAP: no direct SVG equivalent needed -- the next M starts a fresh subpath.
+        if not d_parts:
+            return
+
+        fill = _draw_colour_to_css(path.fill_colour) if has_fill else "none"
+        stroke = _draw_colour_to_css(path.stroke_colour) if has_stroke else "none"
+        attrs = [f'd="{" ".join(d_parts)}"', f'fill="{fill}"', f'stroke="{stroke}"']
+        if has_stroke:
+            line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
+            width_pt = path.line_width * _DRAW_UNIT_TO_PT * line_scale if path.line_width else 0.3
+            attrs.append(f'stroke-width="{max(0.1, width_pt):.2f}"')
+        if has_fill and path.even_odd:
+            attrs.append('fill-rule="evenodd"')
+        parts.append(f"<path {' '.join(attrs)}/>")
+
+    def _drawfile_svg_text(self, text: DrawText, fonts: dict, to_svg, scale, parts: list[str]) -> None:
+        if not text.text.strip() or text.size_y <= 0:
+            return
+        _sx, sy = scale
+        # Unlike pdfdoc.py's Tz-based approach, this ignores any x/y
+        # font-size skew the DrawFile itself declares (a rare case, and
+        # SVG has no equally direct equivalent without first knowing
+        # the glyphs' own natural width) -- a deliberate simplification.
+        size_pt = (text.size_y / 640.0) * abs(sy)
+        if size_pt <= 0.5:
+            return
+        x, y = to_svg(text.baseline_x, text.baseline_y)
+        font_name = fonts.get(text.font_number)
+        name_lower = (font_name or "").lower()
+        style_bits = [f"font-family:{_font_family_css_for_name(font_name)}", f"font-size:{size_pt:.2f}pt"]
+        if "bold" in name_lower:
+            style_bits.append("font-weight:bold")
+        if "italic" in name_lower or "oblique" in name_lower:
+            style_bits.append("font-style:italic")
+        style_bits.append(f"fill:{_draw_colour_to_css(text.colour) or '#000000'}")
+        parts.append(f'<text x="{x:.2f}" y="{y:.2f}" style="{"; ".join(style_bits)}">{escape_html(text.text)}</text>')
