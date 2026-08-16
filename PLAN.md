@@ -126,7 +126,7 @@ riscos-impression/
 - [x] Stage 7 — Conversion framework, logging, embedded-format stubs
 - [x] Stage 8 — OvProDDL output (reference converter)
 - [x] Stage 9 — Native PDF output
-- [ ] Stage 10 — Scrolling HTML output
+- [x] Stage 10 — Scrolling HTML output
 - [ ] Stage 11 — Paged-media HTML output
 - [ ] Stage 12 — CLI and polish
 - [ ] Stage 13 (follow-up) — Real-document audit
@@ -333,11 +333,29 @@ riscos-impression/
   obstacle frames"*.
 
 ### Stage 10 — Scrolling HTML output
-* `output/html_base.py`: shared style→CSS and colour→CSS mapping used by
-  both HTML variants.
+* `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS
+  and style→CSS mapping, and picture rendering (dispatched by embedded
+  type exactly like the PDF converter's placeholders, but as a small
+  self-contained `data:image/svg+xml;base64,...` URI rather than a raster
+  image, since there's no pixel data to rasterise and no external image
+  library in use).
 * `output/html_scrolling.py`: `ScrollingHTMLConverter(HTML5Converter)` —
-  walks frame chains in reading order, linear `<p>`/heading flow, pictures
-  as `<img>` against rasterised/placeholder assets, page furniture dropped.
+  a linear reflow: each chapter's pages walked in order, each story
+  rendered once (globally deduped by dictionary_index) as a run of `<p>`
+  elements wherever its first frame is encountered, embedded pictures
+  inline via `<img>`. Unlike the PDF converter, this format has no
+  geometry or pagination of its own -- a browser wraps text natively
+  from the CSS this module produces -- so the frame-chain-flow and
+  dynamic-repel work pdfdoc.py needed is irrelevant here: a story's
+  whole text is just one continuous run of paragraphs, with no need to
+  work out which physical frame would have held which portion. Page
+  furniture is dropped by construction: this converter never visits
+  document.master_pages at all, only each chapter's own content pages,
+  so master-only furniture is simply never seen (a master-*linked*
+  frame's own dictionary_index is still honoured normally).
+* Real-corpus validation (all 48 documents in examples/): 0 crashes, 0
+  errors, and every generated file parses cleanly with Python's
+  built-in `html.parser`.
 * Commit: *"Add scrolling HTML output converter"*.
 
 ### Stage 11 — Paged-media HTML output
