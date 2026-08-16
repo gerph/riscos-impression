@@ -1,0 +1,322 @@
+<?xml version="1.0"?>
+<!DOCTYPE riscos-prm PUBLIC "-//Gerph//DTD PRM documentation 1.03//EN"
+                            "http://gerph.org/dtd/103/prm.dtd">
+
+<riscos-prm>
+<chapter title="Impression Document Description Format">
+<section title="Introduction and Overview">
+<p>
+The Impression Document Description Format (DDF) is an ASCII, tagged-text
+format exported by Impression's <userinput>Save text with styles</userinput>
+operation. It transfers text together with style definitions and formatting.
+An Impression document is consequently represented as a linear stream: ordinary
+characters provide the content and brace-delimited commands provide structure,
+style and embedded non-ASCII characters. It is suitable for interchange and
+for programs which need to generate styled Impression text without constructing
+an Impression native file.
+</p>
+<p>
+DDF is interpreted whenever text is loaded into a frame; it is also the
+intermediate representation used by Impression loaders. A file intended for
+ordinary text loading must therefore use <userinput>{off}</userinput> if it
+may contain brace sequences which must remain literal. The normal RISC OS file
+type registered for DDF is <userinput>&amp;D93</userinput>. Some historical
+software has associated DDF with other file types, including
+<userinput>&amp;707</userinput>, but new DDF files should use the registered type.
+ASCII files may also be interpreted as DDF when explicitly requested.
+</p>
+<p>
+The format is deliberately seven-bit. Printable ASCII text is copied directly;
+commands encode the opening brace and characters outside the printable range.
+Writers should emit ASCII only, use the code command for character values
+128 to 255, and define every non-resident style before applying it.
+</p>
+</section>
+
+<section title="Terminology">
+<p><strong>Control element</strong> means a sequence beginning with <userinput>{</userinput>
+and ending with <userinput>}</userinput>. <strong>Attribute</strong> is a named style
+property in a definition, such as <userinput>font</userinput> or
+<userinput>leftmargin</userinput>. <strong>Effect</strong> is an attribute command in
+the text stream; supplying a value sets or overrides that property and omitting
+the value restores the value supplied by the active styles. A <strong>style</strong>
+is a named group of attributes. A <strong>ruler</strong> is a named formatting
+definition normally used for paragraph geometry. Rulers use the same attribute
+syntax as styles and exported files may include font, spacing, justification,
+menu and other attributes in them.</p>
+</section>
+
+<section title="Technical Details">
+<subsection title="Byte stream and lexical rules">
+<p>
+The file is a sequence of elements. Outside a control element, ASCII 32 to 126
+is text except <userinput>{</userinput>. ASCII 9 is a tab; ASCII 10 and ASCII
+13 each end a paragraph. Other control characters are ignored. The closing
+brace is ordinary text outside a command, but the opening brace must be written
+as <userinput>{\ 123}</userinput> (or <userinput>{code 123}</userinput>).
+</p>
+<p>
+Within a control element, spaces and ASCII 10 are whitespace. Closing brace,
+semicolon, comma and characters below ASCII 33 delimit keywords and arguments.
+Keywords are case-insensitive. An identifier is a
+letter followed by letters or digits. A quoted string may contain printable
+ASCII other than its delimiting double quote and preserves case; use it for
+style and font names containing spaces. No escape convention is defined for a
+double quote within a string, so writers must not place one inside the value.
+</p>
+<p>
+Arguments which are not restricted to identifiers may also be bare tokens.
+A bare token ends at whitespace or a command delimiter and may contain
+punctuation; font names such as <userinput>Trinity.Medium.Italic</userinput>
+use this form. <fixme>It is not known whether style-name matching is case-sensitive in every version of Impression.</fixme>
+</p>
+<p>
+<extended-example type="format">
+Plain text {tab} continues.
+{style "Main Heading" on}Heading{style "Main Heading" off}
+{\ 169} encodes character 169; {code 123} encodes an opening brace.
+</extended-example>
+</p>
+</subsection>
+
+<subsection title="Command boundaries and disabled processing">
+<p>
+Commands are normally one brace-delimited unit. A semicolon separates
+attributes in <userinput>define</userinput>. The closing brace terminates the
+control element. Control elements require no separator and are commonly written
+next to one another as <userinput>{First off}{Second on}</userinput>.
+</p>
+<p>
+<userinput>{off}</userinput> disables DDF interpretation. All following bytes,
+including apparent commands, are text until <userinput>{on}</userinput> is met.
+The on/off commands remain recognised while disabled. A robust reader should
+preserve this state across the complete stream; a robust writer should avoid
+using disabled mode except for literal imported text.
+</p>
+</subsection>
+
+<subsection title="Styles, rulers and scope">
+<!-- Independent style removal and broad ruler definitions are present in
+     DDF exported by Impression. -->
+<p>
+A style application has the forms <userinput>{style name on}</userinput>,
+<userinput>{ruler name on}</userinput>, <userinput>{name on}</userinput>, or
+the corresponding <userinput>off</userinput> form. The optional integer after
+the switch is its application level, counted from the top of the style list;
+zero inserts the application at the top, which is the normal position. Styles
+form an ordered active list. An off command removes the named application even
+when another style was applied after it, so styles need not be removed in
+last-in, first-out order. A style-on should be paired with a style-off, although
+Impression closes unmatched applications at document end.
+</p>
+<p><fixme>A control element containing only a style name is syntactically valid, but the effect of that form is not known.</fixme></p>
+<p>
+Applying an effect which sets an attribute replaces an earlier effect at the
+same attribute. A bare effect keyword cancels that effect and restores the
+value supplied by the active style applications.
+</p>
+<p>
+<userinput>{define style name [basedon base]; attributes}</userinput> creates
+a named style. It takes no text-stream position itself. The style must precede
+its first application. <userinput>define ruler</userinput> has the same syntax,
+and may contain the full range of style attributes. Rulers are conventionally
+used for leftmargin, rightmargin, returnmargin, tabs and paragraph rules;
+<userinput>effectruler</userinput> distinguishes rulers used as effects. The
+format also permits a definition with an empty attribute list. Attributes are
+separated by semicolons; a definition may appear anywhere in loaded text.
+</p>
+<p>
+<userinput>basedon</userinput> names a style from which the new definition
+inherits its initial attributes; attributes in the new definition then replace
+the inherited values. <fixme>It is not known whether the base style may be defined later, or how missing and circular base-style references are handled.</fixme>
+</p>
+</subsection>
+
+<subsection title="Values">
+<p>
+<definition-table head-name="Value form" head-extra="Examples" head-value="Meaning">
+ <definition name="UnsignedInt" extra="0, 12">One or more decimal digits.</definition>
+ <definition name="SignedInt" extra="-50, +120">An optional sign followed by an unsigned integer.</definition>
+ <definition name="UnsignedReal" extra="2.5">An unsigned integer, optionally followed by a decimal point and digits.</definition>
+ <definition name="Identifier" extra="Notice">A letter followed by zero or more letters or digits.</definition>
+ <definition name="String" extra="&quot;Main Heading&quot;">A double-quoted sequence of printable ASCII characters. No escape syntax for an embedded double quote is defined.</definition>
+ <definition name="FontName" extra="Trinity.Medium">A bare token or quoted string naming a font family and face. Quote a name which contains whitespace or delimiters.</definition>
+ <definition name="Measure" extra="14pt, -0pt">One or two measurements. A measurement is an unsigned real, optionally preceded by a minus sign, followed by an optional unit. <p><fixme>The purpose and interpretation of the optional second measurement are not known.</fixme></p></definition>
+ <definition name="Unit" extra="m cm mm yd ft in pi pt, &quot;, '&quot;">Metre, centimetre, millimetre, yard, foot, inch, pica and point respectively; double quote and apostrophe are inch and foot. <p><fixme>The unit used when the suffix is omitted is not defined.</fixme></p></definition>
+ <definition name="Percent" extra="120%">Unsigned integer followed by percent sign.</definition>
+ <definition name="Switch" extra="on, off">Case-insensitive boolean keyword.</definition>
+</definition-table>
+</p>
+<p>
+Twelve points make one pica; 72 points make one inch. Negative right margins
+are distances from the frame's right edge; positive right margins are positions
+measured from its left edge. Writers must retain the sign rather than
+normalising right-margin values.
+</p>
+</subsection>
+
+<subsection title="Style attributes and effects">
+<p>
+The following attributes are valid in a definition. Unless stated otherwise,
+the same keyword plus a value is an effect, and the bare keyword cancels it.
+</p>
+<p>
+<definition-table head-name="Attribute" head-extra="Argument" head-value="Use">
+ <definition name="font" extra="FontName">Font family and face name.</definition>
+ <definition name="fontsize" extra="Measure">Text size.</definition>
+ <definition name="linespace" extra="Measure">Absolute line spacing.</definition>
+ <definition name="linespacep" extra="Percent">Line spacing as a percentage of font size.</definition>
+ <definition name="spaceabove; spacebelow" extra="Measure">Space before and after paragraphs.</definition>
+ <definition name="condframethrow" extra="Measure">Conditional frame-throw threshold.</definition>
+ <definition name="leftmargin; rightmargin; returnmargin" extra="Measure">Paragraph left, right and first-line/return margins.</definition>
+ <definition name="ruleleftmargin; rulerightmargin; rulewidth; vertrulewidth; ruleaboveoffset; ruleoffset" extra="Measure">Horizontal and vertical paragraph-rule geometry.</definition>
+ <definition name="keeptogether" extra="Measure">A measured keep-together setting. <p><fixme>The precise meaning of the measurement and its interaction with the boolean keep attributes are not known.</fixme></p></definition>
+ <definition name="fontcolour; backcolour; linecolour; rulecolour" extra="ColourSpec">Text, background, line and rule colours.</definition>
+ <definition name="fontaspect" extra="Percent">Horizontal font aspect/scale.</definition>
+ <definition name="tracking" extra="SignedInt">Horizontal movement in thousandths of an em.</definition>
+ <definition name="justify" extra="left | centre | right | full">Paragraph alignment.</definition>
+ <definition name="tabs" extra="TabList">Tab stops and optional types.</definition>
+ <definition name="rulecontrol" extra="UnsignedInt">Paragraph-rule control value. <p><fixme>The numeric values and their effects are not known.</fixme></p></definition>
+ <definition name="strikeout; hyphenate; menuitem; locktolinespace; bold; italic; keepparagraph; keepnext; keepregion; overprint; overprintb; effectruler" extra="Switch">Boolean formatting, menu, keep and ruler controls. <userinput>overprintb</userinput> is background overprint.</definition>
+ <definition name="script" extra="off | sub | super">Baseline script mode.</definition>
+ <definition name="underline" extra="off | UnsignedInt">Underline mode. <userinput>off</userinput> and zero disable underlining. <p><fixme>The meanings of the remaining numeric underline values are not fully known.</fixme></p></definition>
+ <definition name="leader" extra="String">Tab leader text.</definition>
+ <definition name="dectabchar" extra="String">Character used by decimal tabs.</definition>
+ <definition name="index" extra="none">Marks an index entry.</definition>
+ <definition name="contents" extra="UnsignedInt">Contents level.</definition>
+ <definition name="autolinespace" extra="none">Flag requesting automatic line spacing.</definition>
+ <definition name="autoparagraph" extra="none">Marks a style or ruler as participating in automatic paragraph processing. It is emitted without an argument. <p><fixme>The complete automatic-paragraph behaviour controlled by this attribute is not known.</fixme></p></definition>
+ <definition name="shortcut" extra="UnsignedInt">Style-menu shortcut identifier.</definition>
+ <definition name="StyleName" extra="Identifier | String">A bare style name is permitted as a style-definition attribute. <p><fixme>The meaning of a bare style name in an attribute list is not known.</fixme></p></definition>
+</definition-table>
+</p>
+</subsection>
+
+<subsection title="Tabs, colours and numbering">
+<p>
+<userinput>tabs</userinput> takes one or more comma-separated tab specifications.
+Each is an optional type followed by a measurement. Types are
+<userinput>left</userinput>, <userinput>centre</userinput>,
+<userinput>right</userinput>, <userinput>decimal</userinput> and
+<userinput>vertrule</userinput>; omitting the type means left. Each subsequent
+tab specification is separated by a comma. <userinput>leader</userinput> gives
+the tab leader string and <userinput>dectabchar</userinput> gives the character
+used to align decimal tabs.
+</p>
+<p>
+A colour specification is <userinput>rgb=(r,g,b)</userinput>,
+<userinput>cmyk=(c,m,y,k)</userinput>, <userinput>hsv=(h,s,v)</userinput>, or
+<userinput>rgb24=(r,g,b)</userinput>. RGB, CMYK and HSV components normally
+range from 0 to 1, except HSV hue ranges from 0 to 360; RGB24 components range
+from 0 to 255. These colour specifications may be used by
+<userinput>fontcolour</userinput>, <userinput>backcolour</userinput>,
+<userinput>linecolour</userinput> and <userinput>rulecolour</userinput>.
+</p>
+<p>
+<userinput>pagenumber</userinput> and <userinput>chapternumber</userinput>
+insert the applicable number. Their optional display form is
+<userinput>decimal</userinput>, <userinput>romanlower</userinput> or
+<userinput>romanupper</userinput>; an unsigned integer is also syntactically
+allowed. No argument means normal decimal display.
+</p>
+<p><fixme>The grammar also names roman and upperroman forms, and does not define the meaning of an unsigned integer number specification. The accepted aliases and numeric meanings require confirmation.</fixme></p>
+</subsection>
+
+<subsection title="Text and layout commands">
+<p>
+<definition-table head-name="Command" head-extra="Arguments" head-value="Result">
+ <definition name="tab" extra="none">Inserts a tab; raw ASCII 9 is equivalent.</definition>
+ <definition name="cr" extra="none">Ends a paragraph; raw ASCII 10 or 13 is equivalent.</definition>
+ <definition name="code; \" extra="UnsignedInt">Inserts the character with that numeric code. Use for opening brace and 8-bit characters.</definition>
+ <definition name="star; hash; at" extra="none">Inserts literal wildcard characters for DDF used by search/replace.</definition>
+ <definition name="softhyphen" extra="none">Inserts a discretionary hyphen.</definition>
+ <definition name="kern" extra="SignedInt SignedInt">Applies x and y movement to following text, in thousandths of an em.</definition>
+ <definition name="framethrow; nextframe" extra="none">Forces subsequent text into the next frame.</definition>
+</definition-table>
+</p>
+</subsection>
+
+<subsection title="Version-dependent and unresolved commands">
+<p>
+Different Impression-family versions extended the original command set. A
+reader may encounter the following controls in addition to the core grammar.
+Tools which cannot interpret an extension should preserve its complete control
+element when round-tripping a file.
+</p>
+<p>
+<definition-table head-name="Command" head-extra="Known syntax" head-value="Meaning">
+ <definition name="define colours" extra="declaration records">Defines named colours and tints. <p><fixme>The complete record syntax, component ranges, tint syntax and name-escaping rules are not known.</fixme></p></definition>
+ <definition name="merge" extra="field expression">Inserts or identifies a mail-merge field. <p><fixme>The exact argument grammar and evaluation rules are not known.</fixme></p></definition>
+ <definition name="scriptsize; scriptoffset" extra="unknown">Control the size and baseline offset of subscript and superscript text. <p><fixme>The argument types, units and reset forms are not known.</fixme></p></definition>
+ <definition name="linesize; lineoffset" extra="unknown">Control line decoration size and offset. <p><fixme>The argument types, units and affected line decorations are not known.</fixme></p></definition>
+ <definition name="autoindent" extra="unknown">Controls automatic indentation. <p><fixme>The argument grammar and behaviour are not known.</fixme></p></definition>
+ <definition name="box" extra="thick | thin | shadow | thickrule | thinrule [number]">Places a box or rule around a paragraph. The optional number is in the range 1 to 3 and selects formatting flags. <p><fixme>The precise appearance of each form, the default number and the meanings of values 1 to 3 are not known.</fixme></p></definition>
+ <definition name="insertfirst" extra="type initial-number">Starts automatic paragraph numbering using the given numbering type and initial number. Type zero produces decimal numbering and type one produces upper-case Roman numerals. <p><fixme>The remaining numbering-type values are not known.</fixme></p></definition>
+ <definition name="insertnext" extra="type">Inserts the next automatic paragraph number using the specified numbering type. <p><fixme>The complete numbering-type table is not known.</fixme></p></definition>
+</definition-table>
+</p>
+<p>
+Unknown commands cannot safely be discarded: they may define formatting which
+is not represented elsewhere in the stream. A lossless transformer should
+retain each unknown brace-delimited control element at its original position.
+</p>
+</subsection>
+
+<subsection title="Recommended writer algorithm">
+<p>
+<list type="ordered">
+ <item><p>Encode source text as seven-bit ASCII. Emit raw printable characters except opening brace; emit tabs and paragraph ends in their raw or command forms.</p></item>
+ <item><p>Emit <userinput>define style</userinput> and <userinput>define ruler</userinput> commands before their first uses, with semicolon-separated attributes and quoted names where needed.</p></item>
+ <item><p>Maintain an ordered set of active named styles. Emit a matching off command for each style-on command; an off command may remove a style which is not the most recently applied. Use a zero or absent level unless deliberately selecting a lower application level.</p></item>
+ <item><p>Emit effect values when changing an attribute and the bare keyword when restoring the inherited value. Keep paragraph attributes adjacent to the text/paragraph they control.</p></item>
+ <item><p>Use documented core syntax for portable output. If retaining opaque extensions, copy their complete brace-delimited form rather than attempting to reinterpret unknown arguments.</p></item>
+</list>
+</p>
+</subsection>
+</section>
+
+<section title="Examples">
+<subsection title="Self-contained styled text">
+<p>A minimal portable file defines a style then applies and removes it.</p>
+<p>
+<extended-example type="format">
+{define style Notice; font "Homerton.Bold"; fontsize 18pt; fontcolour rgb=(1,0,0)}
+{style Notice on}Important{style Notice off} ordinary text.{cr}
+</extended-example>
+</p>
+</subsection>
+<subsection title="Paragraph ruler and effects">
+<p>This uses a ruler, decimal tab and temporary italic effect.</p>
+<p>
+<extended-example type="format">
+{define ruler Price; font "Trinity.Medium"; leftmargin 18pt; rightmargin -18pt; tabs decimal 180pt; menuitem on; effectruler off}
+{ruler Price on}Item{tab}Price{cr}
+Widget{tab}{italic on}12.50{italic off}{ruler Price off}
+</extended-example>
+</p>
+</subsection>
+<subsection title="Independent style removal">
+<p>
+The first style may be removed while the second remains active. After the
+first off command, <userinput>Emphasis</userinput> still applies to
+<userinput>second</userinput>.
+</p>
+<p>
+<extended-example type="format">
+{"Heading" on}first {"Emphasis" on}{"Heading" off}second{"Emphasis" off}
+</extended-example>
+</p>
+</subsection>
+</section>
+</chapter>
+
+<meta>
+ <maintainer><email name="Charles Ferguson" address="gerph@gerph.org" /></maintainer>
+ <disclaimer><p>&copy; Charles Ferguson, 2026. This document describes the Impression Document Description Format.</p></disclaimer>
+ <history>
+  <revision number="1" author="Charles Ferguson" date="16 Aug 2026" title="Initial DDF reference"><change>Documented the core DDF syntax, values and commands.</change></revision>
+  <revision number="2" author="Charles Ferguson" date="16 Aug 2026" title="Format reference revision"><change>Clarified style and ruler behaviour, added automatic paragraph attributes, and marked unresolved syntax and semantics explicitly.</change></revision>
+  <revision number="3" author="Charles Ferguson" date="16 Aug 2026" title="Registered file type"><change>Corrected the registered DDF file type to &hex;D93 and distinguished historical file-type associations.</change></revision>
+ </history>
+</meta>
+</riscos-prm>
