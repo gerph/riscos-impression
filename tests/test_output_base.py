@@ -167,6 +167,64 @@ def test_resolve_style_tab_stops_empty_ruler_does_not_override_body():
     assert resolved.tab_stops == body_ruler
 
 
+def test_resolve_style_fixed_line_spacing_does_not_leak_into_a_different_font_size():
+    # Regression test: a real document (ForSimon3 from the local
+    # moreexamples/ corpus) has a 26pt heading style that sets its own
+    # font_size but no line_spacing_raw of its own, so it fell through
+    # to body's fixed leading -- frozen at ~13pt for body's own 12pt
+    # text -- producing severely overlapping heading lines. A named
+    # style that changes font_size without setting its own leading
+    # should end up with line_spacing_raw unset, not body's mismatched
+    # absolute value.
+    fixed_13pt = 0x80000000 | (13107 + 0x10000)
+    body = _style(0, is_body_text=True, font_size=192, line_spacing_raw=fixed_13pt)
+    heading = _style(1, font_size=416)  # 26pt; no line spacing of its own
+    converter = Converter(_document(styles=[body, heading]))
+
+    resolved = converter.resolve_style([1])
+    assert resolved.font_size == 416
+    assert resolved.line_spacing_raw is None
+
+
+def test_resolve_style_fixed_line_spacing_still_applies_at_bodys_own_size():
+    # Plain body-level text (no named style, or one that doesn't touch
+    # font_size) keeps body's own fixed leading -- it's self-consistent
+    # for the size it was actually set at.
+    fixed_13pt = 0x80000000 | (13107 + 0x10000)
+    body = _style(0, is_body_text=True, font_size=192, line_spacing_raw=fixed_13pt)
+    converter = Converter(_document(styles=[body]))
+
+    resolved = converter.resolve_style([])
+    assert resolved.line_spacing_raw == fixed_13pt
+
+
+def test_resolve_style_proportional_line_spacing_cascades_across_font_sizes():
+    # Proportional (percentage) leading is scale-invariant, so unlike
+    # the fixed case it's fine -- and intended -- for it to cascade
+    # verbatim into a differently-sized named style.
+    proportional_120 = 12000
+    body = _style(0, is_body_text=True, font_size=192, line_spacing_raw=proportional_120)
+    heading = _style(1, font_size=416)
+    converter = Converter(_document(styles=[body, heading]))
+
+    resolved = converter.resolve_style([1])
+    assert resolved.line_spacing_raw == proportional_120
+
+
+def test_resolve_style_explicit_line_spacing_overrides_regardless_of_font_size():
+    # A named style that sets its own leading, fixed or not, always
+    # wins -- the font-size-mismatch fallback only kicks in when
+    # nothing in the stack actually chose one.
+    fixed_13pt = 0x80000000 | (13107 + 0x10000)
+    own_fixed_30pt = 0x80000000 | (30000 + 0x10000)
+    body = _style(0, is_body_text=True, font_size=192, line_spacing_raw=fixed_13pt)
+    heading = _style(1, font_size=416, line_spacing_raw=own_fixed_30pt)
+    converter = Converter(_document(styles=[body, heading]))
+
+    resolved = converter.resolve_style([1])
+    assert resolved.line_spacing_raw == own_fixed_30pt
+
+
 def test_resolve_style_unknown_slot_is_ignored():
     body = _style(0, is_body_text=True, bold=0)
     converter = Converter(_document(styles=[body]))

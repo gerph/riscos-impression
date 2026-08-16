@@ -905,6 +905,46 @@ riscos-impression/
   Visually confirmed against PCI_Spec that the footer frame now shows
   only its real top and bottom rules, with no fictional side borders.
 
+* **Post-Stage-14 fix (7)**: the user reported that ForSimon3 (from the
+  local moreexamples/ corpus) had a 26pt heading whose lines rendered
+  heavily overlapping/mushed in the PDF, and correctly guessed the
+  cause was line spacing defaulting off the wrong font size. Traced to
+  `Converter.resolve_style`'s generic cascade: the heading's own style
+  stack sets `font_size` (26pt) but not `line_spacing_raw`, so it fell
+  through to BodyText's own value -- a FIXED (absolute-point, not
+  proportional) 13.107pt leading, frozen for BodyText's own 12pt size.
+  Applied verbatim to 26pt glyphs, this produced lines advancing only
+  half their own height. Confirmed via `c/styles` (the original TransIMP
+  conversion source): its DDL emitter only ever writes an explicit
+  `{leading ...}` for a style whose own `linespace` presence bit is
+  set; BodyText's is *always* forced present (`s->linespace ||
+  bodytext`), everything else only if the author actually chose one --
+  so BodyText's raw bytes were never meant to stand in for an unrelated
+  style's leading, and the target renderer is expected to fall back to
+  its own size-relative default when a style leaves it genuinely unset.
+  A cross-corpus check confirmed the same fixed ~13.107pt value
+  (`0x80013333`) appears on almost every example document's BodyText
+  style regardless of BodyText's own font size, confirming it's a
+  frozen per-document default, not something dynamically recomputed
+  from font size at authoring time. Fixed in `resolve_style` with a
+  narrow, tab_stops-style exception: when nothing in the applied style
+  stack explicitly sets its own `line_spacing_raw`, and the value that
+  fell through from BodyText is FIXED, and the resolved `font_size`
+  differs from BodyText's own, the resolved `line_spacing_raw` is reset
+  to `None` instead -- letting the existing "no line spacing set" path
+  in both `pdfdoc.py` and `html_base.py` (120% of the run's own
+  font_size) take over. Proportional (percentage) leading is
+  scale-invariant, so it's left to cascade normally regardless of font
+  size; an explicit `line_spacing_raw` set anywhere in the stack always
+  wins outright, fixed or not. Four new `resolve_style` regression
+  tests cover: the ForSimon3 scenario itself, plain BodyText keeping
+  its own fixed leading unchanged, proportional leading cascading
+  across font sizes, and an explicit override always winning. Full
+  suite (310 tests) green; re-validated across all 111 real documents
+  (48 in examples/, 63 in moreexamples/) with 0 crashes; visually
+  confirmed against ForSimon3 itself -- both the body paragraph and
+  the heading now render with correctly separated lines.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

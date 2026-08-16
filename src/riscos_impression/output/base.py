@@ -132,13 +132,30 @@ class Converter:
         decodes to an empty tab_stops tuple, which means "this style
         doesn't define a ruler of its own", not "this style defines an
         empty ruler" -- so it must not override one already cascaded
-        from further out the stack (see _NON_CASCADING_STYLE_FIELDS)."""
+        from further out the stack (see _NON_CASCADING_STYLE_FIELDS).
+
+        line_spacing_raw gets a similar, narrower exception: the
+        conversion source's own style emitter (c/styles) only ever
+        writes an explicit `{leading ...}` for a style that has its own
+        linespace bit set -- body text's is *always* set (its presence
+        flag is forced), everything else only if the author actually
+        chose one -- so body's own value is never meant to stand in for
+        an unrelated style's leading. When it's left to fall through
+        unchanged from body and that value is a FIXED (absolute-point,
+        not proportional) leading frozen for body's own font size, and
+        the resolved font_size differs from body's, keep it as "unset"
+        instead so the renderer's own size-relative default applies.
+        A real document (ForSimon3 from the local moreexamples/ corpus)
+        had a 26pt heading style inherit body's fixed ~13pt leading
+        verbatim, producing severely overlapping lines. Proportional
+        leading is scale-invariant and is left to cascade normally."""
         styles_by_slot = {style.index: style for style in self.document.styles}
         body = styles_by_slot.get(0)
         if body is None:
             raise ValueError("document has no body style (slot 0)")
 
         values = {field.name: getattr(body, field.name) for field in dataclasses.fields(Style)}
+        line_spacing_overridden = False
         for slot in style_slots:
             style = styles_by_slot.get(slot)
             if style is None:
@@ -151,6 +168,17 @@ class Converter:
                 value = getattr(style, field.name)
                 if value is not None:
                     values[field.name] = value
+                    if field.name == "line_spacing_raw":
+                        line_spacing_overridden = True
+
+        raw_line_spacing = values["line_spacing_raw"]
+        if (
+            not line_spacing_overridden
+            and raw_line_spacing is not None
+            and raw_line_spacing & 0x80000000  # fixed, not proportional
+            and values["font_size"] != body.font_size
+        ):
+            values["line_spacing_raw"] = None
         return Style(**values)
 
     # -- Frame-chain resolution -------------------------------------------
