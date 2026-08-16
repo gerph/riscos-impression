@@ -541,6 +541,22 @@ class PDFConverter(Converter):
             )
             return
 
+        if (
+            dictionary_dedupe
+            and isinstance(frame, (TextFrame, BlankFrame))
+            and frame.dictionary_index >= 0
+            and frame.dictionary_index in self._rendered_stories
+        ):
+            # Another frame earlier in this same page's stream already
+            # rendered this story's text (see _draw_story's dedupe) --
+            # this frame is a later member of that story's chain. Since a
+            # chain member's box can (and, in real documents, does)
+            # spatially overlap or fully enclose an earlier member's box,
+            # drawing its own fill/border here would paint over -- or sit
+            # uncomfortably beside -- text that's already been placed;
+            # skip it entirely rather than risk hiding real content.
+            return
+
         appearance = self._effective_frame(frame, page)
         if appearance is frame:
             appearance_origin = source_origin

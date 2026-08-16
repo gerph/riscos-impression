@@ -243,6 +243,61 @@ def test_convert_produces_a_well_formed_pdf(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_later_chain_frame_does_not_paint_over_already_rendered_text(tmp_path):
+    """Regression test: a real document (PBServer2 from the local
+    examples/ corpus) has two TextFrame records on one page sharing the
+    same dictionary_index, where the second's box fully encloses the
+    first's. Since a story is only rendered (clipped) in the first chain
+    frame encountered (see the module docstring), the second frame's own
+    box was still being drawn on top of it -- an opaque white fill
+    painted directly over already-placed, still-selectable text. Once a
+    story's text has been placed, no later frame sharing that story
+    should draw its own box either.
+    """
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    small_frame = _frame(
+        x0=30000, y0=60000, x1=90000, y1=90000, filled=True,
+        fill_colour_word=0x0000FF00, dictionary_index=0,
+    )
+    large_frame = _frame(
+        # Fully encloses small_frame's box, and comes after it on the page.
+        x0=0, y0=0, x1=100000, y1=100000, filled=True,
+        fill_colour_word=0x0000FF00, dictionary_index=0,
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, small_frame), _frame_record(1108, large_frame)),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Visible", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Visible) Tj" in data
+    # The large frame's own fill rectangle (spanning the whole 0..100pt
+    # box) must not appear -- only the small frame's fill should be drawn.
+    assert b"0 0 100 100 re f" not in data
+
+
 def test_master_furniture_is_rebased_onto_the_content_page(tmp_path):
     """Regression test: a master page keeps its own, entirely separate
     absolute coordinate canvas (confirmed empirically -- real documents
