@@ -237,6 +237,15 @@ riscos-impression/
   possible later validation step, noted as a follow-up rather than a
   blocker for this stage).
 * Commit: *"Add OvationPro DDL output converter"*.
+* Follow-up correction: the initial commit wrongly claimed the OvationPro
+  XL transform library (`h.transform`/`c.transform`, needed to decompose a
+  rotated+scaled picture into DDL's scale/aspect/angle/skew fields) wasn't
+  part of this repository, and approximated skew as always 0. The library's
+  source is actually present in the sibling `riscos-source` repo at
+  `XL/Task/h/transform` and `XL/Task/c/transform`; `output/ovprodll.py` now
+  ports `tr_setrotationa`/`tr_setscale`/`tr_multiply`/`tr_getbits` directly,
+  so rotated and non-uniformly-scaled pictures get a genuine computed skew.
+  Commit: *"Port the real OvationPro XL transform library for picture skew"*.
 
 ### Stage 9 — Native PDF output
 * `output/pdfdoc.py`: minimal pure-Python PDF writer — xref table, catalog/
