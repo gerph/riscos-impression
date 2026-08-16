@@ -2,7 +2,7 @@ from riscos_impression.model.colours import Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import Paragraph, Run, Story
+from riscos_impression.model.story import Paragraph, Run, Story, TabMark
 from riscos_impression.model.styles import TabStop
 from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
@@ -13,6 +13,7 @@ from riscos_impression.output.pdfdoc import (
     _narrow_for_obstacles,
     _next_tab_stop,
     _PDFWriter,
+    _segment_width,
     _stroke_colour_op,
     _tab_advance,
     _Token,
@@ -298,13 +299,28 @@ def test_wrap_tokens_tab_past_right_edge_forces_a_wrap():
 
 def test_next_tab_stop_uses_style_ruler_when_present():
     style = _style(1, is_body_text=True, tab_stops=(TabStop(kind=0, position=50000),))
-    assert _next_tab_stop(10.0, tab_base_x=0.0, style=style) == 50.0
+    assert _next_tab_stop(10.0, tab_base_x=0.0, style=style) == (50.0, 0)
 
 
 def test_next_tab_stop_default_pitch_without_a_ruler():
     style = _style(1, is_body_text=True, tab_stops=())
-    assert _next_tab_stop(10.0, tab_base_x=0.0, style=style) == 36.0
-    assert _next_tab_stop(40.0, tab_base_x=0.0, style=style) == 72.0
+    assert _next_tab_stop(10.0, tab_base_x=0.0, style=style) == (36.0, 0)
+    assert _next_tab_stop(40.0, tab_base_x=0.0, style=style) == (72.0, 0)
+
+
+def test_next_tab_stop_reports_the_stops_own_kind():
+    style = _style(1, is_body_text=True, tab_stops=(TabStop(kind=2, position=50000),))
+    assert _next_tab_stop(10.0, tab_base_x=0.0, style=style) == (50.0, 2)
+
+
+def test_next_tab_stop_skips_rule_line_markers():
+    # A stop whose kind isn't 0-3 is a rule-line marker, not a real tab
+    # stop, and must be skipped in favour of the next genuine one.
+    style = _style(
+        1, is_body_text=True,
+        tab_stops=(TabStop(kind=9, position=30000), TabStop(kind=0, position=50000)),
+    )
+    assert _next_tab_stop(10.0, tab_base_x=0.0, style=style) == (50.0, 0)
 
 
 def test_tab_advance_moves_to_the_stop_when_it_fits():
@@ -315,6 +331,36 @@ def test_tab_advance_moves_to_the_stop_when_it_fits():
 def test_tab_advance_is_a_no_op_when_the_stop_would_overflow():
     style = _style(1, is_body_text=True, tab_stops=(TabStop(kind=0, position=576000),))
     assert _tab_advance(10.0, tab_base_x=0.0, style=style, right_edge=300.0) == 10.0
+
+
+def test_tab_advance_right_kind_ends_the_segment_at_the_stop():
+    style = _style(1, is_body_text=True, font_size=160, tab_stops=(TabStop(kind=2, position=100000),))
+    segment = [_word("hello", style=style)]  # ~5 chars
+    width = _segment_width(segment)
+    x = _tab_advance(10.0, tab_base_x=0.0, style=style, right_edge=200.0, segment_width=width)
+    assert abs(x - (100.0 - width)) < 1e-9
+
+
+def test_tab_advance_centre_kind_centres_the_segment_on_the_stop():
+    style = _style(1, is_body_text=True, font_size=160, tab_stops=(TabStop(kind=1, position=100000),))
+    segment = [_word("hello", style=style)]
+    width = _segment_width(segment)
+    x = _tab_advance(10.0, tab_base_x=0.0, style=style, right_edge=200.0, segment_width=width)
+    assert abs(x - (100.0 - width / 2.0)) < 1e-9
+
+
+def test_tab_advance_right_kind_never_moves_before_the_tabs_own_position():
+    # A segment too wide to fit even at its own natural stop starts
+    # immediately after the tab instead of overlapping earlier content.
+    style = _style(1, is_body_text=True, tab_stops=(TabStop(kind=2, position=50000),))
+    x = _tab_advance(40.0, tab_base_x=0.0, style=style, right_edge=200.0, segment_width=100.0)
+    assert x == 40.0
+
+
+def test_segment_width_stops_at_the_next_tab_or_break():
+    style = _style(1, is_body_text=True, font_size=160)
+    tokens = [_word("aaaaa", style=style), _Token("tab", "", style), _word("bbbbb", style=style)]
+    assert _segment_width(tokens) == _approx_width("aaaaa", style)
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +540,95 @@ def test_oversized_right_indent_falls_back_to_the_full_container_width(tmp_path)
     assert b"(Indented) Tj" in data
     assert b"(AfterIt) Tj" in data
     assert not converter.log.has_errors()
+
+
+def test_paragraph_tokens_leading_mark_uses_the_paragraphs_own_style():
+    # Regression test: a real document's own numbered contents list
+    # (PCI_Spec) starts each paragraph with a TabMark, before any Run,
+    # to right-align the chapter number against a dedicated style's own
+    # tab ruler. That leading mark had no Run of its own to inherit a
+    # style from yet, so it fell back to the *document's* body style
+    # instead of the paragraph's own applied one -- using the wrong tab
+    # ruler for exactly the tab that was supposed to right-align the
+    # number, while every later tab in the same paragraph correctly
+    # used the right one (style is set per-Run as they're encountered).
+    # This produced inconsistent alignment from row to row, since each
+    # row's own text interacted differently with the wrong ruler.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    numbered = _style(1, font_size=160, tab_stops=(TabStop(kind=2, position=50000),))
+    document = _document(styles=[body, numbered])
+    converter = PDFConverter(document)
+    converter.begin_document()
+
+    paragraph = Paragraph(items=(TabMark(), Run(text="1", style_slots=(1,))))
+    tokens, para_style = converter._paragraph_tokens(paragraph, dictionary_index=0, body_style=body)
+
+    assert tokens[0].kind == "tab"
+    assert tokens[0].style.tab_stops == numbered.tab_stops
+    assert para_style.tab_stops == numbered.tab_stops
+
+
+def test_centre_and_right_tabs_keep_a_short_line_together(tmp_path):
+    """Regression test: a real document (PCI_Spec from the local
+    examples/ corpus) has a footer paragraph "Sheet <n><tab><tab>Issue
+    F ****LIVE****" whose style has a centre tab then a right tab, no
+    left tabs at all. Treating both as plain left tabs (jump to the
+    stop, text starts there) landed the second tab's target so close
+    to the frame's own right edge that the whole "Issue F ****LIVE****"
+    segment overflowed past it and wrapped to a second line -- which
+    the frame (exactly one line tall) had no room for, silently
+    dropping the text entirely rather than just misplacing it. A right
+    tab must position its segment so it *ends* at the stop, not starts
+    there.
+    """
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160, tab_stops=(TabStop(kind=1, position=100000), TabStop(kind=2, position=190000)))
+    # Frame is 200pt wide, exactly one line tall.
+    frame = _frame(x0=0, y0=0, x1=200000, y1=14000, dictionary_index=0)
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=200000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame),),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=200000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.append(dict_entry)
+    story = Story(
+        frame_chain=(),
+        paragraphs=(
+            Paragraph(
+                items=(
+                    Run(text="Sheet 1", style_slots=()),
+                    TabMark(),
+                    TabMark(),
+                    Run(text="Issue F LIVE", style_slots=()),
+                )
+            ),
+        ),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Sheet) Tj" in data
+    assert b"(LIVE) Tj" in data  # the last word; only present if the whole segment made it onto the line
+    assert not any("overflowed" in e.message for e in converter.log.entries)
 
 
 def test_multi_page_chain_flows_text_across_frames(tmp_path):

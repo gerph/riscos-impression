@@ -479,6 +479,47 @@ riscos-impression/
   leaving every subsequent line's spacing untouched. Confirmed against
   the supplied image that text now sits close to each frame's top edge
   as expected.
+* **Post-Stage-14 fix (5)**: tab handling only ever understood left
+  tabs (jump to the stop, following text starts there); the user
+  pointed out (backed by two more real page images and the document's
+  own exported DDL, which confirmed the intended tab rulers exactly)
+  that PCI_Spec's footer and numbered Contents list both use centre
+  and right tabs, and were breaking as a result -- the footer's "Issue
+  F ****LIVE****" was disappearing *entirely* (a right tab landed its
+  text so close to the frame's right edge that it wrapped to a second
+  line the single-line-tall frame had no room for -- silently dropping
+  it, the same failure shape as the earlier right_indent/line_spacing
+  bugs), and the Contents list's chapter numbers, titles, and page
+  numbers landed on inconsistent columns row to row.
+  `_next_tab_stop` now returns each stop's own kind alongside its
+  position (skipping any stop whose kind isn't 0-3, a rule-line marker
+  rather than a real stop); a new `_segment_width` looks ahead to the
+  next tab/break to size the run of tokens a centre/right/decimal tab
+  actually positions, and `_tab_target_x` uses that to work backward
+  from the stop by half, all, or (decimal, simplified to the same as
+  right) the segment's own width -- never past the tab's own starting
+  position, the same "unreachable target is a no-op" fallback already
+  used when a stop itself doesn't fit. Both the wrap decision and the
+  final render now share this, so a right-tab segment that fits (once
+  correctly positioned) no longer forces the spurious line break that
+  was dropping it.
+  Investigating the Contents list surfaced a second, independent bug:
+  `_paragraph_tokens` fell back to the *document's* body style, not
+  the paragraph's own, for any mark (typically a leading TabMark used
+  to right-align a list's own number column) appearing before that
+  paragraph's first Run -- using the wrong tab ruler for exactly the
+  tab meant to right-align the number, while every later tab in the
+  same line correctly used the right one (style is set per-Run as
+  they're reached). Fixed by seeding the paragraph's initial style
+  from its first Run's own style_slots instead of the passed-in body
+  style, falling back to body only when a paragraph truly has no Run
+  at all.
+  Re-validated against all 48 real documents across all five output
+  formats: 0 crashes. Visually and numerically confirmed against
+  PCI_Spec (extracted PDF word coordinates, not just a screenshot) that
+  the footer's right-aligned text is back and the whole Contents list
+  now lands on three consistent columns, matching the document's own
+  reference images and its own exported DDL tab rulers exactly.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS

@@ -467,31 +467,76 @@ def _strip_trailing_space(line: list[_Token]) -> None:
         line.pop()
 
 
-def _next_tab_stop(x_pt: float, tab_base_x: float, style: Style) -> float:
-    """The next tab position at or after *x_pt*, from the style's own
-    tab ruler if it has one (positions are relative to *tab_base_x* --
-    the frame's own left content edge, not any per-line indent, matching
-    a tab ruler's usual frame-relative meaning), else a fixed default
-    pitch."""
+def _next_tab_stop(x_pt: float, tab_base_x: float, style: Style) -> tuple[float, int]:
+    """The next tab stop at or after *x_pt* -- (position, kind) -- from
+    the style's own tab ruler if it has one (positions are relative to
+    *tab_base_x* -- the frame's own left content edge, not any per-line
+    indent, matching a tab ruler's usual frame-relative meaning), else
+    a fixed default pitch, left-kind (0). A stop whose kind isn't one
+    of 0=left/1=centre/2=right/3=decimal (see model.styles.TabStop) is
+    a rule-line marker, not a real stop, and is skipped."""
     if style.tab_stops:
-        positions = sorted(ts.position for ts in style.tab_stops)
-        for pos in positions:
+        stops = sorted((ts.position, ts.kind) for ts in style.tab_stops if ts.kind in (0, 1, 2, 3))
+        for pos, kind in stops:
             candidate = tab_base_x + pos / UNIT
             if candidate > x_pt + 0.5:
-                return candidate
+                return candidate, kind
     default_pitch = 36.0  # half an inch; used only when the style defines no tab ruler
     step = int((x_pt - tab_base_x) / default_pitch) + 1
-    return tab_base_x + step * default_pitch
+    return tab_base_x + step * default_pitch, 0
 
 
-def _tab_advance(x: float, tab_base_x: float, style: Style, right_edge: float) -> float:
-    """The tab's effective new X position: the next tab stop, unless even
-    that would exceed *right_edge*, in which case the tab is treated as a
-    no-op -- a style's tab ruler can be set up for a much wider frame
-    than the one it's actually used in (styles are shared across frames
-    of any size), so its stops aren't always reachable here."""
-    target = _next_tab_stop(x, tab_base_x, style)
-    return target if target <= right_edge else x
+def _segment_width(tokens: list["_Token"]) -> float:
+    """Approx width of a run of tokens up to (not including) the next
+    tab or break. A centre/right/decimal tab stop's position describes
+    where this following segment should *end* (or sit at the middle
+    of), not where it starts, so its actual start position can't be
+    resolved without knowing this width first -- unlike a left tab,
+    which never needs to look ahead at all."""
+    total = 0.0
+    for tok in tokens:
+        if tok.kind in ("tab", "break"):
+            break
+        total += _approx_width(tok.text, tok.style)
+    return total
+
+
+def _tab_target_x(stop: float, kind: int, x: float, segment_width: float) -> float:
+    """Where the segment following a tab should actually start, given
+    the stop it landed on (see _next_tab_stop) and that stop's own
+    kind: left (0) starts the segment AT the stop; centre (1) and
+    right (2) instead work backward from the stop by half, or all, of
+    the segment's own width, so the segment ends up centred on, or
+    ending at, the stop -- decimal (3) is simplified to the same as
+    right (this converter doesn't track where a decimal point falls
+    within a not-yet-placed segment). Never moves backward past the
+    tab's own position *x*: a segment too wide to fit even at its own
+    natural stop just starts immediately after the tab instead, the
+    same "unreachable target is a no-op" fallback used when the stop
+    itself is past the line's right edge entirely (see _tab_advance) --
+    a style's tab ruler can be set up for a much wider frame than the
+    one it's actually used in (styles are shared across frames of any
+    size), so a stop being reachable at all doesn't guarantee a wide
+    segment aimed at it will actually fit."""
+    if kind == 1:
+        target = stop - segment_width / 2.0
+    elif kind in (2, 3):
+        target = stop - segment_width
+    else:
+        target = stop
+    return max(x, target)
+
+
+def _tab_advance(
+    x: float, tab_base_x: float, style: Style, right_edge: float, segment_width: float = 0.0
+) -> float:
+    """The tab's effective new X position (see _tab_target_x), unless
+    even the stop itself would exceed *right_edge*, in which case the
+    tab is treated as a no-op."""
+    stop, kind = _next_tab_stop(x, tab_base_x, style)
+    if stop > right_edge:
+        return x
+    return _tab_target_x(stop, kind, x, segment_width)
 
 
 def _wrap_one_line(
@@ -517,11 +562,13 @@ def _wrap_one_line(
             _strip_trailing_space(line)
             return line, tokens[i + 1 :]
         if tok.kind == "tab":
-            if _next_tab_stop(x, tab_base_x, tok.style) > right_edge and line:
+            stop, _kind = _next_tab_stop(x, tab_base_x, tok.style)
+            if stop > right_edge and line:
                 _strip_trailing_space(line)
                 return line, tokens[i:]
             line.append(tok)
-            x = _tab_advance(x, tab_base_x, tok.style, right_edge)
+            segment_width = _segment_width(tokens[i + 1 :])
+            x = _tab_advance(x, tab_base_x, tok.style, right_edge, segment_width)
             continue
         width = _approx_width(tok.text, tok.style)
         if tok.kind == "word" and line and x + width > right_edge:
@@ -1283,7 +1330,20 @@ class PDFConverter(Converter):
 
     def _paragraph_tokens(self, paragraph, dictionary_index: int, body_style: Style) -> tuple[list[_Token], Style]:
         tokens: list[_Token] = []
-        current_style = body_style
+        # A mark (most commonly a leading TabMark -- real documents use
+        # one to right-align a list's own number column, before any
+        # Run) appearing before the paragraph's first Run has no style
+        # of its own to inherit otherwise; falling back to the
+        # document's body style instead of the paragraph's own applied
+        # style silently used the wrong tab ruler for it (confirmed
+        # against a real document's numbered contents list: a leading
+        # tab landed on the body style's own ruler while every later
+        # tab in the same line correctly used the paragraph's own,
+        # producing inconsistent alignment from row to row depending on
+        # how each row's own text happened to interact with the wrong
+        # ruler).
+        first_run_slots = next((item.style_slots for item in paragraph.items if isinstance(item, Run)), None)
+        current_style = self.resolve_style(first_run_slots) if first_run_slots is not None else body_style
         for item in paragraph.items:
             if isinstance(item, Run):
                 current_style = self.resolve_style(item.style_slots)
@@ -1490,9 +1550,10 @@ class PDFConverter(Converter):
         current_size = None
         current_colour_key = None
         x = origin_x
-        for tok in tokens:
+        for idx, tok in enumerate(tokens):
             if tok.kind == "tab":
-                x = _tab_advance(x, tab_base_x, tok.style, right_edge)
+                segment_width = _segment_width(tokens[idx + 1 :])
+                x = _tab_advance(x, tab_base_x, tok.style, right_edge, segment_width)
                 continue
             font = choose_standard_font(tok.style)
             size = (tok.style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
