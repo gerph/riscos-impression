@@ -661,6 +661,36 @@ riscos-impression/
   reproduce the diagram's boxes and connecting lines correctly and
   match each other's coordinates.
 * Commit: *"Add real DrawFile decoding and PDF/SVG rendering"*.
+* **Post-Stage-14 fix**: the user pointed at a real page image
+  (PCI_Spec) where two whole DrawFile diagrams were entirely invisible
+  and guessed it was the same "unsupported object type" gap already
+  logged. It wasn't -- two separate, real bugs, found by tracing the
+  actual generated PDF content stream against the picture's own
+  decoded objects:
+  1. The picture frames' own `level` (front-to-back stacking; see
+     "Frame flags word") put them *above* a big filled text frame
+     drawn later in the object-record stream, but every converter
+     walked `page.frames` in raw stream order, painting the text
+     frame's opaque fill on top of the pictures instead of the other
+     way round. Fixed by making `PageGroup.frames` a stable sort by
+     `level` rather than stream order -- a shared, document-model-level
+     fix benefiting every converter, not just the PDF one.
+  2. Once visible, the pictures' own text was still invisible --
+     rendering at roughly 1/100th its intended size (a ~0.01pt font),
+     confirmed directly in the PDF content stream's own `Tf` operator.
+     `DrawText.size_y` is already in points (1/640 point, per the
+     format), unlike a `DrawPath`'s Draw-unit-denominated `line_width`,
+     so scaling it directly by the picture's own points-per-Draw-unit
+     ratio was a straight unit mismatch; the same bug, in the opposite
+     direction, also affected (less visibly) stroke width. Fixed in
+     both `pdfdoc.py` and `html_base.py`'s DrawFile renderers.
+  Both fixes needed genuinely realistic Draw-unit-scale test fixtures
+  to catch at all -- the original tests happened to use bounds equal
+  to the target box in points, which cancels the unit mismatch by
+  coincidence. Re-validated against all 48 real documents across all
+  five output formats: 0 crashes. Visually confirmed against PCI_Spec
+  that both diagrams' full text content (scale labels, box captions,
+  address values) now renders.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a

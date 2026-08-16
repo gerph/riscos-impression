@@ -103,6 +103,30 @@ def test_drawfile_svg_renders_text_using_the_font_tables_own_name():
     assert "serif" in svg  # Trinity maps to the serif stack
 
 
+def test_drawfile_svg_text_size_accounts_for_the_points_vs_drawunits_mismatch():
+    # Regression test: mirrors pdfdoc.py's own -- text.size_y is
+    # already in points, unlike a path's Draw-unit-denominated
+    # line_width, so scaling it directly by the picture's own points-
+    # per-Draw-unit ratio was a unit mismatch, rendering DrawFile text
+    # at roughly 1/100th its intended size. Realistic Draw-unit-scale
+    # bounds (tens of thousands of units), not a round number matching
+    # the target box in points -- with a 1:1-scale bounds/target box
+    # the bug and the fix give the same answer.
+    from riscos_impression.output.html_base import _DRAW_UNIT_TO_PT
+
+    fonts = build_font_table({1: "Homerton.Medium"})
+    text = build_text(text="Hello", font_number=1, size_x=8960, size_y=8960, baseline_x=0, baseline_y=0)
+    bounds = (0, 0, 25600, 25600)
+    draw = DrawFile.from_bytes(build_drawfile(fonts + text, bounds=bounds))
+
+    svg = _converter()._drawfile_svg(draw, width_pt=100.0, height_pt=100.0)
+
+    sy = 100.0 / 25600
+    expected_size_pt = (8960 / 640.0) * (sy / _DRAW_UNIT_TO_PT)
+    assert expected_size_pt > 1.0
+    assert f"font-size:{expected_size_pt:.2f}pt" in svg
+
+
 def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
     draw = DrawFile.from_bytes(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000))))
     converter = _converter()

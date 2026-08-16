@@ -1031,8 +1031,14 @@ class PDFConverter(Converter):
             style_parts.append(_draw_rgb_op(path.fill_colour, stroke=False))
         if has_stroke:
             style_parts.append(_draw_rgb_op(path.stroke_colour, stroke=True))
+            # scale[i] is already "target points per source Draw unit"
+            # (the same ratio to_pt uses for coordinates), so it
+            # converts line_width (in Draw units) to points directly --
+            # no separate _DRAW_UNIT_TO_PT factor needed here (unlike
+            # _draw_drawfile_text's size_pt, which starts from a value
+            # already in points and so needs the opposite correction).
             line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
-            width_pt = path.line_width * _DRAW_UNIT_TO_PT * line_scale if path.line_width else 0.3
+            width_pt = path.line_width * line_scale if path.line_width else 0.3
             style_parts.append(f"{_fmt(max(0.1, width_pt))} w\n")
 
         op_code = {(True, True): "B", (True, False): "f", (False, True): "S"}[(has_fill, has_stroke)]
@@ -1045,7 +1051,17 @@ class PDFConverter(Converter):
         if not text.text.strip() or text.size_y <= 0:
             return
         sx, sy = scale
-        size_pt = (text.size_y / 640.0) * abs(sy)
+        # text.size_y is already in points (1/640 point, per the
+        # format), unlike a path's Draw-unit-denominated line_width --
+        # so scaling it by sy directly (a points-per-Draw-unit ratio)
+        # would be a unit mismatch, giving a font size smaller than
+        # intended by roughly the same factor sy is smaller than 1pt-
+        # per-Draw-unit (confirmed against a real document: this
+        # produced a ~0.01pt font size, rendering the text completely,
+        # invisibly small rather than visibly missing). Dividing by
+        # _DRAW_UNIT_TO_PT first turns sy into the dimensionless
+        # magnification the picture is actually being drawn at.
+        size_pt = (text.size_y / 640.0) * (abs(sy) / _DRAW_UNIT_TO_PT)
         if size_pt <= 0.01:
             return
         # The DrawFile's own x/y font-size ratio, composed with the

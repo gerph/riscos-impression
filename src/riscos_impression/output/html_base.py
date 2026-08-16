@@ -340,8 +340,12 @@ class HTML5Converter(Converter):
         stroke = _draw_colour_to_css(path.stroke_colour) if has_stroke else "none"
         attrs = [f'd="{" ".join(d_parts)}"', f'fill="{fill}"', f'stroke="{stroke}"']
         if has_stroke:
+            # scale[i] is already "target points per source Draw unit"
+            # (see pdfdoc.py's own _draw_drawfile_path for the same
+            # calculation and why no separate _DRAW_UNIT_TO_PT factor
+            # belongs here).
             line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
-            width_pt = path.line_width * _DRAW_UNIT_TO_PT * line_scale if path.line_width else 0.3
+            width_pt = path.line_width * line_scale if path.line_width else 0.3
             attrs.append(f'stroke-width="{max(0.1, width_pt):.2f}"')
         if has_fill and path.even_odd:
             attrs.append('fill-rule="evenodd"')
@@ -355,7 +359,13 @@ class HTML5Converter(Converter):
         # font-size skew the DrawFile itself declares (a rare case, and
         # SVG has no equally direct equivalent without first knowing
         # the glyphs' own natural width) -- a deliberate simplification.
-        size_pt = (text.size_y / 640.0) * abs(sy)
+        #
+        # text.size_y is already in points (1/640 point); dividing by
+        # _DRAW_UNIT_TO_PT turns sy (points per Draw unit) into the
+        # dimensionless magnification the picture is actually being
+        # drawn at -- see pdfdoc.py's own _draw_drawfile_text for the
+        # real-document bug this fixes (font size ~100x too small).
+        size_pt = (text.size_y / 640.0) * (abs(sy) / _DRAW_UNIT_TO_PT)
         if size_pt <= 0.5:
             return
         x, y = to_svg(text.baseline_x, text.baseline_y)

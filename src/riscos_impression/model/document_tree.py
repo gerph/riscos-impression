@@ -47,8 +47,26 @@ class PageGroup:
     @property
     def frames(self) -> tuple[object, ...]:
         """The decoded value of each frame record on this page (Frame
-        subclasses; excludes any record whose type wasn't recognised)."""
-        return tuple(r.value for r in self.records if r.value is not None)
+        subclasses; excludes any record whose type wasn't recognised),
+        in *drawing* order -- stably sorted by each frame's own `level`
+        (see docs/impression-documents.xml, "Frame flags word": "Front-
+        to-back stacking level of the frame (0 upwards)"), not raw
+        object-record stream order. A real document's own stream order
+        doesn't have to match its visual stacking at all: a picture can
+        (and, confirmed against a real document and the user's own
+        reference image, does) sit at a *higher* level than a filled
+        text frame that comes later in the stream, meaning the text
+        frame's own opaque fill must be painted first and the picture
+        drawn afterwards, on top of it -- the reverse of stream order.
+        Frames sharing a level keep their relative stream order (a
+        stable sort), which is what makes same-level chain/group
+        members still resolve consistently."""
+        return tuple(
+            sorted(
+                (r.value for r in self.records if r.value is not None),
+                key=lambda frame: getattr(frame, "level", 0),
+            )
+        )
 
 
 @dataclass(frozen=True)

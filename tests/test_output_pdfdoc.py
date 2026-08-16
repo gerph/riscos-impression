@@ -858,6 +858,35 @@ def test_drawfile_text_object_renders_using_the_font_tables_own_name(tmp_path):
     assert b"/BaseFont /Times-Bold" in data
 
 
+def test_drawfile_text_size_accounts_for_the_points_vs_drawunits_mismatch(tmp_path):
+    # Regression test: a real document (PCI_Spec) had DrawFile text
+    # completely invisible -- not missing from the PDF, but rendered
+    # at roughly 1/100th its intended size. text.size_y is already in
+    # points (1/640 point per the format), unlike a path's Draw-unit-
+    # denominated line_width, so scaling it directly by the picture's
+    # own points-per-Draw-unit ratio was a unit mismatch. Uses
+    # realistic Draw-unit-scale bounds (tens of thousands of units, not
+    # a round number matching the target box in points) -- with a 1:1-
+    # scale bounds/target box, the bug and the fix give the same
+    # answer, which is exactly why this needed its own test.
+    from riscos_impression.output.pdfdoc import PDFConverter, _DRAW_UNIT_TO_PT, _fmt
+
+    fonts = build_font_table({1: "Homerton.Medium"})
+    text = build_text(text="Hello", font_number=1, size_x=8960, size_y=8960, baseline_x=0, baseline_y=0)
+    bounds = (0, 0, 25600, 25600)  # a 100 OS-unit-square native canvas
+    document = _picture_document(build_drawfile(fonts + text, bounds=bounds), x1=100000, y1=100000)  # 100pt target
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    sy = 100.0 / 25600  # target points per source Draw unit
+    expected_size_pt = (8960 / 640.0) * (sy / _DRAW_UNIT_TO_PT)
+    assert expected_size_pt > 1.0  # sanity: this is nowhere near the old ~0.01pt bug
+    assert f"{_fmt(expected_size_pt)} Tf".encode("latin-1") in data
+
+
 def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
     from riscos_impression.output.pdfdoc import PDFConverter
 
