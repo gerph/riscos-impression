@@ -28,6 +28,16 @@ omitted, so that a reader attempting a fuller implementation knows
 exactly what remains to be determined.
 </p>
 <p>
+Two distinct text formats are relevant to this chapter, and are not
+interchangeable: DDL (Document Description Language) is OvationPro's
+own format, produced by the TransIMP converter this chapter is
+reverse-engineered from; DDF is Impression's own separate
+export/save-as-text format, produced by Impression itself, not
+OvationPro. A field's on-disk meaning can be cross-checked against
+either, but the two should not be assumed to share field names or
+semantics beyond a broad family resemblance.
+</p>
+<p>
 <fixme>
 Substantial areas of the format, in particular much of the file header,
 several bitfields in the frame and style records, and a handful of the
@@ -521,8 +531,8 @@ as follows:
 <offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
 <offset number="104" name="xscale" data-size="4">Horizontal scale factor for the picture. Stored as the reciprocal of the displayed horizontal scale; 0x10000 represents unity scale.</offset>
 <offset number="108" name="yscale" data-size="4">Vertical scale factor, using the same reciprocal convention as xscale.</offset>
-<offset number="112" name="xshift" data-size="4">Horizontal origin shift for the picture within its frame.</offset>
-<offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame.</offset>
+<offset number="112" name="xshift" data-size="4">Horizontal origin shift for the picture within its frame. The on-disk field name and the conversion source's own DDL emission suggest a millipoint offset of the content's own bottom-left corner from the frame's bottom-left, but this interpretation has been found to clip away genuinely visible picture content when checked against real documents. The true anchor/sign convention remains unconfirmed; it needs OvationPro's own DDL "picturedata bottomleft" semantics to pin down properly.</offset>
+<offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame; see xshift.</offset>
 <offset number="120" name="angle" data-size="4">Rotation angle, in degrees multiplied by 0x10000 (16.16 fixed-point degrees).</offset>
 <offset number="124-127" data-size="4">Packed word: lpi (halftone screen ruling, in lines per inch), psscreen (halftone screen angle or identifier), and psx0 (remaining bits, unknown). All three are meaningful only when the usepsscreen flag bit is set. The exact byte order of this word could not be confirmed: the source's own inline comments for lpi and psscreen give offsets in the opposite order to their declaration, suggesting the original author was themselves unsure of the precise layout. No picture frame with usepsscreen set was found in an empirical 46-document survey, so this remains untested against real data either way.</offset>
 <offset number="128-159" name="y" data-size="32" state="undefined">Unknown; reserved block of eight 32-bit words.</offset>
@@ -776,7 +786,7 @@ are listed here in bit, and therefore storage, order):
 <bit number="8" name="underline">Text is underlined.</bit>
 <bit number="9" name="script">Text is subscript or superscript.</bit>
 <bit number="10" name="strikeout">Text has strikeout.</bit>
-<bit number="11" name="alignment">Paragraph alignment is set (0 = left, ... 3 = justified, per the source's own comment).</bit>
+<bit number="11" name="alignment">Paragraph alignment is set (0 = left, 3 = justified, per the source's own comment; 1 = centre and 2 = right are inferred by conventional ordering rather than confirmed directly from the conversion source, but consistent with real documents' own centred and right-aligned paragraphs).</bit>
 <bit number="12" name="keepsingle">Unconfirmed pagination "keep" option. Decoded but not reproduced.</bit>
 <bit number="13" name="keepmultiple">Unconfirmed pagination "keep" option. Decoded but not reproduced.</bit>
 <bit number="14" name="hyphenation">Automatic hyphenation setting is present.</bit>
@@ -860,7 +870,7 @@ as present, regardless of its own presence-flags bits.
 <definition name="underline" extra="flags1 bit 8">Underline style selector; combines with the trailing underlinecolour word to produce the output underline description.</definition>
 <definition name="script" extra="flags1 bit 9">0 = none, 1 = subscript, 2 = superscript.</definition>
 <definition name="strikeout" extra="flags1 bit 10">Strikeout style selector; combines with the trailing underlinecolour word.</definition>
-<definition name="alignment" extra="flags1 bit 11">Paragraph alignment: 0 = left ... 3 = justified.</definition>
+<definition name="alignment" extra="flags1 bit 11">Paragraph alignment: 0 = left, 1 = centre, 2 = right (inferred by conventional ordering -- see the presence-flags bit definition above), 3 = justified.</definition>
 <definition name="keepsingle" extra="flags1 bit 12">Consumed but not emitted.</definition>
 <definition name="keepmultiple" extra="flags1 bit 13">Consumed but not emitted.</definition>
 <definition name="hyphenation" extra="flags1 bit 14">Automatic hyphenation setting.</definition>
@@ -892,11 +902,11 @@ boundary before the four-byte fields begin.
 <p>
 <definition-table head-name="Field" head-extra="Governing bit" head-value="Meaning">
 <definition name="ruler0" extra="flags2 bit 0">Left indent.</definition>
-<definition name="ruler1" extra="flags2 bit 1">Right indent; a positive stored value is a delta from the frame's right edge, a negative value an absolute offset (the sign determines which indent type is emitted).</definition>
+<definition name="ruler1" extra="flags2 bit 1">Right indent. The raw stored value's sign selects one of two entirely different placements for the column's right edge, matching the conversion source's own commented-out INDENTABS(0)/INDENTDELTA(1)/INDENTOFFSET(2) enum and formulas immediately above its DDL emission: a POSITIVE stored value is an offset from the frame's own LEFT edge (DDL kind 2, INDENTOFFSET: right_edge = frame_left + value) -- despite the field's conventional name, this is not a delta from the frame's right edge. A non-positive stored value's absolute magnitude is a genuine delta from the frame's own RIGHT edge (DDL kind 0, the conversion source's own default/else-branch formula: right_edge = frame_left + frame_width - abs(value)). A style's own right margin as shown in Impression's ruler dialog can therefore be stored either way; both forms are seen in real documents.</definition>
 <definition name="ruler2" extra="flags2 bit 2">First-line indent, stored as an absolute position; the emitted value is this field minus ruler0 (the left indent), giving an indent relative to the body text.</definition>
 <definition name="scriptoffset" extra="flags2 bit 3">Consumed but not emitted.</definition>
 <definition name="scriptsize" extra="flags2 bit 4">Consumed but not emitted.</definition>
-<definition name="linespace" extra="flags2 bit 5">Line spacing (leading). The top bit of the stored word selects fixed leading (remaining 24 bits, minus 0x10000, is the fixed value) versus proportional/single leading (remaining 24 bits directly).</definition>
+<definition name="linespace" extra="flags2 bit 5">Line spacing (leading). The top bit of the stored word selects fixed leading (remaining 24 bits, minus 0x10000, is the fixed value, in millipoints) versus proportional leading (remaining 24 bits directly, as a literal percentage times 100 -- e.g. 12000 means 120%; reading it as a literal percent instead produces line heights roughly 100x too tall). This field is always present for the body style (its presence bit is forced on regardless of flags2). A large majority of real documents share an identical fixed raw value (0x80013333, 13.107pt) for their body style regardless of that style's own font size, suggesting this is the application's own hardcoded default for newly-created styles rather than a value computed from font size. An implementor cascading this field from an enclosing style (ultimately the body style, which always has one) should be aware that a cascaded or otherwise-unedited fixed value can be stale relative to the font size it ends up applied to (e.g. a style's font size changed after its leading was last set, or a differently-sized style inheriting a fixed value that was never intended to carry over) -- naively trusting a stale fixed value can produce line spacing visibly too small for the current font size.</definition>
 <definition name="spacebelow" extra="flags2 bit 6">Space after the paragraph.</definition>
 <definition name="spaceabove" extra="flags2 bit 7">Space before the paragraph (low 24 bits used).</definition>
 <definition name="ulineoffset0" extra="flags2 bit 8">Decoded but not emitted in the output.</definition>
