@@ -849,6 +849,43 @@ riscos-impression/
   what the user read directly from the Impression editor, and that the
   picture now renders centred in its column, matching the reference
   image.
+* **Post-Stage-14 fix (5)**: the user asked whether arrowheads on
+  DrawFile paths were feasible, and pointed at a real, independent
+  reference (a Pyromaniac PyModule implementation of the actual RISC
+  OS DrawFile module -- a genuine emulation of the real renderer, not
+  just documentation). That reference confirmed precisely what real
+  arrowheads in classic Draw actually are: not a separate drawn
+  object, but a *triangular cap* on a stroked path's own start/end
+  (the same path-style-word cap fields the format doc already
+  described, but whose exact bit layout -- join bits 0-1, end/
+  "trailing" cap bits 2-3, start/"leading" cap bits 4-5, not a naive
+  reading of the field names -- could now be independently confirmed
+  against real rendering code rather than just the PRM's own field
+  descriptions). This also explained a visual defect spotted earlier
+  in PCI_Spec's second diagram (a short, wide line rendering as a
+  filled black bar): it was a real triangular-capped arrow line,
+  previously drawn as a plain uncapped stroke since caps/joins weren't
+  decoded or honoured at all.
+  `formats/drawfile.py`'s `DrawPath` now decodes join_style/start_cap/
+  end_cap/triangle_cap_width/triangle_cap_length from the path style
+  word. Neither PDF nor SVG has a native triangular line-cap option,
+  so both `pdfdoc.py` and `html_base.py` draw one as an explicit
+  filled triangle at the relevant subpath endpoint instead -- a base
+  the cap's own declared width, centred on and perpendicular to the
+  path's own tangent direction there, with an apex extending the
+  cap's own declared length further out along that direction (both in
+  the file's own 1/16ths-of-line-width unit, scaled via the stroke's
+  own already-computed on-page width) -- matching the exact geometry
+  Draw_Stroke itself would produce. A closed subpath has no real
+  start/end to cap and is skipped. Dash patterns and non-triangular
+  join styles remain unhonoured (a narrower, deliberate scope: they
+  don't produce a visibly broken result the way an un-arrow-headed
+  pointer line does, unlike this).
+  Re-validated against all 48 real documents across all five output
+  formats: 0 crashes. Visually confirmed against PCI_Spec's own
+  diagrams, in both PDF and HTML/SVG output, that every pointer line
+  now ends in a real, correctly-oriented arrowhead instead of a plain
+  line end or a stray filled bar.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a

@@ -57,9 +57,17 @@ ConversionLog rather than guessed at silently:
   rejected: it clipped away real, visible picture content in every
   real example checked) -- centring is used instead as a safer
   default until the real anchor convention is confirmed. Dash patterns
-  and precise cap/join styles are parsed but not honoured (lines
-  render solid with default caps/joins); a Sprite object embedded
-  *within* a DrawFile,
+  are parsed but not honoured (lines render solid); join styles aren't
+  honoured either (PDF's own default mitred join is used regardless).
+  Triangular caps (the mechanism real Draw files use for arrowhead/
+  pointer line ends -- confirmed against the actual RISC OS DrawFile
+  module's own rendering implementation, not just the PRM's field
+  descriptions) ARE honoured: PDF has no native triangular line-cap
+  style, so one is drawn as an explicit filled triangle at the
+  subpath's own start/end instead (see _draw_triangular_caps); plain
+  butt/round caps are not distinguished from each other (both render
+  as PDF's own default butt cap). A Sprite object embedded *within* a
+  DrawFile,
   and any other undecoded object type (text area, options, transformed
   text/sprite), still falls back to a labelled placeholder box for just
   that object, logged once per picture. A picture that isn't a valid
@@ -111,12 +119,14 @@ ConversionLog rather than guessed at silently:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
 from riscos_impression.formats.drawfile import (
+    CAP_TRIANGULAR,
     DrawFile,
     DrawGroup,
     DrawPath,
@@ -475,6 +485,84 @@ def _draw_rgb_op(word: int, stroke: bool) -> str:
     r, g, b = colour_rgb(word)
     op = "RG" if stroke else "rg"
     return f"{_fmt(r / 255)} {_fmt(g / 255)} {_fmt(b / 255)} {op}\n"
+
+
+# ---------------------------------------------------------------------------
+# DrawFile triangular caps (arrowheads)
+# ---------------------------------------------------------------------------
+
+
+def _unit_vector(dx: float, dy: float) -> tuple[float, float]:
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return 0.0, 0.0
+    return dx / length, dy / length
+
+
+def _subpath_cap_directions(
+    ops: list, to_pt
+) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]]:
+    """For each *open* subpath in *ops* (i.e. not closed by
+    CLOSE_LINE/CLOSE_GAP), the (start_point, start_outward_dir,
+    end_point, end_outward_dir) needed to draw a triangular cap at
+    either end -- all already in the final PDF point space (via
+    *to_pt*, so a non-uniform x/y scale is accounted for correctly: a
+    direction is computed by transforming both of the two points it's
+    derived from and taking their difference, not by transforming a
+    doc-space unit vector directly, which a non-uniform scale would
+    distort). A closed subpath has no real start/end to cap and is
+    skipped entirely. CURVE control points are ignored for direction
+    purposes -- only the curve's own end point is used as an ordinary
+    vertex, a reasonable approximation for the tangent at a subpath's
+    own start/end; no real document found during development used a
+    curve immediately there."""
+    subpaths: list[list[tuple[int, int]]] = []
+    current: list[tuple[int, int]] = []
+    closed = False
+
+    def flush() -> None:
+        if len(current) >= 2 and not closed:
+            subpaths.append(list(current))
+        current.clear()
+
+    for op in ops:
+        if op.code in (DrawPathOpCode.MOVE, DrawPathOpCode.MOVE_INTERNAL):
+            flush()
+            closed = False
+            current.append((op.x, op.y))
+        elif op.code in (DrawPathOpCode.LINE, DrawPathOpCode.GAP, DrawPathOpCode.CURVE):
+            current.append((op.x, op.y))
+        elif op.code in (DrawPathOpCode.CLOSE_LINE, DrawPathOpCode.CLOSE_GAP):
+            closed = True
+    flush()
+
+    results = []
+    for verts in subpaths:
+        p0 = to_pt(*verts[0])
+        p1 = to_pt(*verts[1])
+        pn = to_pt(*verts[-1])
+        pn1 = to_pt(*verts[-2])
+        start_dir = _unit_vector(p0[0] - p1[0], p0[1] - p1[1])
+        end_dir = _unit_vector(pn[0] - pn1[0], pn[1] - pn1[1])
+        results.append((p0, start_dir, pn, end_dir))
+    return results
+
+
+def _triangular_cap_polygon(
+    point: tuple[float, float], direction: tuple[float, float], width_pt: float, length_pt: float
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """The three vertices of a triangular cap at *point*: a base,
+    *width_pt* wide and centred on *point*, perpendicular to
+    *direction*, and an apex *length_pt* further out along
+    *direction*."""
+    px, py = point
+    dx, dy = direction
+    nx, ny = -dy, dx  # perpendicular to (dx, dy)
+    half = width_pt / 2.0
+    base_left = (px + nx * half, py + ny * half)
+    base_right = (px - nx * half, py - ny * half)
+    apex = (px + dx * length_pt, py + dy * length_pt)
+    return base_left, apex, base_right
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1280,7 @@ class PDFConverter(Converter):
             return
 
         style_parts = []
+        width_pt = 0.0
         if has_fill:
             style_parts.append(_draw_rgb_op(path.fill_colour, stroke=False))
         if has_stroke:
@@ -1211,6 +1300,46 @@ class PDFConverter(Converter):
             op_code += "*"
 
         self._content.append("".join(style_parts) + "".join(path_parts) + f"{op_code}\n")
+
+        if has_stroke and (path.start_cap == CAP_TRIANGULAR or path.end_cap == CAP_TRIANGULAR):
+            self._draw_triangular_caps(path, to_pt, width_pt)
+
+    def _draw_triangular_caps(self, path: DrawPath, to_pt, width_pt: float) -> None:
+        """Draw a filled arrowhead-style triangle at the start and/or
+        end of each open subpath in *path*, matching the cap style the
+        real RISC OS DrawFile module applies via Draw_Stroke's own
+        triangular cap feature -- confirmed against that module's own
+        rendering implementation, not just the PRM's field
+        descriptions (see formats/drawfile.py's own module docstring).
+        PDF's line-cap styles (butt/round/square) have no triangular
+        option, so this draws the exact same shape Draw_Stroke itself
+        would produce as an explicit filled triangle instead: a
+        *width*-wide base sitting at the path's own endpoint, an apex
+        extending *length* further out along the path's own tangent
+        direction there (both stored in the file as 1/16ths of the
+        stroke's own line width -- see DrawPath.triangle_cap_width/
+        length -- scaled here via *width_pt*, the stroke's own already-
+        computed on-page width). A closed subpath (one ending in
+        CLOSE_LINE/CLOSE_GAP) has no real start/end to cap and is
+        skipped."""
+        for start_pt, start_dir, end_pt, end_dir in _subpath_cap_directions(path.ops, to_pt):
+            if path.start_cap == CAP_TRIANGULAR:
+                self._draw_one_triangular_cap(path, start_pt, start_dir, width_pt)
+            if path.end_cap == CAP_TRIANGULAR:
+                self._draw_one_triangular_cap(path, end_pt, end_dir, width_pt)
+
+    def _draw_one_triangular_cap(
+        self, path: DrawPath, point: tuple[float, float], direction: tuple[float, float], width_pt: float
+    ) -> None:
+        if direction == (0.0, 0.0):
+            return  # a zero-length subpath has no direction to point the cap in
+        cap_width_pt = (path.triangle_cap_width / 16.0) * width_pt
+        cap_length_pt = (path.triangle_cap_length / 16.0) * width_pt
+        if cap_width_pt <= 0 or cap_length_pt <= 0:
+            return
+        (x0, y0), (x1, y1), (x2, y2) = _triangular_cap_polygon(point, direction, cap_width_pt, cap_length_pt)
+        self._content.append(_draw_rgb_op(path.stroke_colour, stroke=False))
+        self._content.append(f"{_fmt(x0)} {_fmt(y0)} m {_fmt(x1)} {_fmt(y1)} l {_fmt(x2)} {_fmt(y2)} l h f\n")
 
     def _draw_drawfile_text(self, text: DrawText, fonts: dict, to_pt, scale: tuple[float, float]) -> None:
         if not text.text.strip() or text.size_y <= 0:

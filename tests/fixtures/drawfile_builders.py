@@ -31,8 +31,21 @@ def build_path(
     line_width: int = 0,
     even_odd: bool = False,
     dashed: bool = False,
+    join_style: int = 0,
+    start_cap: int = 0,
+    end_cap: int = 0,
+    triangle_cap_width: int = 0,
+    triangle_cap_length: int = 0,
 ) -> bytes:
-    style = (0x40 if even_odd else 0) | (0x80 if dashed else 0)
+    style = (
+        (join_style & 3)
+        | ((end_cap & 3) << 2)
+        | ((start_cap & 3) << 4)
+        | (0x40 if even_odd else 0)
+        | (0x80 if dashed else 0)
+        | ((triangle_cap_width & 0xFF) << 16)
+        | ((triangle_cap_length & 0xFF) << 24)
+    )
     dash = struct.pack("<4i", 0, 2, 10, 5) if dashed else b""
     body = struct.pack("<4I", fill_colour, stroke_colour, line_width, style) + dash + ops
     return _obj_header(2, 24 + len(body), bounds) + body

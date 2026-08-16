@@ -1321,6 +1321,84 @@ def test_drawfile_text_size_accounts_for_the_points_vs_drawunits_mismatch(tmp_pa
     assert f"{_fmt(expected_size_pt)} Tf".encode("latin-1") in data
 
 
+def test_unit_vector_normalises_and_handles_zero_length():
+    from riscos_impression.output.pdfdoc import _unit_vector
+
+    ux, uy = _unit_vector(3.0, 4.0)
+    assert abs(ux - 0.6) < 1e-9
+    assert abs(uy - 0.8) < 1e-9
+    assert _unit_vector(0.0, 0.0) == (0.0, 0.0)
+
+
+def test_triangular_cap_polygon_geometry():
+    from riscos_impression.output.pdfdoc import _triangular_cap_polygon
+
+    base_left, apex, base_right = _triangular_cap_polygon((10.0, 10.0), (1.0, 0.0), width_pt=4.0, length_pt=6.0)
+    # Pointing along +x: base perpendicular (along y), apex further along +x.
+    assert base_left == (10.0, 12.0)
+    assert base_right == (10.0, 8.0)
+    assert apex == (16.0, 10.0)
+
+
+def test_subpath_cap_directions_skips_closed_subpaths():
+    from riscos_impression.output.pdfdoc import _subpath_cap_directions
+
+    ops = [move(0, 0), line(100, 0), line(100, 100), close_line(), end_path()]
+    # Parse the raw bytes back into DrawPathOp objects via the real
+    # parser, rather than hand-building op objects, so this exercises
+    # the same decode path real documents go through.
+    from riscos_impression.formats.drawfile import DrawFile
+
+    data = build_drawfile(build_path(ops=b"".join(ops), stroke_colour=0))
+    path = DrawFile.from_bytes(data).objects[0]
+    results = _subpath_cap_directions(path.ops, lambda x, y: (float(x), float(y)))
+    assert results == []  # closed subpath: no cap points at all
+
+
+def test_subpath_cap_directions_open_subpath():
+    from riscos_impression.output.pdfdoc import _subpath_cap_directions
+    from riscos_impression.formats.drawfile import DrawFile
+
+    ops = b"".join([move(0, 0), line(100, 0), end_path()])
+    data = build_drawfile(build_path(ops=ops, stroke_colour=0))
+    path = DrawFile.from_bytes(data).objects[0]
+    ((start_pt, start_dir, end_pt, end_dir),) = _subpath_cap_directions(
+        path.ops, lambda x, y: (float(x), float(y))
+    )
+    assert start_pt == (0.0, 0.0)
+    assert start_dir == (-1.0, 0.0)  # points back past the path's own start
+    assert end_pt == (100.0, 0.0)
+    assert end_dir == (1.0, 0.0)  # points on past the path's own end
+
+
+def test_drawfile_path_with_triangular_end_cap_draws_an_arrowhead(tmp_path):
+    """Regression test: a real document (PCI_Spec) used a triangular
+    trailing cap to draw pointer/arrow lines in its own DrawFile
+    diagrams -- confirmed against the real RISC OS DrawFile module's
+    own rendering implementation, and previously rendered as a plain,
+    uncapped stroke (looking like a stray filled bar for a short, wide
+    line) since caps/joins weren't honoured at all."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(2560, 0) + end_path()  # a 10pt-long horizontal line
+    path = build_path(
+        ops=ops, bounds=(0, 0, 2560, 100), stroke_colour=0xFF000000, line_width=256,  # blue, 1pt line
+        end_cap=3, triangle_cap_width=32, triangle_cap_length=64,  # 2x/4x line width
+    )
+    document = _picture_document(build_drawfile(path, bounds=(0, 0, 2560, 100)), x1=100000, y1=100000)
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+    content = data.decode("latin-1")
+
+    assert not converter.log.has_errors()
+    # A filled ("f", not stroked) triangle: 3 points via m/l/l, closed, filled.
+    assert " m " in content and " l " in content and content.count(" l ") >= 2
+    assert "h f\n" in content
+
+
 def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
     from riscos_impression.output.pdfdoc import PDFConverter
 

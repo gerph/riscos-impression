@@ -128,6 +128,37 @@ def test_path_object_even_odd_winding_rule():
     assert path.even_odd is True
 
 
+def test_path_object_join_and_cap_style_bits():
+    # Regression test: a real document (PCI_Spec) used a triangular
+    # trailing cap to draw pointer/arrow lines; the bit positions here
+    # are confirmed against the actual RISC OS DrawFile module's own
+    # rendering implementation (join bits 0-1, end/"trailing" cap bits
+    # 2-3, start/"leading" cap bits 4-5 -- not the order a naive reading
+    # of the field names might suggest).
+    ops = move(0, 0) + line(1000, 0) + end_path()
+    data = build_drawfile(
+        build_path(
+            ops=ops, stroke_colour=0, join_style=1, start_cap=2, end_cap=3,
+            triangle_cap_width=32, triangle_cap_length=64,
+        )
+    )
+    path = DrawFile.from_bytes(data).objects[0]
+    assert path.join_style == 1
+    assert path.start_cap == 2
+    assert path.end_cap == 3
+    assert path.triangle_cap_width == 32
+    assert path.triangle_cap_length == 64
+
+
+def test_path_object_default_caps_are_butt():
+    ops = move(0, 0) + end_path()
+    data = build_drawfile(build_path(ops=ops, fill_colour=0))
+    path = DrawFile.from_bytes(data).objects[0]
+    assert path.start_cap == 0
+    assert path.end_cap == 0
+    assert path.join_style == 0
+
+
 def test_text_object_decodes_font_number_size_and_baseline():
     data = build_drawfile(build_text(text="Hi", font_number=3, size_x=320, size_y=640, baseline_x=-10, baseline_y=20))
     text = DrawFile.from_bytes(data).objects[0]

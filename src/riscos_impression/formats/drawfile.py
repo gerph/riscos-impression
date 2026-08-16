@@ -92,6 +92,15 @@ class DrawPathOp:
     cy2: int = 0
 
 
+#: Cap/join style codes (path style word bits 0-1 join, 2-3 end/
+#: "trailing" cap, 4-5 start/"leading" cap; confirmed against the
+#: RISC OS DrawFile module's own real rendering implementation, not
+#: just the PRM's field descriptions).
+CAP_BUTT = 0
+CAP_ROUND = 1
+CAP_TRIANGULAR = 3
+
+
 @dataclass(frozen=True)
 class DrawPath:
     bounds: BoundingBox
@@ -102,7 +111,15 @@ class DrawPath:
     line_width: int  #: Draw units; 0 = hairline
     even_odd: bool  #: winding rule: False = non-zero, True = even-odd
     dashed: bool  #: a dash pattern is present but not decoded further
-    ops: list[DrawPathOp]
+    join_style: int = 0  #: 0=mitred, 1=round, 2=bevelled; not decoded further than the raw code
+    start_cap: int = CAP_BUTT  #: the path's own first point ("leading" cap)
+    end_cap: int = CAP_BUTT  #: the path's own last point ("trailing" cap)
+    #: In 1/16ths of line_width (the file's own on-disk unit -- see
+    #: colour_rgb's sibling note on other odd units in this format);
+    #: only meaningful when start_cap/end_cap is CAP_TRIANGULAR.
+    triangle_cap_width: int = 0
+    triangle_cap_length: int = 0
+    ops: list[DrawPathOp] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -276,8 +293,13 @@ def _parse_path(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawP
     stroke_word = binary.u32(data, start + 4)
     line_width = binary.u32(data, start + 8)
     style = binary.u32(data, start + 12)
+    join_style = binary.bits(style, 0, 2)
+    end_cap = binary.bits(style, 2, 2)
+    start_cap = binary.bits(style, 4, 2)
     even_odd = binary.bit(style, 6)
     dashed = binary.bit(style, 7)
+    triangle_cap_width = binary.bits(style, 16, 8)
+    triangle_cap_length = binary.bits(style, 24, 8)
     data_start = start + 16
     if dashed:
         # Dash pattern block: 4-byte start offset + 4-byte element count +
@@ -291,6 +313,11 @@ def _parse_path(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawP
         line_width=line_width,
         even_odd=even_odd,
         dashed=dashed,
+        join_style=join_style,
+        start_cap=start_cap,
+        end_cap=end_cap,
+        triangle_cap_width=triangle_cap_width,
+        triangle_cap_length=triangle_cap_length,
         ops=_parse_path_ops(data, data_start, end),
     )
 

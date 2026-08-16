@@ -127,6 +127,27 @@ def test_drawfile_svg_text_size_accounts_for_the_points_vs_drawunits_mismatch():
     assert f"font-size:{expected_size_pt:.2f}pt" in svg
 
 
+def test_drawfile_svg_triangular_end_cap_draws_an_arrowhead():
+    # Mirrors pdfdoc.py's own regression test: a real document
+    # (PCI_Spec) used a triangular trailing cap for pointer/arrow
+    # lines, previously rendered as a plain, uncapped stroke.
+    ops = move(0, 0) + line(2560, 0) + end_path()
+    path = build_path(
+        ops=ops, bounds=(0, 0, 2560, 100), stroke_colour=0xFF000000, line_width=256,  # blue
+        end_cap=3, triangle_cap_width=32, triangle_cap_length=64,
+    )
+    draw = DrawFile.from_bytes(build_drawfile(path, bounds=(0, 0, 2560, 100)))
+
+    svg = _converter()._drawfile_svg(draw, width_pt=100.0, height_pt=100.0)
+
+    # The line's own stroked path, plus a second, separately-filled
+    # triangle path for the arrowhead (fill="none" for the line itself,
+    # a real fill for the cap).
+    assert svg.count("<path ") == 2
+    assert 'fill="none" stroke="#0000ff"' in svg  # the line itself
+    assert 'fill="#0000ff" stroke="none"' in svg  # the arrowhead
+
+
 def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
     draw = DrawFile.from_bytes(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000))))
     converter = _converter()

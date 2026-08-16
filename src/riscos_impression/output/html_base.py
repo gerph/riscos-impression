@@ -18,20 +18,27 @@ non-square x/y font-size ratio is rendered at its plain y-based size
 rather than reproduced (pdfdoc.py can do this cheaply via PDF's `Tz`
 horizontal-scaling operator; SVG has no equally direct equivalent
 without first knowing the glyphs' own natural width). Dash patterns and
-precise cap/join styles are parsed but not honoured, matching
-pdfdoc.py; a Sprite object embedded *within* a DrawFile, and any other
-undecoded object type, still falls back to a placeholder for just that
-object. A picture that isn't a valid DrawFile at all still falls back
-to the labelled placeholder image below.
+join styles are parsed but not honoured, matching pdfdoc.py. Triangular
+caps (the mechanism real Draw files use for arrowhead/pointer line
+ends) ARE honoured, the same way pdfdoc.py does: SVG has no triangular
+`stroke-linecap` option either, so one is drawn as an explicit,
+separately-filled triangle path at the subpath's own start/end instead
+(see _draw_svg_triangular_caps). A Sprite object embedded *within* a
+DrawFile, and any other undecoded object type, still falls back to a
+placeholder for just that object. A picture that isn't a valid
+DrawFile at all still falls back to the labelled placeholder image
+below.
 """
 
 from __future__ import annotations
 
 import base64
 import html as _html
+import math
 from typing import Optional
 
 from riscos_impression.formats.drawfile import (
+    CAP_TRIANGULAR,
     DrawFile,
     DrawGroup,
     DrawPath,
@@ -59,6 +66,72 @@ _DRAW_UNIT_TO_PT = 72.0 / (180.0 * 256.0)
 
 def escape_html(text: str) -> str:
     return _html.escape(text, quote=False)
+
+
+# ---------------------------------------------------------------------------
+# DrawFile triangular caps (arrowheads) -- see pdfdoc.py's own
+# equivalent for the full explanation; duplicated here rather than
+# shared, matching this project's convention of independent output
+# converters.
+# ---------------------------------------------------------------------------
+
+
+def _unit_vector(dx: float, dy: float) -> tuple[float, float]:
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return 0.0, 0.0
+    return dx / length, dy / length
+
+
+def _subpath_cap_directions(
+    ops: list, to_svg
+) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]]:
+    """For each open subpath in *ops*, (start_point, start_outward_dir,
+    end_point, end_outward_dir) in the final SVG point space; see
+    pdfdoc.py's own _subpath_cap_directions for the full rationale."""
+    subpaths: list[list[tuple[int, int]]] = []
+    current: list[tuple[int, int]] = []
+    closed = False
+
+    def flush() -> None:
+        if len(current) >= 2 and not closed:
+            subpaths.append(list(current))
+        current.clear()
+
+    for op in ops:
+        if op.code in (DrawPathOpCode.MOVE, DrawPathOpCode.MOVE_INTERNAL):
+            flush()
+            closed = False
+            current.append((op.x, op.y))
+        elif op.code in (DrawPathOpCode.LINE, DrawPathOpCode.GAP, DrawPathOpCode.CURVE):
+            current.append((op.x, op.y))
+        elif op.code in (DrawPathOpCode.CLOSE_LINE, DrawPathOpCode.CLOSE_GAP):
+            closed = True
+    flush()
+
+    results = []
+    for verts in subpaths:
+        p0 = to_svg(*verts[0])
+        p1 = to_svg(*verts[1])
+        pn = to_svg(*verts[-1])
+        pn1 = to_svg(*verts[-2])
+        start_dir = _unit_vector(p0[0] - p1[0], p0[1] - p1[1])
+        end_dir = _unit_vector(pn[0] - pn1[0], pn[1] - pn1[1])
+        results.append((p0, start_dir, pn, end_dir))
+    return results
+
+
+def _triangular_cap_polygon(
+    point: tuple[float, float], direction: tuple[float, float], width_pt: float, length_pt: float
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    px, py = point
+    dx, dy = direction
+    nx, ny = -dy, dx
+    half = width_pt / 2.0
+    base_left = (px + nx * half, py + ny * half)
+    base_right = (px - nx * half, py - ny * half)
+    apex = (px + dx * length_pt, py + dy * length_pt)
+    return base_left, apex, base_right
 
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
@@ -339,6 +412,7 @@ class HTML5Converter(Converter):
         fill = _draw_colour_to_css(path.fill_colour) if has_fill else "none"
         stroke = _draw_colour_to_css(path.stroke_colour) if has_stroke else "none"
         attrs = [f'd="{" ".join(d_parts)}"', f'fill="{fill}"', f'stroke="{stroke}"']
+        width_pt = 0.0
         if has_stroke:
             # scale[i] is already "target points per source Draw unit"
             # (see pdfdoc.py's own _draw_drawfile_path for the same
@@ -350,6 +424,44 @@ class HTML5Converter(Converter):
         if has_fill and path.even_odd:
             attrs.append('fill-rule="evenodd"')
         parts.append(f"<path {' '.join(attrs)}/>")
+
+        if has_stroke and (path.start_cap == CAP_TRIANGULAR or path.end_cap == CAP_TRIANGULAR):
+            self._draw_svg_triangular_caps(path, to_svg, width_pt, parts)
+
+    def _draw_svg_triangular_caps(self, path: DrawPath, to_svg, width_pt: float, parts: list[str]) -> None:
+        """As pdfdoc.py's own _draw_triangular_caps: PDF has no
+        triangular line-cap style, and neither does SVG (`stroke-
+        linecap` is only butt/round/square), so a triangular cap is
+        drawn here the same way -- as an explicit filled triangle at
+        the subpath's own start/end, matching the real RISC OS
+        DrawFile module's own Draw_Stroke-based rendering."""
+        fill = _draw_colour_to_css(path.stroke_colour)
+        for start_pt, start_dir, end_pt, end_dir in _subpath_cap_directions(path.ops, to_svg):
+            if path.start_cap == CAP_TRIANGULAR:
+                self._append_svg_triangular_cap(start_pt, start_dir, path, width_pt, fill, parts)
+            if path.end_cap == CAP_TRIANGULAR:
+                self._append_svg_triangular_cap(end_pt, end_dir, path, width_pt, fill, parts)
+
+    def _append_svg_triangular_cap(
+        self,
+        point: tuple[float, float],
+        direction: tuple[float, float],
+        path: DrawPath,
+        width_pt: float,
+        fill: Optional[str],
+        parts: list[str],
+    ) -> None:
+        if direction == (0.0, 0.0):
+            return
+        cap_width_pt = (path.triangle_cap_width / 16.0) * width_pt
+        cap_length_pt = (path.triangle_cap_length / 16.0) * width_pt
+        if cap_width_pt <= 0 or cap_length_pt <= 0:
+            return
+        (x0, y0), (x1, y1), (x2, y2) = _triangular_cap_polygon(point, direction, cap_width_pt, cap_length_pt)
+        parts.append(
+            f'<path d="M {x0:.2f} {y0:.2f} L {x1:.2f} {y1:.2f} L {x2:.2f} {y2:.2f} Z" '
+            f'fill="{fill}" stroke="none"/>'
+        )
 
     def _drawfile_svg_text(self, text: DrawText, fonts: dict, to_svg, scale, parts: list[str]) -> None:
         if not text.text.strip() or text.size_y <= 0:
