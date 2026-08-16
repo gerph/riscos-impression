@@ -266,6 +266,16 @@ riscos-impression/
   ports `tr_setrotationa`/`tr_setscale`/`tr_multiply`/`tr_getbits` directly,
   so rotated and non-uniformly-scaled pictures get a genuine computed skew.
   Commit: *"Port the real OvationPro XL transform library for picture skew"*.
+* **Post-Stage-14 fix**: output was written via `Path.write_text()` with
+  no explicit encoding, so it landed on whatever the running platform's
+  own default text encoding happens to be (UTF-8 on most systems this
+  runs on) -- wrong for a RISC OS-native format read by a RISC OS-
+  native importer. Per direction: DDL output now defaults to real RISC
+  OS Latin1 (alphabet 101) bytes, via a new reverse `encoding.encode()`
+  (the inverse of the decode fix earlier in this stage list), not
+  UTF-8. A character with no RISC OS Latin1 representation at all falls
+  back to `?`, the same "best available" choice already made for PDF's
+  own WinAnsiEncoding transcoding.
 
 ### Stage 9 — Native PDF output
 * `output/pdfdoc.py`: minimal pure-Python PDF writer — xref table, catalog/

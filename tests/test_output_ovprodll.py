@@ -225,6 +225,22 @@ def test_convert_produces_well_formed_looking_document(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_convert_writes_riscos_latin1_bytes_not_utf8(tmp_path):
+    # OvationPro DDL is read by a RISC OS-native importer -- output
+    # must be RISC OS Latin1 (alphabet 101; see encoding.py), not the
+    # platform's own default text encoding. A curly quote (U+201C)
+    # should round-trip back to its original single C1 byte (0x94), not
+    # UTF-8's two-byte sequence for that code point.
+    document, _ = _document_with_one_text_frame(text="“Quoted”")
+    converter = OvProDDLConverter(document)
+    out = tmp_path / "out.ddl"
+    converter.convert(out)
+
+    data = out.read_bytes()
+    assert b"\x94Quoted\x95" in data
+    assert "“Quoted”".encode("utf-8") not in data
+
+
 def test_unfilled_frame_uses_transparent_fill(tmp_path):
     document, _ = _document_with_one_text_frame(filled=False)
     converter = OvProDDLConverter(document)

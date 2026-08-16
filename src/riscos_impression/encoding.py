@@ -68,3 +68,34 @@ def decode_byte(value: int) -> str:
 def decode(data: bytes) -> str:
     """Decode a byte string as RISC OS Latin1 (alphabet 101)."""
     return "".join(decode_byte(b) for b in data)
+
+
+#: Character -> byte, the inverse of _C1_CHANGES. Both 0x84 and 0x87
+#: decode to U+FFFD (see _C1_CHANGES); this reverse mapping only keeps
+#: one of them (0x87, "unassigned", being the plainer choice), which is
+#: fine -- round-tripping U+FFFD back to the *other* original byte was
+#: never going to be possible anyway, since the two are indistinguishable
+#: once decoded.
+_C1_REVERSE: dict[str, int] = {ch: byte for byte, ch in _C1_CHANGES.items()}
+
+#: Used for a character with no RISC OS Latin1 representation at all
+#: (this alphabet has no ASCII-substitution convention of its own to
+#: fall back to).
+_NO_REPRESENTATION = ord("?")
+
+
+def encode_byte(ch: str) -> int:
+    """The RISC OS Latin1 (alphabet 101) byte value for a single
+    Unicode character, or '?' if it has none at all."""
+    byte = _C1_REVERSE.get(ch)
+    if byte is not None:
+        return byte
+    code = ord(ch)
+    if code <= 0xFF and not (0x80 <= code <= 0x9F):
+        return code
+    return _NO_REPRESENTATION
+
+
+def encode(text: str) -> bytes:
+    """Encode a string as RISC OS Latin1 (alphabet 101) bytes."""
+    return bytes(encode_byte(ch) for ch in text)

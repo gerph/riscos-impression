@@ -14,6 +14,12 @@ fidelity from being practical:
   ...) is carried through here as a logged best-effort/unsupported
   case rather than guessed at.
 
+Output is written as RISC OS Latin1 (alphabet 101; see encoding.py),
+not the platform's own default text encoding (UTF-8 on most systems
+this runs on) -- DDL is a RISC OS-native format, read by a RISC OS-
+native importer, so its bytes should match what that importer expects
+rather than what's convenient for this Python process's own platform.
+
 The picture rotation/scale/skew decomposition is a direct port of the
 original's tr_setrotationa()/tr_setscale()/tr_multiply()/tr_getbits()
 from the OvationPro XL transform library, whose source is present in
@@ -29,6 +35,7 @@ import math
 from pathlib import Path
 from typing import Optional, Union
 
+from riscos_impression import encoding
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
@@ -649,7 +656,12 @@ class OvProDDLConverter(Converter):
             out.append("\n")
         out.extend(chapter_text)
 
-        Path(output_path).write_text("".join(out))
+        # OvationPro DDL is a RISC OS-native format, read by a RISC OS-
+        # native importer -- write it as RISC OS Latin1 (alphabet 101;
+        # see encoding.py), not the platform's own default text encoding
+        # (which would be UTF-8 on most systems this runs on, but isn't
+        # what a real OvationPro/TransIMP expects).
+        Path(output_path).write_bytes(encoding.encode("".join(out)))
 
     def _render_styles(self) -> str:
         parts = ["// Styles\n\n"]

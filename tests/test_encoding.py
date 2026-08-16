@@ -27,3 +27,22 @@ def test_unassigned_c1_codes_fall_back_to_replacement_character():
 def test_decode_byte_matches_decode_for_a_single_byte():
     for value in (0x41, 0x94, 0xE9):
         assert encoding.decode_byte(value) == encoding.decode(bytes([value]))
+
+
+def test_encode_is_the_inverse_of_decode_for_every_representable_byte():
+    for value in range(256):
+        if value in (0x84, 0x87):
+            continue  # both decode to U+FFFD; not round-trippable, see encoding.py
+        assert encoding.encode_byte(encoding.decode_byte(value)) == value
+
+
+def test_encode_ascii_passes_through_unchanged():
+    assert encoding.encode("Hello, world!") == b"Hello, world!"
+
+
+def test_encode_smart_quotes_back_to_their_original_c1_bytes():
+    assert encoding.encode("“Galadriel”") == b"\x94Galadriel\x95"
+
+
+def test_encode_unrepresentable_character_falls_back_to_question_mark():
+    assert encoding.encode("中") == b"?"
