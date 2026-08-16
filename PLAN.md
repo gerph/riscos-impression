@@ -1022,6 +1022,51 @@ riscos-impression/
   111 real documents with 0 crashes; visually confirmed against ForDad
   -- the PDF now matches the reference image's 2x2 grid exactly.
 
+* **Post-Stage-14 fix (10)**: the user reported Telegraph (from the
+  local moreexamples/ corpus) had its own two-line heading ("MODERN
+  MAESTROS WHO" / "WRITE IN DOUBLE TIME") visibly colliding, and
+  supplied both a real reference image (Telegraph-RealHeading.png) and
+  a real, OvationPro-native DDF export (TelegraphT) for comparison.
+  Unlike fix (7) (ForSimon3), this wasn't a cascade problem: the
+  heading style ("Main Heading", 28pt) sets its OWN explicit fixed
+  leading (raw 0x80014ccc = 19.66pt) -- no inheritance involved. 19.66pt
+  for 28pt text is barely 70% of the font size, guaranteeing overlap on
+  any wrapped multi-line heading. The DDF's own `linespacep 130%` for
+  this style (each style's declared spacing, not a re-derived display
+  value -- confirmed by cross-checking that "Normal"'s own
+  `linespacep 120%` closely matches its fixed 13.107pt/11pt ratio, but
+  Main Heading's fixed 19.66pt/28pt ratio (70%) does not match its
+  declared 130% at all) confirms the fixed value is a stale snapshot
+  from some smaller font size that predates a later increase to 28pt --
+  the same underlying failure as fix (7), just frozen directly on the
+  style's own record via an inconsistent edit instead of via
+  inheritance. Empirically cross-checked against the reference image
+  (measuring the pixel gap between the two heading lines' bands,
+  calibrated against the already-correct, unaffected 11pt body text's
+  own known-correct 13.107pt spacing in the same image) gave a required
+  line height of roughly 35.5pt -- far closer to 28pt's natural 120%
+  default (33.6pt) than to the broken 19.66pt, confirming a size-
+  relative fallback is the right general fix. `_line_height_pt`'s fixed
+  branch now takes `max(fixed_value, size * 1.2)` -- a fixed value can
+  still widen (loosen) spacing when genuinely larger than the natural
+  default, but never shrinks it into overlap. The user's report also
+  named "the paragraph before and after" as looking wrong: the gaps
+  around the heading (spaceabove 20pt / spacebelow 15pt in the DDF)
+  were partly missing -- `space_before` (the decoded `spaceabove`
+  field) turned out to be completely unconsumed by any output
+  converter, only `space_after` was ever applied. Added `space_before`
+  handling to `_flow_paragraphs_into_containers`, mirroring
+  `space_after`'s existing placement (added on top of the normal line-
+  to-line gap) but suppressed at a container's own top (via
+  `first_line_pending`) to avoid an unwanted gap when a paragraph
+  starts fresh at the top of a page/frame. Two new regression tests
+  (one for each half of the fix), both confirmed to fail against the
+  pre-fix code before being fixed. Full suite (314 tests) green;
+  re-validated across all 111 real documents with 0 crashes; visually
+  confirmed against Telegraph -- the PDF now closely matches the
+  reference image: a clean, non-overlapping heading with correct gaps
+  before and after it.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

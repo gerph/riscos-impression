@@ -393,7 +393,27 @@ def _line_height_pt(style: Style) -> float:
     size = (style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
     if style.line_spacing_raw is not None:
         if style.line_spacing_is_fixed:
-            return abs(style.line_spacing) / UNIT
+            # A FIXED leading value is millipoints, stored verbatim from
+            # whatever font size was in effect when it was last set --
+            # confirmed against a real document (Telegraph from the
+            # local moreexamples/ corpus, cross-checked against a real
+            # OvationPro-native DDF export the user supplied): its "Main
+            # Heading" style (28pt) carries a fixed leading of 19.66pt
+            # (raw word 0x80014ccc), a leftover snapshot from some
+            # earlier, smaller font size that never got updated when the
+            # style's own font_size was later increased for visual
+            # impact -- the DDF export independently confirms the style
+            # is actually meant to use 130% proportional leading, and
+            # 19.66pt visibly collided the heading's own two wrapped
+            # lines. Same underlying failure as the cross-style cascade
+            # case fixed in Converter.resolve_style, just happening
+            # within a single style's own record via an inconsistent
+            # edit instead of via inheritance -- so never let a fixed
+            # value produce LESS spacing than the natural single-line
+            # default below; it can still widen (loosen) spacing when
+            # genuinely larger than that, respecting an intentionally
+            # loose author choice.
+            return max(abs(style.line_spacing) / UNIT, size * 1.2)
         # The proportional value is stored as percent x100 (e.g. 12000 =
         # 120.00%), not a literal percent -- confirmed empirically, not
         # from the conversion source (docs/impression-documents.xml's
@@ -1814,6 +1834,22 @@ class PDFConverter(Converter):
             line_height = _line_height_pt(para_style)
             is_first_line = True
             placed_any_line = False
+
+            # space_before (DDL "spaceabove") was never applied anywhere
+            # in this converter -- confirmed against a real document
+            # (Telegraph from the local moreexamples/ corpus, alongside
+            # its "Main Heading" style's own leading bug above): its
+            # heading style sets spaceabove 20pt, but the gap between
+            # the preceding paragraph and the heading was missing
+            # entirely in the PDF. Skipped at the very top of a
+            # container (first_line_pending here means "nothing placed
+            # in this container yet", whether it's the very first one or
+            # one just advanced into) -- there's no preceding paragraph
+            # in this container to space away from, matching how
+            # ordinary DTP layout suppresses space-before at the top of
+            # a column/frame.
+            if not first_line_pending and para_style.space_before:
+                y_cursor -= para_style.space_before / UNIT
 
             while tokens or not placed_any_line:
                 if tokens and tokens[0].kind == "break":

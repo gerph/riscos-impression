@@ -164,6 +164,21 @@ def test_line_height_fixed_value_is_unaffected():
     assert _line_height_pt(style) == 20.0
 
 
+def test_line_height_fixed_value_smaller_than_the_font_falls_back_to_120_percent():
+    # Regression test: a real document (Telegraph from the local
+    # moreexamples/ corpus) has a heading style ("Main Heading", 28pt)
+    # whose OWN fixed leading is 19.66pt (raw 0x80014ccc) -- a leftover
+    # snapshot from some smaller font size that never got updated when
+    # the style's font_size was later increased, confirmed against a
+    # real, OvationPro-native DDF export the user supplied (which
+    # independently states 130% proportional leading for this style,
+    # not this frozen absolute value). Used verbatim, 19.66pt visibly
+    # collided the heading's own two wrapped lines. A fixed value must
+    # never produce less spacing than the natural 120% default.
+    style = _style(1, is_body_text=True, font_size=448, line_spacing_raw=0x80014CCC)  # 28pt
+    assert _line_height_pt(style) == 28.0 * 1.2
+
+
 def test_line_height_no_line_spacing_field_uses_default_120_percent():
     style = _style(1, is_body_text=True, font_size=160, line_spacing_raw=None)
     assert _line_height_pt(style) == 10.0 * 1.2
@@ -1077,6 +1092,41 @@ def test_forced_page_break_advances_to_the_next_container_leaving_the_skipped_on
     assert "First" in text_in(1)
     assert text_in(2) == ""
     assert "Third" in text_in(3)
+
+
+def test_space_before_adds_a_gap_before_a_paragraph_but_not_at_a_containers_top():
+    """Regression test: a real document (Telegraph from the local
+    moreexamples/ corpus) has a heading style with spaceabove 20pt, but
+    space_before was never consumed anywhere in this converter -- the
+    gap between the preceding paragraph and the heading was simply
+    missing from the PDF. Applied between paragraphs (added on top of
+    the normal line-to-line gap, same as space_after already is), but
+    suppressed for a paragraph that starts fresh at a container's own
+    top (no preceding paragraph in that container to space away from)."""
+    from riscos_impression.output.pdfdoc import PDFConverter, _ascent_pt, _line_height_pt
+
+    body = _style(0, is_body_text=True, font_size=160)  # 10pt, no space_before
+    heading = _style(1, font_size=280, space_before=20000)  # 28pt style, 20pt space_before
+    document = _document(styles=[body, heading])
+    converter = PDFConverter(document)
+
+    containers = [(1, 1, 0.0, 0.0, 300.0, 300.0)]
+    paragraphs = (
+        Paragraph(items=(Run(text="First", style_slots=()),)),
+        Paragraph(items=(Run(text="Second", style_slots=(1,)),)),
+    )
+    assignments = converter._flow_paragraphs_into_containers(paragraphs, 0, containers, None)
+    lines = assignments[1]
+    first_y = lines[0][4]
+    second_y = lines[1][4]
+
+    resolved_body = converter.resolve_style(())
+    resolved_heading = converter.resolve_style((1,))
+    expected_first_y = 300.0 - _ascent_pt(resolved_body)
+    expected_second_y = first_y - 20.0 - _line_height_pt(resolved_heading)
+
+    assert first_y == expected_first_y  # unaffected: fresh container, no space_before applied
+    assert second_y == expected_second_y
 
 
 def test_side_by_side_containers_do_not_share_a_page_floor():
