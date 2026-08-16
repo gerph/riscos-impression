@@ -297,32 +297,44 @@ def test_embed_tagged_picture_frame_is_not_also_drawn_independently(tmp_path):
     assert not converter.log.has_errors()
 
 
-def test_estimate_slice_height_drops_an_oversized_right_indent():
+def test_estimate_slice_height_positive_right_indent_gives_the_frames_real_width():
     # Regression test: a real document (PCI_Spec from the local
     # examples/ corpus) has a history-table style whose right_indent is
-    # authored for a much wider frame -- almost exactly equal to the
-    # actual frame's own width. paragraph_css_properties already drops
-    # a right_indent that oversized when actually rendering (see its
-    # own docstring), but _estimate_slice_height_pt didn't apply the
-    # same fallback: it measured against a squeezed ~10pt sliver of
-    # width while the browser would render at the frame's own full
-    # width, so nearly every word estimated its own line. That mismatch
-    # wildly inflated the estimated height of a nine-row history table
-    # that fits easily in one frame (confirmed against the PDF
-    # converter's own output, all on one page), splitting it across
-    # three separate frames/pages instead. The estimate with an
-    # oversized right_indent must match the estimate with none at all.
+    # a POSITIVE value close to the frame's own width. A POSITIVE
+    # right_indent_raw (Style.right_indent_is_delta True) is an offset
+    # from the frame's own LEFT edge, not an inset from its right --
+    # confirmed against a real DDF export the user supplied, generated
+    # by Impression itself (its base style declares leftmargin 19.8pt,
+    # rightmargin 510.2pt on a frame that's itself 510.2pt wide). Read
+    # (as this project originally, incorrectly assumed universally) as
+    # an inset from the right, that squeezed the *measured* width to a
+    # ~10pt sliver, wildly inflating each row's estimated height and
+    # splitting a nine-row history table (which fits easily in one
+    # frame -- confirmed against the PDF converter's own output, all on
+    # one page) across three separate frames/pages instead.
     document = _document(styles=[_style(0, is_body_text=True, font_size=160)])
     converter = PagedHTMLConverter(document, export_pdf=False)
     items = (Run(text="0.0.1 25 June 1997 Initial draft released as issue one", style_slots=()),)
+    style = _style(1, font_size=160, left_indent=19842, right_indent_raw=510236)
 
-    oversized = _style(1, font_size=160, left_indent=20000, right_indent_raw=95000)
-    normal = _style(2, font_size=160, left_indent=20000, right_indent_raw=0)
+    height = converter._estimate_slice_height_pt(items, style, 510.236, None)
 
-    height_oversized = converter._estimate_slice_height_pt(items, oversized, 100.0, None)
-    height_normal = converter._estimate_slice_height_pt(items, normal, 100.0, None)
+    assert height == 12.0  # fits on a single line (10pt * 1.2) at the frame's own real ~490pt width
 
-    assert height_oversized == height_normal
+
+def test_estimate_slice_height_negative_right_indent_is_an_inset_from_the_right():
+    # A NEGATIVE right_indent_raw (right_indent_is_delta False) is a
+    # genuine inset from the frame's own right edge: on a 100pt-wide
+    # frame it leaves only 100 - 20 (left_indent) - 90 = -10pt, well
+    # under _MIN_USABLE_WIDTH, so every word wraps onto its own line.
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160)])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    items = (Run(text="one two three", style_slots=()),)
+    style = _style(1, font_size=160, left_indent=20000, right_indent_raw=-90000)
+
+    height = converter._estimate_slice_height_pt(items, style, 100.0, None)
+
+    assert height == 3 * 12.0  # each word forced onto its own line
 
 
 def test_export_pdf_logs_when_no_tool_is_available(tmp_path, monkeypatch):

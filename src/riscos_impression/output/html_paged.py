@@ -39,14 +39,14 @@ visually overlap exactly as they do in the source document.
 
 Paragraph-level formatting (left/right margin, first-line indent,
 alignment, space before/after, line height) is applied as inline CSS on
-each `<p>` via html_base.py's paragraph_css_properties, using the
-enclosing frame's own real content width to sanity-check right_indent
-the same way pdfdoc.py does (an oversized right_indent, authored for a
-wider frame than it's actually used in, is dropped rather than
-squeezing a frame's text into an unreadable column) -- meaningful here
-because a frame's width in this converter matches the source document's
-own geometry exactly, unlike scrolling HTML's reflowed, viewport-width
-columns.
+each `<p>` via html_base.py's paragraph_css_properties. A style's
+right_indent needs the enclosing frame's own real content width to
+resolve at all when its own raw value is positive (an offset from the
+frame's own LEFT edge, not an inset from its right -- see
+Style.right_indent_is_delta and paragraph_css_properties' own
+docstring) -- meaningful here because a frame's width in this converter
+matches the source document's own geometry exactly, unlike scrolling
+HTML's reflowed, viewport-width columns.
 """
 
 from __future__ import annotations
@@ -580,29 +580,33 @@ class PagedHTMLConverter(HTML5Converter):
         way pdfdoc.py's own line-wrapping would; see
         _flow_items_into_containers.
 
-        right_indent gets the same oversized-value fallback
-        paragraph_css_properties applies when actually rendering (see
-        its own docstring): dropped entirely rather than trusted
-        verbatim if it wouldn't leave _MIN_USABLE_WIDTH of the frame's
-        own width. Regression test: a real document (PCI_Spec from the
-        local examples/ corpus) has a table/history-list style whose
-        right_indent is authored for a much wider frame -- almost
-        exactly equal to the actual frame's own width -- collapsing
-        the *measured* width to nothing while the *rendered* CSS
-        correctly dropped it and used the frame's own full width. That
-        mismatch made every word estimate its own line, wildly
-        inflating each row's estimated height and splitting a nine-row
-        history table (which fits easily in one frame -- confirmed
-        against the PDF converter's own output, all on one page) across
-        three separate frames three pages apart, each pulling in
-        unrelated pictures from whichever frame the overflow landed on."""
+        right_indent_raw's own sign selects one of two entirely
+        different placements for the column's right edge (see
+        Style.right_indent_is_delta, pdfdoc.py's own
+        resolve_right_edge, and docs/impression-documents.xml's
+        "Paragraph ruler fields"): a POSITIVE raw value is an offset
+        from the frame's own LEFT edge (here, X=0 -- width_pt is
+        already this specific frame's own local width), not an inset
+        from its right. Regression test: a real document (PCI_Spec
+        from the local examples/ corpus) has a table/history-list style
+        whose right_indent is close to the actual frame's own width --
+        read (as this project originally, incorrectly assumed
+        universally) as an inset from the right, that collapsed the
+        *measured* width to nearly nothing, wildly inflating each
+        estimated row height and splitting a nine-row history table
+        (which fits easily in one frame -- confirmed against the PDF
+        converter's own output, all on one page) across three separate
+        frames three pages apart, each pulling in unrelated pictures
+        from whichever frame the overflow landed on."""
         line_height = paragraph_line_height_pt(para_style)
         left_indent = (para_style.left_indent or 0) / UNIT
-        right_indent = (para_style.right_indent or 0) / UNIT
         first_indent = (para_style.first_indent or 0) / UNIT
-        if right_indent and width_pt - left_indent - right_indent < _MIN_USABLE_WIDTH:
-            right_indent = 0.0
-        available = max(_MIN_USABLE_WIDTH, width_pt - left_indent - right_indent)
+        right_indent_pt = (para_style.right_indent or 0) / UNIT
+        if para_style.right_indent_is_delta:
+            right_edge_pt = right_indent_pt
+        else:
+            right_edge_pt = width_pt - right_indent_pt
+        available = max(_MIN_USABLE_WIDTH, right_edge_pt - left_indent)
 
         x = first_indent
         line_count = 1

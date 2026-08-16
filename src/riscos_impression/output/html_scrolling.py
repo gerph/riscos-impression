@@ -18,12 +18,16 @@ every other frame's is.
 
 Paragraph-level formatting (left margin, first-line indent, alignment,
 space before/after, line height) is applied as inline CSS on each `<p>`
-via html_base.py's paragraph_css_properties -- except right_indent,
-which is left out entirely here: it's a delta from the *original*
-frame's own right edge, a width this format deliberately never tracks
-(see above), so there's nothing sensible to sanity-check it against
-before turning it into a CSS margin on a reflowed, viewport-width
-column (unlike html_paged.py, whose frames keep their real width).
+via html_base.py's paragraph_css_properties -- a POSITIVE right_indent
+(an offset from the *original* frame's own left edge, not an inset
+from its right; see Style.right_indent_is_delta and
+paragraph_css_properties' own docstring) is the only exception, left
+out entirely here: resolving it to a CSS margin-right needs the
+frame's own real width, which this format deliberately never tracks
+(see above). A negative right_indent (a genuine inset from the right
+edge) maps directly to CSS margin-right regardless, and is applied
+normally (unlike html_paged.py, which additionally has the frame's
+real width available for the positive case too).
 """
 
 from __future__ import annotations
