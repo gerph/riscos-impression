@@ -1600,6 +1600,160 @@ riscos-impression/
   tests) green; re-validated across all 111 real documents (both
   html-paged and html-scroll) with 0 crashes.
 
+* **Post-Stage-14 fix (23)**: the user added a sixth document to
+  `corpus/` (`FieldWork,bc5`) and, testing it against the *PDF*
+  converter specifically, reported a location-marker map's own dots
+  in the wrong place and its label cut off. `pict.xshift`/`yshift`
+  were never applied at all -- a picture's content was always centred
+  in its frame, ignoring them entirely (an earlier investigation had
+  tried applying them and rejected the attempt after it clipped away
+  real content on every inline picture checked). What followed was a
+  multi-round investigation, refined against a series of precise
+  Impression picture-info-dialog readings (X offset, Y offset,
+  scale%, and drawfile native size) the user supplied for four
+  different real pictures on the same page, arriving at a final,
+  ground-truth-confirmed formula:
+
+  - `xscale`/`yscale` are the inverse of the picture's own displayed
+    scale (`0x10000/xscale`) -- matches `ovprodll.py`'s own
+    `_tr_setscale`, which this project's DDL output already relies on
+    for the same fields.
+
+  - `xshift`/`yshift` anchor the drawfile content's own bottom-left
+    corner at `(anchor_x - xshift, frame_y0 - yshift)`. The original C
+    DDL emitter's own "picturedata" block (`c/frames`' `ixpictdata()`)
+    matched a real *embedded* picture's own dialog reading with y NOT
+    negated, but a real *page-positioned* picture only matched with y
+    negated -- the DDL's own bottomleft-y convention and Impression's
+    own dialog-displayed y are apparently not the same sign for a
+    page-positioned picture. Cross-checked independently of the
+    dialog reading too: negating y improves an already-good picture's
+    own overlap with its frame from 95% to a perfect 100%.
+
+  - `anchor_x` is the frame's own LEFT edge for an *ungrouped*
+    picture, but its RIGHT edge for a *grouped* one -- confirmed by
+    cross-checking two real pictures against each other: the anchor
+    that fixes one grouped picture (18% to 100% overlap) makes an
+    already-correct ungrouped picture's own overlap markedly worse if
+    applied to it too (100% to 31%), confirming the split by grouping
+    is real, not a coincidence.
+
+  - `anchor_x` additionally moves inward by the frame's own `hinset`:
+    `x0+hinset` for ungrouped, `x1-hinset` for grouped. Confirmed by
+    an exact 2.00mm discrepancy between a real picture's dialog x
+    reading and the unadjusted formula, matching that picture's own
+    `hinset/UNIT` precisely; a separate `hinset=0` picture matched the
+    unmodified formula exactly, confirming this is `hinset`-specific.
+
+  - when the shift would leave the frame's own area under 50% covered
+    by content, the picture instead centres at native scale (an
+    implausible-result safety check -- a real picture frame is never
+    deliberately left almost entirely empty), additionally shrinking
+    to fit first if native-scale content is bigger than the frame, so
+    an untrustworthy shift never crops to a wrong region, only ever
+    shows the whole picture zoomed out.
+
+  Two of this document's own pictures never resolve to a trustworthy
+  anchor despite an exhaustive search (300+ combinations of reference
+  frame, edge, and sign) -- their own raw `xshift`/`yshift` still
+  convert to their own dialog readings exactly, so the numbers are
+  right, but no anchor reconciles them with their own (much smaller)
+  frame. Both share something the four resolved pictures don't: the
+  user confirmed Impression's own "Lock Values" dialog option is
+  unticked for both, ticked for every resolved picture -- suggestive
+  of a stale, inapplicable stored offset rather than a real crop
+  position, though unconfirmed as the actual mechanism. The existing
+  implausible-result check already falls back to centring for both,
+  which -- if that theory holds -- is likely already the correct
+  rendering, not merely an unsolved fallback.
+
+  A further methodological lesson worth recording: the "≥50%
+  frame-area overlap" trustworthiness check relied on throughout is
+  weaker evidence than it first appeared. When a frame is much
+  smaller than its own content, many different, individually wrong
+  anchor choices can each independently reach 100% overlap, so a high
+  ratio confirms a candidate is *plausible*, not that it's *correct*.
+  Only an exact numeric match to a real dialog reading, or a direct
+  visual comparison against a real reference image, actually confirms
+  it -- both were used throughout wherever available, not the overlap
+  ratio in isolation.
+
+  Full regression test coverage for the final formula (anchor sign,
+  grouped vs ungrouped, `hinset` adjustment, and the
+  implausible-result fallback) is in `tests/test_output_pdfdoc.py`.
+  The two remaining unresolved pictures, and the overlap-check
+  caveat, are documented in `_draw_drawfile_picture`'s own docstring.
+  Full suite green; re-validated across all 117 real documents with 0
+  crashes throughout.
+
+* **Post-Stage-14 fix (24)**: the same `FieldWork,bc5` document also
+  showed bordered picture frames missing their grey drop-shadow/mat
+  effect entirely. Traced to the original C DDL emitter (`c/frames`):
+  every frame type's own border emission unconditionally pairs a
+  `{shadow 0 0x3 {colourvalue COL_01 0x10000 0} {w 5669}}` alongside
+  the `{border ...}` whenever any edge is present, regardless of the
+  frame's own declared border colour. Drawn as 4 separate bands just
+  outside the frame's own box (not one rect underneath the whole
+  frame), so an unfilled frame's own sparse content (a DrawFile
+  picture that's mostly bare strokes) doesn't show grey through the
+  gaps. `COL_01`'s own RGB value isn't available to this project (an
+  OvationPro-internal name, not decoded from the document itself), so
+  it's approximated by sampling a real document's own rendered
+  reference screenshot (~120,120,120).
+
+* **Post-Stage-14 fix (25)**: the same document's own running footer
+  only ever appeared on its very first page, across the whole 19-page
+  document. `_resolve_content_chain_quietly` resolves a story's
+  `frame_chain` relative to *one particular* chapter; for this
+  footer, resolution happened to succeed by coincidence on the very
+  first chapter it was drawn in (a length-1 "chain" that's really
+  just that one chapter's own frame), and every later chapter's own
+  attempt legitimately failed. The resulting layout was cached under
+  `dictionary_index` alone with no chapter scoping, so every later
+  chapter's own (entirely different, unrelated) frame silently looked
+  up an empty result in the first chapter's cached layout instead of
+  ever computing its own fresh flow. Keyed the cache by
+  `(id(chapter), dictionary_index)` instead.
+
+* **Post-Stage-14 fix (26)**: the same document also had three
+  picture captions, and two diagram labels elsewhere on the same
+  page, that never appeared at all -- empty bordered boxes. Traced to
+  their own small frames sitting entirely inside a much larger, also
+  repel-flagged frame: the chapter's own main body-text container,
+  which needs to repel *its own* text around the smaller frames
+  layered within it, but was also being treated as an obstacle to
+  those smaller frames' text in the other direction. Since a small
+  frame's own box sits entirely inside the big one, narrowing left no
+  usable width anywhere, silently dropping all of its text -- unlike
+  the genuine picture-repel case, which only partially overlaps.
+  `_repel_obstacles_for_page` now additionally drops any obstacle
+  whose own rect *fully encloses* the frame currently being laid out.
+
+* **Post-Stage-14 fix (27)**: the same document's own table header,
+  styled with a non-100% font aspect ratio, rendered as regular,
+  unstretched text. `_render_line` (the main body-text path) never
+  emitted PDF's own `Tz` (horizontal scaling) operator at all, unlike
+  `_draw_drawfile_text` (text *within* a DrawFile picture), which
+  already did. `font_aspect_ratio` maps directly onto a PDF `Tz`
+  percentage (`0x10000` raw = unity, no inversion -- confirmed
+  against `ovprodll.py`'s own DDL emission, which maps this field
+  straight onto a style's `scale` property). `Tz` is text *state*,
+  not reset by `ET`/`BT` like `Tm`, so a later token with no aspect
+  ratio at all now explicitly resets to 100% rather than silently
+  inheriting an earlier token's stretched value. `_approx_width` also
+  now folds in the same aspect ratio, not just `Tz` at render time:
+  applying `Tz` alone stretched the header wide enough to visibly
+  overlap the next column, since the column's own tab stop was still
+  positioned assuming 100%-width text.
+
+  Each of fixes (23)-(27) was verified independently (re-rendering
+  the real document and comparing against its own reference
+  screenshot where one was supplied) and has its own regression test,
+  each confirmed to fail against the pre-fix code before being fixed.
+  Full suite green; re-validated across all 117 real documents
+  (`examples/` + `moreexamples/` + `corpus/`) with 0 crashes
+  throughout.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run
