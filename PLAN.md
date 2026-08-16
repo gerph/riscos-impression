@@ -1151,6 +1151,57 @@ riscos-impression/
   manual token layout -- and is still open; likely fix is
   `white-space: pre-wrap` on paragraph CSS.)
 
+* **Post-Stage-14 fix (13)**: after fix (12), the user reported paged
+  HTML output "still looks bad": text doesn't span from a story's
+  first frame into its later chain members (confirmed against
+  PCI_Spec: page 3 showed only its DrawFile pictures with the rest of
+  its own text area empty, then trailing blank pages). This was a
+  known, already-documented limitation, not a regression -- the
+  module's own docstring had flagged it since the converter was first
+  built: "a story spanning a real multi-frame chain only ever renders
+  in its first frame... the equivalent follow-up here, if wanted,
+  would look much the same" as pdfdoc.py's own chain-flow work. Asked
+  the user how accurate the fix should be (full pdfdoc.py-style
+  measured flow vs. a quicker rough-heuristic split); they chose
+  accuracy.
+
+  Implemented `_flow_chained_story`/`_flow_items_into_containers`
+  (html_paged.py): resolves a story's full frame chain the same way
+  pdfdoc.py's own `_compute_chain_layout` does (including its
+  real-chain-vs-independently-repeated-master-content distinction,
+  returning `None` for the latter so it still falls back to the
+  original single-frame handling, now logged with clearer wording),
+  then distributes `story.paragraphs` across every chain member's own
+  box using a *duplicate*, self-contained port of pdfdoc.py's
+  approximate per-character text metrics (`_approx_width`, reusing the
+  shared `font_metrics` data module pdfdoc.py already draws on) to
+  estimate how many wrapped lines -- and how much vertical space --
+  each paragraph needs at that frame's own width. Splits only at
+  paragraph and `PageBreakMark` boundaries (a paragraph too long for a
+  container's remaining space moves wholesale to the next one) rather
+  than pdfdoc.py's own per-line granularity: a browser still does the
+  actual within-frame line-wrapping natively once it knows which
+  slice belongs where, so line-level positioning isn't needed the way
+  it is for a PDF content stream. `_render_paragraph` was refactored
+  into a new `_render_items` (a paragraph's own item list, or a
+  `PageBreakMark`-delimited slice of one) so both the original
+  single-frame path and the new chain-flow path share the same
+  rendering code; a slice continuing from an earlier frame
+  (`is_continuation`) suppresses `text-indent`/`margin-top`, since it
+  isn't a true paragraph start. New helpers `_frame_page_map`/
+  `_content_box_pt_for` mirror pdfdoc.py's own `_frame_page_map`/
+  `_inset_box_pt_for` for resolving a chain member's geometry
+  independently of page-walk order. Two regression tests: the
+  pre-existing "unresolvable chain falls back and logs once" test
+  (updated for the new log wording) and a new
+  `test_real_multi_frame_chain_flows_text_across_frames`, mirroring
+  pdfdoc.py's own `test_multi_page_chain_flows_text_across_frames`
+  fixture almost exactly. Full suite (325 tests) green; re-validated
+  across all 111 real documents with 0 crashes; PCI_Spec's own page 3
+  (previously empty of text) now carries real flowed paragraph content
+  confirmed structurally (visible text length and `<p>` count both
+  non-zero, up from empty).
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

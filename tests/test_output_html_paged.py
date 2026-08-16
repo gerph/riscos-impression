@@ -162,7 +162,13 @@ def test_drawfile_picture_frame_renders_as_real_svg_content(tmp_path):
     assert not converter.log.has_errors()
 
 
-def test_multi_frame_chain_logs_best_effort_once(tmp_path):
+def test_unresolvable_frame_chain_falls_back_to_single_frame_and_logs_once(tmp_path):
+    # frame_chain=(824,) doesn't resolve to any real frame record in
+    # this document (matching independently-repeated master content,
+    # whose frame_chain is anchored to a master page, not this
+    # chapter -- see _flow_chained_story) -- must fall back to
+    # rendering fully in this one frame, not silently drop the story,
+    # and log the fallback exactly once (not once per occurrence).
     frame = _frame(dictionary_index=0)
     document, _, _ = _document_with_frames([_frame_record(1008, frame)])
     dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
@@ -176,7 +182,60 @@ def test_multi_frame_chain_logs_best_effort_once(tmp_path):
     text = out.read_text()
 
     assert "Body" in text
-    assert sum(1 for e in converter.log.entries if "multi-frame chain" in e.message) == 1
+    assert sum(1 for e in converter.log.entries if "doesn't resolve against this chapter" in e.message) == 1
+
+
+def test_real_multi_frame_chain_flows_text_across_frames(tmp_path):
+    # Regression test: a real document (PCI_Spec from the local
+    # examples/ corpus) has many stories chained across 2+ frames;
+    # this converter used to render only the first frame's content and
+    # leave every later chain member's text area empty (with only its
+    # own independently-placed pictures, if any, showing) -- reported
+    # directly by the user. A two-frame chain, with text too long for
+    # the first frame's own small box, must have its overflow appear in
+    # the second frame instead of being silently clipped.
+    body = _style(0, is_body_text=True, font_size=160)
+    # frame1 is deliberately just tall enough for one line; frame2 is
+    # roomy, so the second paragraph must land in frame2.
+    frame1 = _frame(x0=0, y0=0, x1=100000, y1=15000, dictionary_index=0)
+    frame2 = _frame(x0=0, y0=0, x1=100000, y1=300000, dictionary_index=0)
+    page1 = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame1),),
+    )
+    page2 = PageGroup(
+        page=Page(x0=0, y0=150000, x1=100000, y1=450000, bleed=0, master_page_name=""),
+        offset=2000,
+        records=(_frame_record(2008, frame2),),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page1, page2)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(chapters=[chapter], master_pages=[master_page], styles=[body], header=header)
+    document.dictionary.append(dict_entry)
+    # frame1 is at offset 1008; frame2's on-disk chain offset (relative
+    # to mainpages2) is 2008 - 900 = 1108 (single-file mode).
+    story = Story(
+        frame_chain=(1108,),
+        paragraphs=tuple(Paragraph(items=(Run(text=f"Para{i}", style_slots=()),)) for i in range(8)),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "Para0" in text
+    assert "Para7" in text  # only reachable if flow continued into frame2
+    assert not any("doesn't resolve against this chapter" in e.message for e in converter.log.entries)
 
 
 def test_export_pdf_logs_when_no_tool_is_available(tmp_path, monkeypatch):
