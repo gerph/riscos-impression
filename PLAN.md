@@ -371,6 +371,26 @@ riscos-impression/
   back to `?` -- a genuine, narrow limitation of a single-byte PDF text
   encoding, not a bug, and out of scope to fix without embedding a
   custom font program.
+* **Post-Stage-14 fix (2)**: the user reported a real document
+  (`PCI_Spec,bc5`) rendering with *no visible body text on almost every
+  page*. Root-caused to `_flow_paragraphs_into_containers`: a
+  paragraph's own `right_indent` (a delta from the frame's own right
+  edge; see docs/impression-documents.xml, "ruler1") can be set up for
+  a much wider frame than the one it's actually used in -- styles are
+  shared across frames of any size, the same class of issue as the
+  tab-ruler fix above -- and this document's body style's right_indent
+  very nearly equalled the frame's own width, leaving under
+  `_MIN_USABLE_WIDTH` on every line. That's handled the same way an
+  obstacle leaving no room is: skip the line and try the next. But
+  since the paragraph's tokens are never consumed when this happens,
+  it burned through the *entire* container, then the whole chain,
+  without ever placing a line -- silently dropping not just that one
+  paragraph but every one after it in the whole story, since the loop
+  never reaches them. Fixed by falling back to the container's own
+  full width whenever the indent settings alone (before any obstacle
+  is considered) already leave no usable room. Re-validated against
+  all 48 real documents: 0 crashes, and no longer any document with
+  zero extractable text on any page.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS

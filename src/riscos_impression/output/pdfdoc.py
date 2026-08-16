@@ -1297,6 +1297,23 @@ class PDFConverter(Converter):
                 indent = (left_indent + first_indent) if is_first_line else left_indent
                 line_start = cx0 + indent
                 right_edge = cx1 - right_indent
+                if right_edge - line_start < _MIN_USABLE_WIDTH:
+                    # The paragraph's own indent settings alone (no
+                    # obstacle involved) already eliminate all usable
+                    # width in this container -- almost always a style
+                    # whose ruler was set up for a different, usually
+                    # wider, frame (styles are shared across frames of
+                    # any size; compare the tab-ruler note in
+                    # _next_tab_stop for the same class of issue).
+                    # Falling back to the container's own full width is
+                    # safer than leaving it in place: the "obstacle
+                    # leaves no room" skip below would otherwise burn
+                    # through this container, then the whole chain,
+                    # without ever placing this paragraph -- and since
+                    # its tokens are never consumed, every later
+                    # paragraph in the story would be silently dropped
+                    # too, not just this one.
+                    line_start, right_edge = cx0, cx1
                 obstacles = obstacles_by_key.get(key)
                 if obstacles:
                     line_start, right_edge = _narrow_for_obstacles(

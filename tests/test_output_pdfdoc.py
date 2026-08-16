@@ -344,6 +344,64 @@ def test_later_chain_frame_does_not_paint_over_already_rendered_text(tmp_path):
     assert b"0 0 100 100 re f" not in data
 
 
+def test_oversized_right_indent_falls_back_to_the_full_container_width(tmp_path):
+    """Regression test: a real document (PCI_Spec from the local
+    examples/ corpus) has a style whose right_indent (a delta from the
+    frame's own right edge) very nearly equals the entire width of the
+    frame it's actually used in -- almost certainly authored for a
+    wider frame, since styles are shared across frames of any size
+    (compare the tab-ruler regression above). Before the fix, this left
+    less than _MIN_USABLE_WIDTH on every line, which is treated the
+    same as an obstacle leaving no room: skip past it and try the next
+    line. Since the paragraph's tokens are never consumed, this burned
+    through the whole frame (and every later chain member) without ever
+    placing a line, silently dropping this paragraph *and every one
+    after it* in the whole story -- not just producing a badly-indented
+    line."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    # Frame is 100pt wide; a right_indent of 95pt leaves only 5pt, well
+    # under _MIN_USABLE_WIDTH (10pt).
+    indented = _style(1, font_size=160, right_indent_raw=95000, paragraph_apply=True)
+    frame = _frame(x0=0, y0=0, x1=100000, y1=100000, dictionary_index=0)
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame),),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body, indented], header=header
+    )
+    document.dictionary.append(dict_entry)
+    story = Story(
+        frame_chain=(),
+        paragraphs=(
+            Paragraph(items=(Run(text="Indented", style_slots=(1,)),)),
+            Paragraph(items=(Run(text="AfterIt", style_slots=()),)),
+        ),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Indented) Tj" in data
+    assert b"(AfterIt) Tj" in data
+    assert not converter.log.has_errors()
+
+
 def test_multi_page_chain_flows_text_across_frames(tmp_path):
     """A story whose frame_chain fully resolves against the chapter's own
     content pages is a real, flowing chain (like PBServer2's actual
