@@ -285,6 +285,32 @@ riscos-impression/
   absolute X position through tabs during wrapping itself, forcing a
   line wrap before an overflowing tab, and treating the tab as a no-op
   if even a fresh line still can't reach its target.
+* Follow-up: the user spotted, from real PDF output, that a story
+  spanning a genuine multi-frame chain (confirmed against
+  `Converter.resolve_frame_chain`) was still only ever rendered
+  (clipped) in the first frame encountered, and that a later
+  same-page chain member's own opaque fill was painting directly over
+  text already placed by an earlier one. Fixed by implementing real
+  chain flow: a story's whole text is now laid out once across its
+  full chain (moving to the next member whenever one fills up,
+  re-wrapping for each member's own width), and a later same-page
+  member whose box overlaps an earlier one skips its own fill/border
+  entirely and doesn't start its content higher than the earlier
+  member's own bottom edge (real documents hand-emulate text-repel
+  this way, chaining a narrow frame beside an obstacle into a full-width
+  one below it, rather than relying on dynamic repel, which still isn't
+  implemented -- see PBServer's own remaining case, driven by the
+  `repel`/`exx0..exy1` fields instead of chaining). Also found, while
+  building this: some stories are repeated independently across several
+  chapters via master-page linking (e.g. a running footer) rather than
+  genuinely flowing; their `frame_chain` data (when present) is anchored
+  to the master page they're defined on, not to any chapter, so
+  resolving it as a content-page chain always failed. Fixed by detecting
+  that case (the resolution doesn't fully succeed) and falling back to
+  laying each occurrence out fresh and independently, matching how
+  master furniture already works, instead of logging a bogus
+  unresolved-offset error. Commit: *"Flow story text across its whole
+  frame chain instead of clipping to the first frame"*.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: shared style→CSS and colour→CSS mapping used by

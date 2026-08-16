@@ -298,6 +298,109 @@ def test_later_chain_frame_does_not_paint_over_already_rendered_text(tmp_path):
     assert b"0 0 100 100 re f" not in data
 
 
+def test_multi_page_chain_flows_text_across_frames(tmp_path):
+    """A story whose frame_chain fully resolves against the chapter's own
+    content pages is a real, flowing chain (like PBServer2's actual
+    letter body): text that doesn't fit the first frame should continue
+    into the next chain member instead of being clipped, with no
+    best_effort overflow note logged once it all fits somewhere."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    # frame1 is deliberately just tall enough for one line; frame2 is
+    # roomy, so the content (five short, one-word paragraphs) must spill
+    # from frame1 into frame2 to all fit.
+    frame1 = _frame(x0=0, y0=0, x1=100000, y1=15000, dictionary_index=0)
+    frame2 = _frame(x0=0, y0=0, x1=100000, y1=300000, dictionary_index=0)
+    page1 = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame1),),
+    )
+    page2 = PageGroup(
+        page=Page(x0=0, y0=150000, x1=100000, y1=450000, bleed=0, master_page_name=""),
+        offset=2000,
+        records=(_frame_record(2008, frame2),),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page1, page2)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.append(dict_entry)
+    # frame1 is at offset 1008; frame2's on-disk chain offset (relative to
+    # mainpages2) is 2008 - 900 = 1108 (single-file mode; see
+    # Converter.resolve_frame_chain).
+    story = Story(
+        frame_chain=(1108,),
+        paragraphs=tuple(Paragraph(items=(Run(text=f"Para{i}", style_slots=()),)) for i in range(5)),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Para0) Tj" in data
+    assert b"(Para4) Tj" in data  # only reachable if flow continued into frame2
+    assert not any("overflow" in e.message for e in converter.log.entries)
+
+
+def test_master_anchored_story_renders_independently_without_erroring(tmp_path):
+    """Regression test: a real document (funcspec from the local
+    examples/ corpus) has stories repeated, unlinked, across several
+    chapters via a shared master page. Their frame_chain data (when they
+    have any) is anchored to the master page they're defined on, not to
+    any particular chapter -- resolving it against the chapter's own
+    content pages (as a real chain would need) fails for every offset.
+    That must not surface as a "did not resolve" error; it should just
+    mean this content isn't a flow at all, and gets laid out fresh,
+    independently, wherever it's referenced.
+    """
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    frame = _frame(x0=0, y0=0, x1=100000, y1=30000, dictionary_index=0)
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame),),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.append(dict_entry)
+    # An offset that resolves to nothing at all within this chapter's own
+    # content pages -- simulating a master-page-anchored chain entry.
+    story = Story(frame_chain=(999999,), paragraphs=(Paragraph(items=(Run(text="Footer", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Footer) Tj" in data
+    assert not converter.log.has_errors()
+
+
 def test_master_furniture_is_rebased_onto_the_content_page(tmp_path):
     """Regression test: a master page keeps its own, entirely separate
     absolute coordinate canvas (confirmed empirically -- real documents

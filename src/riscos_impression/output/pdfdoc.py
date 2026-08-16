@@ -70,6 +70,7 @@ from typing import Optional, Union
 from riscos_impression.formats.drawfile import DrawFile
 from riscos_impression.formats.eps import EPSObject
 from riscos_impression.formats.sprite import SpriteArea
+from riscos_impression.log import ConversionLog
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntryType, EmbeddedObjectType
 from riscos_impression.model.document_tree import Chapter, PageGroup
@@ -424,7 +425,15 @@ class PDFConverter(Converter):
         self._page_objs: list[int] = []
         self._chapter_number = 0
         self._page_number = 0
-        self._rendered_stories: set[int] = set()
+        #: dictionary_index -> {id(frame): [render_line() call-arg tuples]},
+        #: computed once per story (across its whole frame chain, if any)
+        #: the first time any of its frames is encountered; see
+        #: _compute_chain_layout.
+        self._story_layouts: dict[int, dict] = {}
+        #: chapter id -> {id(frame): PageGroup}, for locating a chain
+        #: member's own page (needed to resolve its geometry) when it
+        #: isn't the frame currently being drawn; see _frame_page_map.
+        self._frame_page_maps: dict[int, dict] = {}
         self._dictionary_by_index = {entry.index: entry for entry in self.document.dictionary}
         self._font_resource_name: dict[str, str] = {}
         font_parts = []
@@ -444,6 +453,9 @@ class PDFConverter(Converter):
         self._page_number += 1
         self._content: list[str] = []
         self._page_annots: list[str] = []
+        #: dictionary_index values whose box has already been drawn once
+        #: on this page; see _draw_frame's use of it.
+        self._dictionary_seen_this_page: set[int] = set()
         self._page_origin = (page.page.x0 + page.page.bleed, page.page.y0 + page.page.bleed)
         self._origin = self._page_origin
         self._page_size = (page.page.print_width / UNIT, page.page.print_height / UNIT)
@@ -513,6 +525,24 @@ class PDFConverter(Converter):
         self.log.error("frame", "master frame not found for a master-linked frame")
         return frame
 
+    def _frame_appearance_and_origin(
+        self, frame: Frame, page: PageGroup, default_origin: tuple[int, int]
+    ) -> tuple[Frame, tuple[int, int]]:
+        """The (appearance, origin) pair _draw_frame and the chain-layout
+        precompute both need: *frame*'s own geometry with *default_origin*
+        (the content page's own canvas for a normal page frame, or the
+        master page's own separate canvas for a piece of master
+        furniture), unless *frame* is master-linked, in which case its
+        appearance and origin are both substituted from the master page
+        (_effective_frame) -- master pages keep entirely their own
+        absolute coordinate space, unrelated to the content pages that
+        use them."""
+        appearance = self._effective_frame(frame, page)
+        if appearance is frame:
+            return appearance, default_origin
+        master_page_box = page.master_page.page
+        return appearance, (master_page_box.x0 + master_page_box.bleed, master_page_box.y0 + master_page_box.bleed)
+
     def _draw_frame(
         self,
         frame: Frame,
@@ -523,14 +553,8 @@ class PDFConverter(Converter):
         source_origin: tuple[int, int],
     ) -> None:
         """Draw *frame*, whose own coordinates are relative to
-        *source_origin*'s canvas (the content page's own canvas for a
-        normal page frame, or the master page's own separate canvas for
-        a piece of master furniture -- master pages keep entirely their
-        own absolute coordinate space, unrelated to the content pages
-        that use them). If *frame* is itself master-linked, its
-        appearance is substituted from the master page (_effective_frame),
-        whose coordinates are then relative to the master page's own
-        canvas regardless of *source_origin*."""
+        *source_origin*'s canvas. See _frame_appearance_and_origin for
+        what changes when *frame* is master-linked."""
         if isinstance(frame, GuideFrame):
             return  # non-printing
         if isinstance(frame, GroupFrame):
@@ -541,47 +565,41 @@ class PDFConverter(Converter):
             )
             return
 
-        if (
-            dictionary_dedupe
-            and isinstance(frame, (TextFrame, BlankFrame))
-            and frame.dictionary_index >= 0
-            and frame.dictionary_index in self._rendered_stories
-        ):
-            # Another frame earlier in this same page's stream already
-            # rendered this story's text (see _draw_story's dedupe) --
-            # this frame is a later member of that story's chain. Since a
-            # chain member's box can (and, in real documents, does)
-            # spatially overlap or fully enclose an earlier member's box,
-            # drawing its own fill/border here would paint over -- or sit
-            # uncomfortably beside -- text that's already been placed;
-            # skip it entirely rather than risk hiding real content.
-            return
+        draw_box = True
+        if dictionary_dedupe and isinstance(frame, (TextFrame, BlankFrame)) and frame.dictionary_index >= 0:
+            if frame.dictionary_index in self._dictionary_seen_this_page:
+                # A later frame in the same story's chain, on this same
+                # page, as an earlier one (real documents do this to
+                # hand-emulate text flowing around an obstacle picture,
+                # using two frames instead of dynamic repel, which isn't
+                # implemented -- see the module docstring). Its box can
+                # spatially overlap or fully enclose the earlier member's
+                # box, so drawing its own fill/border here would paint
+                # over already-placed text; skip the box (but still flow
+                # this frame's own share of the story's text into it,
+                # below).
+                draw_box = False
+            else:
+                self._dictionary_seen_this_page.add(frame.dictionary_index)
 
-        appearance = self._effective_frame(frame, page)
-        if appearance is frame:
-            appearance_origin = source_origin
-        else:
-            master_page_box = page.master_page.page
-            appearance_origin = (
-                master_page_box.x0 + master_page_box.bleed,
-                master_page_box.y0 + master_page_box.bleed,
-            )
+        appearance, appearance_origin = self._frame_appearance_and_origin(frame, page, source_origin)
 
         saved_origin = self._origin
         self._origin = appearance_origin
         try:
             boundary = appearance.boundary if isinstance(appearance, PictureFrame) else None
-            if boundary:
+            if boundary and draw_box:
                 self._content.append("q\n")
                 self._content.append(self._boundary_clip_path(appearance, boundary))
 
-            self._draw_box(appearance)
+            if draw_box:
+                self._draw_box(appearance)
             if isinstance(frame, PictureFrame):
                 self._draw_picture(frame, appearance)
             elif isinstance(frame, (TextFrame, BlankFrame)):
                 self._draw_story(frame, appearance, chapter, page, dictionary_dedupe=dictionary_dedupe)
 
-            if boundary:
+            if boundary and draw_box:
                 self._content.append("Q\n")
         finally:
             self._origin = saved_origin
@@ -738,26 +756,163 @@ class PDFConverter(Converter):
             return
         if entry.type is not DictionaryEntryType.TEXT:
             return  # a blank frame's link may resolve to a picture instead; nothing to draw here
-        if dictionary_dedupe:
-            if entry.index in self._rendered_stories:
+
+        box = self._inset_box_pt(appearance)
+        if box is None:
+            return
+        x0, y0, x1, y1 = box
+
+        if dictionary_dedupe and frame.dictionary_index in self._story_layouts:
+            lines = self._story_layouts[frame.dictionary_index].get(id(frame), [])
+        elif dictionary_dedupe:
+            # Flowing a story across its whole frame chain needs to happen
+            # once, globally, the first time any of its frames is
+            # encountered -- not per frame -- since later chain members
+            # only receive whatever didn't fit in earlier ones. A story
+            # that isn't genuinely a content-page chain (see
+            # _compute_chain_layout) isn't cached here at all -- each
+            # occurrence is independent and gets its own fresh copy
+            # instead.
+            story = None
+            with self.catch("story", location=f"dictionary entry {entry.index}"):
+                story = self.document.story(entry)
+            if story is None:
                 return
-            self._rendered_stories.add(entry.index)
+            layout = self._compute_chain_layout(story, entry, chapter, frame, page)
+            if layout is not None:
+                self._story_layouts[frame.dictionary_index] = layout
+                lines = layout.get(id(frame), [])
+            else:
+                assignments = self._flow_paragraphs_into_containers(
+                    story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)]
+                )
+                lines = assignments.get(id(frame), [])
+        else:
+            # Master furniture: rendered fresh, independently, on every
+            # page that uses it (not deduped/chain-flowed -- each page
+            # needs its own copy, e.g. so {pageno}-style marks evaluate
+            # correctly per page).
+            story = None
+            with self.catch("story", location=f"dictionary entry {entry.index}"):
+                story = self.document.story(entry)
+            if story is None:
+                return
+            assignments = self._flow_paragraphs_into_containers(
+                story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)]
+            )
+            lines = assignments.get(id(frame), [])
 
-        story = None
-        with self.catch("story", location=f"dictionary entry {entry.index}"):
-            story = self.document.story(entry)
-        if story is None:
+        if not lines:
             return
-
-        x0, y0 = self._to_pt(appearance.x0 + appearance.hinset, appearance.y0 + appearance.vinset)
-        x1, y1 = self._to_pt(appearance.x1 - appearance.hinset, appearance.y1 - appearance.vinset)
-        if x1 <= x0 or y1 <= y0:
-            return
-
         self._content.append("q\n")
         self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(x1 - x0)} {_fmt(y1 - y0)} re W n\n")
-        self._render_story_text(story, x0, y0, x1, y1, entry.index)
+        for render_args in lines:
+            self._render_line(*render_args)
         self._content.append("Q\n")
+
+    def _inset_box_pt(self, frame: Frame) -> Optional[tuple[float, float, float, float]]:
+        """*frame*'s content box (outer box minus hinset/vinset) in PDF
+        points, using the currently-active origin (self._origin, as set
+        up by _draw_frame's origin swap for whichever frame is currently
+        being drawn)."""
+        x0, y0 = self._to_pt(frame.x0 + frame.hinset, frame.y0 + frame.vinset)
+        x1, y1 = self._to_pt(frame.x1 - frame.hinset, frame.y1 - frame.vinset)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, y0, x1, y1
+
+    def _inset_box_pt_for(self, frame: Frame, page: PageGroup) -> Optional[tuple[float, float, float, float]]:
+        """As _inset_box_pt, but self-contained: resolves *frame*'s own
+        appearance/origin (via _frame_appearance_and_origin) rather than
+        relying on self._origin already being set for it -- needed for a
+        frame chain's OTHER members, which aren't the frame currently
+        being drawn."""
+        default_origin = (page.page.x0 + page.page.bleed, page.page.y0 + page.page.bleed)
+        appearance, (ox, oy) = self._frame_appearance_and_origin(frame, page, default_origin)
+        x0 = (appearance.x0 + appearance.hinset - ox) / UNIT
+        y0 = (appearance.y0 + appearance.vinset - oy) / UNIT
+        x1 = (appearance.x1 - appearance.hinset - ox) / UNIT
+        y1 = (appearance.y1 - appearance.vinset - oy) / UNIT
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, y0, x1, y1
+
+    def _frame_page_map(self, chapter: Chapter) -> dict[int, PageGroup]:
+        """id(frame) -> the PageGroup it's on, across every page of
+        *chapter*; built once per chapter and cached, for locating a
+        frame chain's other members' pages in _compute_chain_layout."""
+        cached = self._frame_page_maps.get(id(chapter))
+        if cached is not None:
+            return cached
+        mapping: dict[int, PageGroup] = {}
+        for page in chapter.pages:
+            for record in page.records:
+                if record.value is not None:
+                    mapping[id(record.value)] = page
+        self._frame_page_maps[id(chapter)] = mapping
+        return mapping
+
+    def _resolve_content_chain_quietly(self, story: Story, chapter: Chapter) -> list:
+        """Like Converter.resolve_frame_chain(chapter=chapter, master=False),
+        but without logging a failed offset as an error -- used only to
+        test whether a story's frame_chain is genuinely anchored to
+        *chapter*'s own content pages (a real, flowing chain) versus a
+        master page (independently-repeated content linked onto several
+        chapters, which isn't a chain at all -- see
+        _compute_chain_layout). A real failure to resolve gets its
+        chance to log for real when this comes back negative and the
+        caller falls back to single-frame handling instead."""
+        saved_log = self.log
+        self.log = ConversionLog()
+        try:
+            return self.resolve_frame_chain(story, chapter=chapter, master=False)
+        finally:
+            self.log = saved_log
+
+    def _compute_chain_layout(
+        self, story: Story, entry, chapter: Chapter, fallback_frame: Frame, fallback_page: PageGroup
+    ) -> Optional[dict[int, list]]:
+        """Resolve *story*'s full frame chain (in reading order) and flow
+        its whole text across every member's own box in turn, moving on
+        to the next member whenever one fills up. Returns the same
+        id(frame) -> [render_line() call-arg tuples] mapping
+        _flow_paragraphs_into_containers does; a later chain member not
+        yet reached by the page walk just isn't drawn until its own
+        _draw_story call looks its entry up here.
+
+        Returns None if *story*'s frame_chain doesn't fully resolve
+        against *chapter*'s own content pages: a master-linked frame
+        repeated independently across several chapters (e.g. a running
+        header/footer) shares one dictionary_index per occurrence just
+        like a real chain does, but its frame_chain data (when it has
+        any at all) is anchored to the master page it's defined on, not
+        to any particular chapter -- so it isn't a flow this converter
+        should try to distribute text across at all; the caller falls
+        back to laying each occurrence out fresh and independently."""
+        if not story.frame_chain:
+            return None
+        chain = self._resolve_content_chain_quietly(story, chapter)
+        if len(chain) != len(story.frame_chain):
+            return None
+
+        chain_frames = [record.value for record in chain if isinstance(record.value, Frame)]
+        if not any(f is fallback_frame for f in chain_frames):
+            chain_frames = [fallback_frame] + chain_frames
+
+        frame_page_map = self._frame_page_map(chapter)
+        containers = []
+        for cframe in chain_frames:
+            member_page = fallback_page if cframe is fallback_frame else frame_page_map.get(id(cframe))
+            if member_page is None:
+                continue
+            box = self._inset_box_pt_for(cframe, member_page)
+            if box is None:
+                continue
+            containers.append((id(cframe), id(member_page), *box))
+
+        if not containers:
+            return {}
+        return self._flow_paragraphs_into_containers(story.paragraphs, entry.index, containers)
 
     def _paragraph_tokens(self, paragraph, dictionary_index: int, body_style: Style) -> tuple[list[_Token], Style]:
         tokens: list[_Token] = []
@@ -803,45 +958,91 @@ class PDFConverter(Converter):
             return ""
         return str(resolve_number(self.document.numbering, dictionary_index, tag))
 
-    def _render_story_text(self, story: Story, x0: float, y0: float, x1: float, y1: float, dictionary_index: int) -> None:
+    def _flow_paragraphs_into_containers(
+        self, paragraphs: tuple, dictionary_index: int, containers: list[tuple[int, int, float, float, float, float]]
+    ) -> dict[int, list]:
+        """Lay out *paragraphs* across *containers* in order -- each a
+        (key, page_key, x0, y0, x1, y1) box in PDF points -- moving on to
+        the next container whenever the current one fills up mid-paragraph
+        (a paragraph's remaining, not-yet-placed lines are re-wrapped for
+        the new container, since chain members can have different
+        widths). Returns key -> [render_line() call-arg tuples]; a
+        single-container caller (master furniture, or a story confined
+        to one frame) just gets one key back. Logs a best_effort note,
+        once, if the paragraphs run out of containers before they run
+        out of content.
+
+        Real documents sometimes emulate text flowing around an obstacle
+        picture (rather than relying on this converter's unimplemented
+        dynamic repel; see the module docstring) by chaining two frames
+        on the *same* page, where the second's box geometrically overlaps
+        the first's. Starting the second at its own top edge in that case
+        would visually collide with content already placed by the first,
+        so a container sharing an earlier container's page_key never
+        starts higher than the lowest point that page has reached so
+        far."""
+        assignments: dict[int, list] = {key: [] for key, *_ in containers}
+        if not containers:
+            return assignments
+
         body_style = self.resolve_style([])
+        page_floor: dict[int, float] = {}
+        container_index = 0
+        key, page_key, x0, y0, x1, y1 = containers[0]
         y_cursor = y1
-        overflowed = False
 
-        for paragraph in story.paragraphs:
-            if overflowed:
-                break
+        def advance_container() -> bool:
+            nonlocal container_index, key, page_key, x0, y0, x1, y1, y_cursor
+            container_index += 1
+            if container_index >= len(containers):
+                return False
+            key, page_key, x0, y0, x1, y1 = containers[container_index]
+            y_cursor = min(y1, page_floor.get(page_key, y1))
+            return True
+
+        for paragraph in paragraphs:
             tokens, para_style = self._paragraph_tokens(paragraph, dictionary_index, body_style)
+            is_continuation = False
+            while True:
+                left_indent = (para_style.left_indent or 0) / UNIT
+                right_indent = (para_style.right_indent or 0) / UNIT
+                first_indent = 0.0 if is_continuation else (para_style.first_indent or 0) / UNIT
+                right_edge = x1 - right_indent
+                line_start_normal = x0 + left_indent
+                line_start_first = x0 + left_indent + first_indent
+                line_height = _line_height_pt(para_style)
 
-            left_indent = (para_style.left_indent or 0) / UNIT
-            right_indent = (para_style.right_indent or 0) / UNIT
-            first_indent = (para_style.first_indent or 0) / UNIT
-            right_edge = x1 - right_indent
-            line_start_normal = x0 + left_indent
-            line_start_first = x0 + left_indent + first_indent
-            line_height = _line_height_pt(para_style)
-
-            lines = _wrap_tokens(tokens, x0, line_start_first, line_start_normal, right_edge)
-            for index, line in enumerate(lines):
-                if y_cursor - line_height < y0:
+                lines = _wrap_tokens(tokens, x0, line_start_first, line_start_normal, right_edge)
+                placed_all = True
+                for index, line in enumerate(lines):
+                    if y_cursor - line_height < y0:
+                        # This paragraph doesn't fully fit here; carry its
+                        # remaining lines' tokens over to the next
+                        # container and re-wrap them there.
+                        tokens = [t for remaining in lines[index:] for t in remaining]
+                        placed_all = False
+                        break
+                    y_cursor -= line_height
+                    page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
+                    is_first_line = (index == 0) and not is_continuation
+                    start_x = line_start_first if is_first_line else line_start_normal
+                    assignments[key].append(
+                        (line, start_x, x0, right_edge, y_cursor, index < len(lines) - 1, para_style.alignment)
+                    )
+                if placed_all:
+                    if para_style.space_after:
+                        y_cursor -= para_style.space_after / UNIT
+                    break
+                if not advance_container():
                     self.log.best_effort(
                         "story",
-                        "text overflowed its frame and was clipped; multi-frame text "
-                        "flow across a chain is not reproduced",
+                        "text overflowed the available frame(s) and was clipped",
                         location=f"dictionary entry {dictionary_index}",
                     )
-                    overflowed = True
-                    break
-                y_cursor -= line_height
-                is_first = index == 0
-                is_last = index == len(lines) - 1
-                start_x = line_start_first if is_first else line_start_normal
-                self._render_line(
-                    line, start_x, x0, right_edge, y_cursor, justify=not is_last, alignment=para_style.alignment
-                )
+                    return assignments
+                is_continuation = True
 
-            if not overflowed and para_style.space_after:
-                y_cursor -= para_style.space_after / UNIT
+        return assignments
 
     def _render_line(
         self,
@@ -850,7 +1051,6 @@ class PDFConverter(Converter):
         tab_base_x: float,
         right_edge: float,
         y: float,
-        *,
         justify: bool,
         alignment: Optional[int],
     ) -> None:
