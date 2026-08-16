@@ -1229,6 +1229,32 @@ riscos-impression/
   table now lands entirely on one page, matching the PDF converter's
   own output exactly.
 
+* **Post-Stage-14 fix (15)**: the user supplied a reference image
+  (PCISpec-HTMLOverlap.png) showing PCI_Spec's DrawFile diagrams
+  appearing doubled and overlapping the running text on one page in
+  paged HTML. `html_paged.py`'s own per-page frame walk had no
+  equivalent of pdfdoc.py's own, already-fixed `_draw_frame` check: a
+  `PictureFrame` with a non-zero `embed_tag` is meant to be anchored
+  *inline* within a text story, at the matching `EmbedMark`'s own
+  position (`_render_embed`) -- never drawn independently at its own
+  raw, page-relative box. Without that check, an embed-tagged picture
+  rendered both inline *and* independently. Confirmed by comparing SVG
+  counts before/after: page 3 had 5 `<svg>` elements (two distinct
+  diagrams each appearing twice, plus one belonging to page 4 leaking
+  in) before the fix, exactly 2 (one of each) after; page 4's own
+  count dropped from a duplicate to the correct single copy. This was
+  a latent, pre-existing gap, not a regression from fix (13)/(14) --
+  it was only ever made *visible* once the multi-frame chain flow fix
+  let a story's own text actually reach far enough into a chain to
+  render the matching `EmbedMark` at all; previously that portion of
+  the story was simply never rendered. Fixed by adding the identical
+  `embed_tag` check pdfdoc.py already has, at the very top of
+  `_render_frame`. One new regression test, directly mirroring
+  pdfdoc.py's own `test_inline_drawfile_picture_pushes_following_text_
+  below_it` fixture, asserting the SVG appears exactly once. Full
+  suite (327 tests) green; re-validated across all 111 real documents
+  with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

@@ -287,6 +287,21 @@ class PagedHTMLConverter(HTML5Converter):
         return frame
 
     def _render_frame(self, frame: Frame, chapter: Chapter, page: PageGroup) -> str:
+        if frame.embed_tag:
+            # Anchored inline within a text story instead, at the
+            # matching EmbedMark's own position (_render_embed) --
+            # never drawn at its own raw position on the page in
+            # normal front-to-back order; mirrors pdfdoc.py's own
+            # _draw_frame check exactly. Drawing it here too, at its
+            # raw (and often stale/irrelevant) box, was confirmed
+            # against a real document (PCI_Spec from the local
+            # examples/ corpus, whose DrawFile diagrams appeared
+            # doubled and overlapping running text on one page) as the
+            # direct cause -- newly visible once the multi-frame chain
+            # flow fix let a story's own text actually reach the
+            # matching EmbedMark, rather than never being rendered
+            # far enough into the story to reach it at all.
+            return ""
         if isinstance(frame, (GuideFrame, GroupFrame)):
             return ""  # non-printing / no visual content of its own
 

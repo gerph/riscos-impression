@@ -1,7 +1,7 @@
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import Paragraph, Run, Story
+from riscos_impression.model.story import EmbedMark, Paragraph, Run, Story
 from riscos_impression.output.html_paged import PagedHTMLConverter
 
 from tests.test_output_ovprodll import _picture
@@ -236,6 +236,65 @@ def test_real_multi_frame_chain_flows_text_across_frames(tmp_path):
     assert "Para0" in text
     assert "Para7" in text  # only reachable if flow continued into frame2
     assert not any("doesn't resolve against this chapter" in e.message for e in converter.log.entries)
+
+
+def test_embed_tagged_picture_frame_is_not_also_drawn_independently(tmp_path):
+    """Regression test: the user reported PCI_Spec's DrawFile diagrams
+    appearing doubled and overlapping running text in paged HTML. A
+    PictureFrame with a non-zero embed_tag is anchored inline within a
+    text story at the matching EmbedMark's own position
+    (_render_embed), not drawn at its own raw, page-relative box in
+    normal front-to-back order -- mirrors pdfdoc.py's own, already-
+    fixed _draw_frame check (its docstring: "Drawing it here too, at
+    its raw (and often stale/irrelevant) box, was the direct cause of
+    inline pictures visually overlaying running text"). html_paged.py's
+    own per-page frame walk never had the equivalent check, so an
+    embed-tagged picture rendered both inline AND independently -- a
+    latent bug only made visible once the multi-frame chain flow fix
+    let a story's own text actually reach the matching EmbedMark far
+    enough into a chain to render it at all."""
+    body = _style(0, is_body_text=True, font_size=160)
+    text_frame = _frame(x0=0, y0=0, x1=200000, y1=300000, dictionary_index=0)
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    # Deliberately placed at an unrelated raw page position, far from
+    # the text frame -- if this leaked into the output at all, the
+    # picture would show up a second time, at the wrong place.
+    picture_frame = _picture(x0=500000, y0=500000, x1=560000, y1=540000, embed_tag=42, dictionary_index=1)
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=600000, y1=600000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, text_frame), _frame_record(1108, picture_frame)),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=600000, y1=600000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    document = _document(chapters=[chapter], master_pages=[master_page], styles=[body], header=header)
+    text_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    picture_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.extend([text_entry, picture_entry])
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    story = Story(
+        frame_chain=(),
+        paragraphs=(
+            Paragraph(items=(Run(text="Before", style_slots=()), EmbedMark(embed_tag=42))),
+        ),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert text.count("<svg ") == 1
+    assert not converter.log.has_errors()
 
 
 def test_estimate_slice_height_drops_an_oversized_right_indent():
