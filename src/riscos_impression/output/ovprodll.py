@@ -5,28 +5,27 @@ c/frames, c/styles, c/pxexp in the sibling riscos-source repository).
 This aims to be structurally and semantically faithful to the original
 tool's output -- the same DDL object types, the same field values and
 hardcoded constants where the original uses them, the same identifier
-scheme -- rather than byte-for-byte identical. Two things stop full
+scheme -- rather than byte-for-byte identical. One thing stops full
 fidelity from being practical:
 
-* The original's picture rotation/scale handling composes a transform
-  matrix using tr_setrotationa()/tr_setscale()/tr_multiply()/tr_getbits()
-  from the OvationPro XL library (h.transform), which is a third-party
-  dependency of the original tool and is not part of this repository.
-  This converter computes scale and angle directly from the picture's
-  own fields instead, and always emits a zero skew, logging a
-  best_effort note whenever a picture is rotated and non-uniformly
-  scaled (the one case where the true output could have a non-zero
-  skew this converter can't reproduce).
 * Anything already noted in docs/impression-documents.xml as
   unconfirmed or a known converter gap (non-decimal numbering styles,
   PostScript screening, irregular boundaries beyond synthetic fixtures,
   ...) is carried through here as a logged best-effort/unsupported
   case rather than guessed at.
+
+The picture rotation/scale/skew decomposition is a direct port of the
+original's tr_setrotationa()/tr_setscale()/tr_multiply()/tr_getbits()
+from the OvationPro XL transform library, whose source is present in
+the sibling riscos-source repository at XL/Task/h/transform and
+XL/Task/c/transform (see the _tr_*/_ttmul/_scale/_pythag helpers
+below).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 from pathlib import Path
 from typing import Optional, Union
 
@@ -54,6 +53,159 @@ from riscos_impression.model.story import (
 )
 from riscos_impression.model.styles import Style
 from riscos_impression.output.base import Converter, page_origin, to_page_coordinates
+
+# ---------------------------------------------------------------------------
+# Picture transform (ported from the OvationPro XL transform library --
+# XL/Task/h/transform and XL/Task/c/transform in the sibling riscos-source
+# repository -- as used by the original tool's ixpictdata() in c/frames to
+# decompose a picture's rotation+scale into DDL's scale/aspect/angle/skew
+# fields).
+# ---------------------------------------------------------------------------
+
+
+def _cdiv(n: int, d: int) -> int:
+    """C-style integer division: truncates toward zero (unlike Python's
+    floor-dividing //), matching the original's scale(a,b,c) = a*b/c."""
+    q = abs(n) // abs(d)
+    return -q if (n < 0) != (d < 0) else q
+
+
+def _scale(a: int, b: int, c: int) -> int:
+    return _cdiv(a * b, c)
+
+
+def _ttmul(a: int, b: int) -> int:
+    """16.16 fixed-point multiply: (a*b)>>16, as in the original's ttmul()."""
+    return (a * b) >> 16
+
+
+def _pythag(x: int, y: int) -> int:
+    return int(math.sqrt(x * x + y * y))
+
+
+def _tr_cos(a: int, r: int) -> int:
+    angle = (a / 0x10000) / 180.0 * math.pi
+    return int(math.cos(angle) * r)
+
+
+def _tr_sin(a: int, r: int) -> int:
+    angle = (a / 0x10000) / 180.0 * math.pi
+    return int(math.sin(angle) * r)
+
+
+def _tr_setrotationa(angle_1616: int) -> tuple[int, int, int, int]:
+    """Port of tr_setrotationa(): returns the (a,b,c,d) of a rotation-only
+    transformstr for an angle in 16.16 fixed-point degrees."""
+    angle = (angle_1616 / 0x10000) / 180.0 * math.pi
+    a = d = int(0x10000 * math.cos(angle))
+    b = int(0x10000 * math.sin(angle))
+    c = -b
+    return a, b, c, d
+
+
+def _tr_setscale(oldx: int, newx: int, oldy: int, newy: int) -> tuple[int, int]:
+    """Port of tr_setscale(): returns the (a,d) of a scale-only
+    transformstr (b=c=0 always)."""
+    if oldx == newx:
+        a = 0x10000
+    elif oldx:
+        a = _scale(newx, 0x10000, oldx)
+    else:
+        a = 0x10000
+    if oldy == newy:
+        d = 0x10000
+    elif oldy:
+        d = _scale(0x10000, newy, oldy)
+    else:
+        d = 0x10000
+    return a, d
+
+
+def _tr_multiply(
+    t1: tuple[int, int, int, int, int, int], t2: tuple[int, int, int, int, int, int]
+) -> tuple[int, int, int, int, int, int]:
+    """Port of tr_multiply(): r = t1 * t2."""
+    a1, b1, c1, d1, e1, f1 = t1
+    a2, b2, c2, d2, e2, f2 = t2
+    a = _ttmul(a1, a2) + _ttmul(b1, c2)
+    b = _ttmul(a1, b2) + _ttmul(b1, d2)
+    c = _ttmul(c1, a2) + _ttmul(d1, c2)
+    d = _ttmul(c1, b2) + _ttmul(d1, d2)
+    e = _ttmul(a2, e1) + _ttmul(c2, f1) + e2
+    f = _ttmul(b2, e1) + _ttmul(d2, f1) + f2
+    return a, b, c, d, e, f
+
+
+@dataclasses.dataclass(frozen=True)
+class _TransformBits:
+    """Port of transformbitstr: a transform decomposed into its shift,
+    scale, rotation and skew components."""
+
+    xshift: int
+    yshift: int
+    xscale: int
+    yscale: int
+    angle: int
+    skewxy: int
+    skewyx: int
+
+
+def _tr_getbits(t: tuple[int, int, int, int, int, int]) -> _TransformBits:
+    """Port of tr_getbits(): decomposes a composed transformstr into its
+    shift/scale/rotate/skew components."""
+    ta, tb, tc, td, te, tf = t
+    xshift, yshift, skewyx = te, tf, 0
+    if ta == 0:
+        if tb < 0:
+            angle, s, xscale = -90 * 0x10000, -0x10000, -tb
+        else:
+            angle, s, xscale = 90 * 0x10000, 0x10000, tb
+        c = 0
+    elif tb == 0:
+        if ta < 0:
+            angle, c, xscale = 180 * 0x10000, -0x10000, -ta
+        else:
+            angle, c, xscale = 0, 0x10000, ta
+        s = 0
+    else:
+        angle = int((180 * math.atan2(tb, ta) / math.pi) * 0x10000)
+        xscale = _pythag(ta, tb)
+        c = _tr_cos(angle, 0x10000)
+        s = _tr_sin(angle, 0x10000)
+
+    top = _ttmul(tc, c) + _ttmul(td, s)
+    bot = _ttmul(td, c) - _ttmul(tc, s)
+    skewxy = 0 if bot == 0 else _scale(0x10000, top, bot)
+
+    bot = _ttmul(skewxy, c) - s
+    top = _ttmul(skewxy, s) + c
+    if abs(bot) > abs(top):
+        yscale = _scale(0x10000, tc, bot)
+    else:
+        yscale = _scale(0x10000, td, top)
+
+    return _TransformBits(
+        xshift=xshift,
+        yshift=yshift,
+        xscale=xscale,
+        yscale=yscale,
+        angle=angle,
+        skewxy=skewxy,
+        skewyx=skewyx,
+    )
+
+
+def _picture_transform_bits(angle: int, xscale: int, yscale: int) -> _TransformBits:
+    """Port of ixpictdata()'s tr_setrotationa()/tr_setscale()/tr_multiply()/
+    tr_getbits() composition (c/frames in the sibling riscos-source
+    repository): decomposes a picture's rotation+scale into the DDL
+    scale/aspect/angle/skew fields."""
+    ra, rb, rc, rd = _tr_setrotationa(angle)
+    rotation = (ra, rb, rc, rd, 0, 0)
+    sa, sd = _tr_setscale(xscale, 0x10000, yscale, 0x10000)
+    scaling = (sa, 0, 0, sd, 0, 0)
+    return _tr_getbits(_tr_multiply(rotation, scaling))
+
 
 # ---------------------------------------------------------------------------
 # Colours
@@ -683,24 +835,18 @@ class OvProDDLConverter(Converter):
     # -- Picture frames ---------------------------------------------------------
 
     def _render_picture_data(self, pict: PictureFrame) -> str:
-        final_yscale = (0x10000 * 0x10000) // pict.yscale if pict.yscale else 0x10000
-        final_xscale = (0x10000 * 0x10000) // pict.xscale if pict.xscale else 0x10000
-        aspect = (0x10000 * final_xscale) // final_yscale if final_yscale else 0x10000
-        if pict.angle != 0 and pict.xscale != pict.yscale:
-            self.log.best_effort(
-                "picture",
-                "rotated, non-uniformly scaled picture: skew cannot be computed without "
-                "the OvationPro XL transform library (h.transform), which this repository "
-                "doesn't have source for; emitting skew 0",
-            )
+        bits = _picture_transform_bits(pict.angle, pict.xscale, pict.yscale)
+        aspect = _scale(0x10000, bits.xscale, bits.yscale) if bits.yscale else 0x10000
+        skew = int((180 * math.atan(bits.skewxy / 0x10000) / math.pi) * 0x10000)
         return (
             "{picturedata\n{lockmode 0}\n{aspectlock 1}\n{autoscale 0}\n{hide 0}\n"
             "{bottomleft 1}\n"
             f"{{x {-pict.xshift}}}\n{{y {pict.yshift}}}\n"
-            f"{{scale 0x{final_yscale & 0xFFFFFFFF:x}}}\n"
+            f"{{scale 0x{bits.yscale & 0xFFFFFFFF:x}}}\n"
             f"{{aspect 0x{aspect & 0xFFFFFFFF:x}}}\n"
-            f"{{angle 0x{pict.angle & 0xFFFFFFFF:x}}}\n"
-            "{skew 0x0}\n{tile 0 0 0}}\n"
+            f"{{angle 0x{bits.angle & 0xFFFFFFFF:x}}}\n"
+            f"{{skew 0x{skew & 0xFFFFFFFF:x}}}\n"
+            "{tile 0 0 0}}\n"
         )
 
     def _render_irregular_boundary(self, pict: PictureFrame, origin) -> str:
