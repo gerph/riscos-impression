@@ -134,7 +134,7 @@ riscos-impression/
 - [x] Stage 11 — Paged-media HTML output
 - [x] Stage 11.5 — Markdown output
 - [x] Stage 12 — CLI and polish
-- [ ] Stage 13 (follow-up) — Real-document audit
+- [x] Stage 13 (follow-up) — Real-document audit
 - [x] Stage 14 — Real DrawFile decoding and PDF/SVG rendering
 
 ## Stages
@@ -1604,6 +1604,33 @@ riscos-impression/
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run
   against them.
+* **Done.** Converted all 111 real documents (`examples/` + `moreexamples/`)
+  to Markdown and scanned the extracted text for emails, UK postcodes, and
+  phone-number-shaped strings, as a triage aid -- not a determination of
+  what's safe on its own, since a keyword scan can't recognise a personal
+  name or an informal note with no contact details in it. The scan found a
+  large fraction of the corpus was genuinely personal correspondence (letters
+  to named individuals, the user's own historical email addresses and phone
+  number recurring throughout), so no subset was selected unilaterally by
+  this project -- the audit's own findings were reported back to the user,
+  who then chose and added five documents directly to a new, committed
+  `corpus/` directory themselves: `Cover,bc5`, `ForDad,bc5`, `Lines,bc5`,
+  `Project,bc5`, `TestImp,bc5` (the last a purpose-built lorem-ipsum styling
+  test document; `Lines,bc5` wasn't part of the original examples/
+  moreexamples corpus at all). Re-ran the same scan against these five specifically
+  (0 hits) and spot-read each one's extracted text as a final check before
+  they were committed.
+
+  `tests/test_corpus_documents.py` runs every `corpus/` document through
+  every output format (`ddl`, `pdf`, `html-scroll`, `html-paged`,
+  `markdown`) via the real CLI entry point, asserting a clean exit and no
+  error-level log entries -- parametrised so a future document added to
+  `corpus/` is picked up automatically with no test-code changes needed.
+  No separate CI job was needed: these are ordinary `pytest` tests, already
+  covered by CI's existing `test` job now that `corpus/` is committed
+  (unlike `examples/`/`moreexamples/`, which stay gitignored, local-only,
+  and are never referenced by anything under `tests/`). 25/25 new tests
+  green (5 documents × 5 formats); full suite (363 tests) green.
 
 ## Verification per stage
 
