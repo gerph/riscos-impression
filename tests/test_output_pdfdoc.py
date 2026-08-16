@@ -470,6 +470,58 @@ def test_draw_box_draws_all_four_edges_when_all_present():
     assert "100 0 m 100 50 l S" in content
 
 
+def test_draw_box_with_a_border_also_draws_a_grey_shadow_ring():
+    # Regression test: the user reported a real document's (FieldWork)
+    # own bordered picture frames missing the grey drop-shadow/mat
+    # effect Impression itself shows around them (confirmed against a
+    # reference screenshot) -- this project's PDF converter drew only
+    # the border line, nothing else. Traced to the original C DDL
+    # emitter (`c/frames`): every frame type's own border emission
+    # unconditionally pairs a "{shadow ...}" alongside the "{border
+    # ...}" whenever any edge is present (see _SHADOW_WIDTH_PT's own
+    # docstring). Drawn as 4 separate bands just outside the frame's
+    # own box (not one rect underneath the whole frame), so an
+    # unfilled frame's own sparse content (e.g. a DrawFile picture
+    # that's mostly bare strokes) doesn't show grey showing through
+    # between them.
+    from riscos_impression.output.pdfdoc import PDFConverter, _SHADOW_WIDTH_PT, _fmt
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=1, border1=1, border2=1, border3=1, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    sw = _SHADOW_WIDTH_PT
+    # A grey fill colour set before the shadow bands.
+    assert "0.471 0.471 0.471 rg" in content
+    # Four bands, just outside the frame's own [0,0]-[100,50] box.
+    assert f"{_fmt(-sw)} {_fmt(50)} {_fmt(100 + 2 * sw)} {_fmt(sw)} re f" in content  # top
+    assert f"{_fmt(-sw)} {_fmt(-sw)} {_fmt(100 + 2 * sw)} {_fmt(sw)} re f" in content  # bottom
+    assert f"{_fmt(-sw)} {_fmt(0)} {_fmt(sw)} {_fmt(50)} re f" in content  # left
+    assert f"{_fmt(100)} {_fmt(0)} {_fmt(sw)} {_fmt(50)} re f" in content  # right
+
+
+def test_draw_box_without_a_border_draws_no_shadow():
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000)  # default border0..3 = 0xFF (absent)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    assert content == ""  # no fill (unfilled), no border, no shadow -- nothing to draw at all
+
+
 def test_first_line_baseline_uses_ascent_not_full_line_height(tmp_path):
     from riscos_impression.output.pdfdoc import _ascent_pt, _fmt
 

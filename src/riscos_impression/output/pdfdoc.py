@@ -180,6 +180,21 @@ _DRAW_UNIT_TO_PT = 72.0 / (180.0 * 256.0)
 
 _DEFAULT_FONT_SIZE_16THS = 160  # 10pt, used when a style carries no font_size at all.
 
+#: A frame with any border edge present always gets a drop-shadow too --
+#: confirmed against the original C DDL emitter (`c/frames`, e.g.
+#: ixpictdata()): every frame type's own "{frameborder ...}" emission
+#: unconditionally pairs a "{border ...}" with a hardcoded
+#: "{shadow 0 0x3 {colourvalue COL_01 0x10000 0} {w 5669}}" whenever any
+#: edge is present, regardless of the frame's own declared border colour.
+#: COL_01 is one of OvationPro's own built-in colour names (used as the
+#: generic default grey elsewhere too, e.g. column guides in c/styles),
+#: not decoded from anything in the document itself; its own RGB value
+#: isn't available to this project, so it's approximated here by
+#: sampling a real document's own rendered screenshot directly (a
+#: consistent ~(120,120,120) grey band around a bordered picture frame).
+_SHADOW_WIDTH_PT = 5669 / UNIT
+_SHADOW_COLOUR_RGB = (120 / 255, 120 / 255, 120 / 255)
+
 
 # ---------------------------------------------------------------------------
 # Low-level PDF object writer
@@ -1059,6 +1074,25 @@ class PDFConverter(Converter):
         w, h = x1 - x0, y1 - y0
         if w <= 0 or h <= 0:
             return
+
+        if frame.has_border:
+            # Four separate bands forming a ring just outside the
+            # frame's own box, rather than one rect the frame's own
+            # content would need to fully repaint over -- an unfilled
+            # picture frame (real document: FieldWork's own UK map,
+            # filled=False) only paints its own DrawFile content
+            # (mostly bare strokes, not a solid background), so a
+            # single shadow rect *underneath* the frame's whole box
+            # would show through between the drawn lines instead of
+            # staying confined to the visible outer margin the
+            # reference image actually shows.
+            sw = _SHADOW_WIDTH_PT
+            r, g, b = _SHADOW_COLOUR_RGB
+            self._content.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg\n")
+            self._content.append(f"{_fmt(x0 - sw)} {_fmt(y1)} {_fmt(w + 2 * sw)} {_fmt(sw)} re f\n")  # top
+            self._content.append(f"{_fmt(x0 - sw)} {_fmt(y0 - sw)} {_fmt(w + 2 * sw)} {_fmt(sw)} re f\n")  # bottom
+            self._content.append(f"{_fmt(x0 - sw)} {_fmt(y0)} {_fmt(sw)} {_fmt(h)} re f\n")  # left
+            self._content.append(f"{_fmt(x1)} {_fmt(y0)} {_fmt(sw)} {_fmt(h)} re f\n")  # right
 
         fill = frame.fill_colour(self.document.colours) if frame.filled else None
         if fill is not None:
