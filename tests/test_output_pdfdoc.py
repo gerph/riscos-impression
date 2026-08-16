@@ -8,6 +8,7 @@ from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
     _approx_width,
     _fill_colour_op,
+    _narrow_for_obstacles,
     _next_tab_stop,
     _PDFWriter,
     _stroke_colour_op,
@@ -399,6 +400,127 @@ def test_master_anchored_story_renders_independently_without_erroring(tmp_path):
 
     assert b"(Footer) Tj" in data
     assert not converter.log.has_errors()
+
+
+def test_narrow_for_obstacles_pushes_in_from_the_nearer_side():
+    # Obstacle on the left (closer to `left` than `right`): left edge moves in.
+    left, right = _narrow_for_obstacles(0.0, 100.0, y_top=50.0, y_bottom=40.0, obstacles=[(0.0, 30.0, 20.0, 60.0)])
+    assert (left, right) == (20.0, 100.0)
+    # Obstacle on the right: right edge moves in.
+    left, right = _narrow_for_obstacles(0.0, 100.0, y_top=50.0, y_bottom=40.0, obstacles=[(80.0, 30.0, 100.0, 60.0)])
+    assert (left, right) == (0.0, 80.0)
+
+
+def test_narrow_for_obstacles_ignores_obstacles_outside_the_line_band():
+    # Obstacle's Y-range doesn't reach this line's [y_bottom, y_top].
+    left, right = _narrow_for_obstacles(0.0, 100.0, y_top=50.0, y_bottom=40.0, obstacles=[(0.0, 0.0, 20.0, 10.0)])
+    assert (left, right) == (0.0, 100.0)
+
+
+def test_narrow_for_obstacles_handles_obstacles_on_both_sides():
+    obstacles = [(0.0, 30.0, 20.0, 60.0), (80.0, 30.0, 100.0, 60.0)]
+    left, right = _narrow_for_obstacles(0.0, 100.0, y_top=50.0, y_bottom=40.0, obstacles=obstacles)
+    assert (left, right) == (20.0, 80.0)
+
+
+def test_text_repels_around_an_obstacle_picture(tmp_path):
+    """Regression test for PBServer (from the local examples/ corpus): a
+    picture with repel=True should push the body text's lines away from
+    it (dynamic text repel), rather than the text simply filling its
+    frame's whole box top to bottom while ignoring the obstacle.
+    """
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    # A picture occupying the left third of the page, tall enough to
+    # cover the first several lines of body text.
+    picture = _picture(
+        x0=0, y0=50000, x1=30000, y1=100000,
+        exx0=0, exy0=50000, exx1=30000, exy1=100000,
+        repel=True, dictionary_index=1,
+    )
+    text_frame = _frame(x0=0, y0=0, x1=100000, y1=100000, dictionary_index=0)
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, picture), _frame_record(1108, text_frame)),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    idx = data.find(b"(Hello) Tj")
+    assert idx != -1
+    tm_idx = data.rfind(b"Tm", 0, idx)
+    line_start = data.rfind(b"\n", 0, tm_idx) + 1
+    tm_line = data[line_start:tm_idx]
+    x = float(tm_line.split()[4])
+    assert x >= 30.0  # pushed right past the obstacle's own right edge (30pt)
+
+
+def test_repel_flagged_frame_does_not_obstruct_its_own_text(tmp_path):
+    """Regression test: a frame that's itself repel-flagged (e.g. an
+    address block meant to push *other* frames' text away from it, like
+    PBServer's letterhead) must not treat its own repel box as an
+    obstacle when its own text is being laid out -- that previously
+    left it with zero usable width anywhere in its own frame, silently
+    dropping all of its text.
+    """
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    # repel box (exx0..exy1) far larger than the frame's own outer box,
+    # covering virtually the whole page -- if this obstructed itself,
+    # no line anywhere in the frame would have room.
+    frame = _frame(
+        x0=40000, y0=40000, x1=60000, y1=60000,
+        exx0=0, exy0=0, exx1=100000, exy1=100000,
+        repel=True, dictionary_index=0,
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame),),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body], header=header
+    )
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Visible", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"(Visible) Tj" in data
 
 
 def test_master_furniture_is_rebased_onto_the_content_page(tmp_path):

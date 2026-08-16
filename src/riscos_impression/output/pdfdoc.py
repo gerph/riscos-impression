@@ -22,12 +22,21 @@ ConversionLog rather than guessed at silently:
   the PDF viewer's own built-in standard-14 font program), so this
   only affects where lines break and how justified spacing lands, not
   what any individual glyph looks like.
-* A story's text is rendered in full only in the first frame of its
-  chain that this converter encounters, clipped to that frame's inset
-  box; multi-frame text flow across a chain (the way Impression itself
-  reflows a long story across several linked frames) is not
-  reproduced. Overflow within that one frame is silently clipped
-  (logged once per occurrence).
+* A story's text flows across its whole frame chain (resolved via
+  Converter.resolve_frame_chain), moving on to the next chain member
+  whenever the current one fills up and re-wrapping the remainder for
+  its own width. Text also repels dynamically around any repel-flagged
+  frame (a picture, or another text frame such as an address block) on
+  the same page, narrowing each line's available width around whatever
+  obstacles intersect its own Y-band, from whichever side has less
+  room. Real documents sometimes combine both techniques -- chaining a
+  narrow frame beside an obstacle into a full-width one below it --
+  rather than relying purely on dynamic repel; a later same-page chain
+  member whose box overlaps an earlier one skips drawing its own
+  fill/border (which would paint over already-placed text) and never
+  starts its own content higher up than the earlier member's bottom
+  edge. Only running out of frames in the chain entirely -- text that
+  still doesn't fit anywhere -- is logged and clipped.
 * DrawFile and Sprite pictures are drawn as a labelled placeholder box
   (this package's decoders for both are stub bounding-box readers, see
   formats/drawfile.py and formats/sprite.py; there's no pixel or
@@ -350,50 +359,92 @@ def _tab_advance(x: float, tab_base_x: float, style: Style, right_edge: float) -
     return target if target <= right_edge else x
 
 
-def _wrap_tokens(
-    tokens: list[_Token], tab_base_x: float, line_start_first: float, line_start_normal: float, right_edge: float
-) -> list[list[_Token]]:
-    """Greedy word-wrap using each token's approximate width (see
-    _approx_width), tracking the actual absolute X position (not just an
-    abstract running width) so a tab's real jump distance -- which can be
-    far larger than any single word, if the style's tab ruler was set up
-    for a wider frame than this one -- is accounted for: a tab whose
-    target would land past *right_edge* forces a line wrap first, rather
-    than being allowed to carry the rest of the line off past the frame's
-    (and possibly the page's) edge. *line_start_first* is the first
-    wrapped line's left edge (for first-line/hanging indents),
-    *line_start_normal* every line after it."""
-    lines: list[list[_Token]] = []
-    current: list[_Token] = []
-    line_start = line_start_first
+def _wrap_one_line(
+    tokens: list[_Token], tab_base_x: float, line_start: float, right_edge: float
+) -> tuple[list[_Token], list[_Token]]:
+    """Consume tokens (in order) to build ONE line fitting within
+    [line_start, right_edge], tracking the actual absolute X position
+    (not just an abstract running width) so a tab's real jump distance
+    -- which can be far larger than any single word, if the style's tab
+    ruler was set up for a wider frame than this one -- is accounted
+    for: a tab whose target would land past *right_edge* forces a line
+    break first, rather than being allowed to carry the rest of the line
+    off past the frame's (and possibly the page's) edge. Also stops
+    early, without consuming it, at a forced "break" token (a
+    PageBreakMark). Returns (line_tokens, remaining_tokens); at least
+    one token is always consumed when *tokens* is non-empty and doesn't
+    start with a break (an over-wide single word or tab still gets its
+    own line rather than being dropped)."""
+    line: list[_Token] = []
     x = line_start
-
-    def wrap_line() -> None:
-        nonlocal current, line_start, x
-        _strip_trailing_space(current)
-        lines.append(current)
-        current = []
-        line_start = line_start_normal
-        x = line_start
-
-    for tok in tokens:
+    for i, tok in enumerate(tokens):
         if tok.kind == "break":
-            wrap_line()
-            continue
+            _strip_trailing_space(line)
+            return line, tokens[i + 1 :]
         if tok.kind == "tab":
-            if _next_tab_stop(x, tab_base_x, tok.style) > right_edge and current:
-                wrap_line()  # give the tab a fresh line before giving up on it entirely
-            current.append(tok)
+            if _next_tab_stop(x, tab_base_x, tok.style) > right_edge and line:
+                _strip_trailing_space(line)
+                return line, tokens[i:]
+            line.append(tok)
             x = _tab_advance(x, tab_base_x, tok.style, right_edge)
             continue
         width = _approx_width(tok.text, tok.style)
-        if tok.kind == "word" and current and x + width > right_edge:
-            wrap_line()
-        current.append(tok)
+        if tok.kind == "word" and line and x + width > right_edge:
+            _strip_trailing_space(line)
+            return line, tokens[i:]
+        line.append(tok)
         x += width
-    if current or not lines:
-        _strip_trailing_space(current)
-        lines.append(current)
+    _strip_trailing_space(line)
+    return line, []
+
+
+#: Below this usable width (in points), a line's Y-band is treated as
+#: fully blocked by a repel obstacle rather than attempting to place
+#: anything in the sliver that's left; see _narrow_for_obstacles.
+_MIN_USABLE_WIDTH = 10.0
+
+
+def _narrow_for_obstacles(
+    left: float,
+    right: float,
+    y_top: float,
+    y_bottom: float,
+    obstacles: list[tuple[float, float, float, float]],
+) -> tuple[float, float]:
+    """Shrink [left, right] around any obstacle box (ox0,oy0,ox1,oy1)
+    whose Y-range intersects this line's [y_bottom, y_top] band and
+    whose X-range overlaps the current usable range, pushing in from
+    whichever side has less room -- dynamic text repel around a picture
+    or other repel-flagged frame; see _repel_obstacles_for_page and the
+    module docstring."""
+    for ox0, oy0, ox1, oy1 in obstacles:
+        if oy1 <= y_bottom or oy0 >= y_top:
+            continue
+        if ox1 <= left or ox0 >= right:
+            continue
+        if (ox0 - left) <= (right - ox1):
+            left = max(left, ox1)
+        else:
+            right = min(right, ox0)
+    return left, right
+
+
+def _wrap_tokens(
+    tokens: list[_Token], tab_base_x: float, line_start_first: float, line_start_normal: float, right_edge: float
+) -> list[list[_Token]]:
+    """Greedy word-wrap of the whole of *tokens* at a single, fixed
+    *right_edge*, via repeated _wrap_one_line calls. *line_start_first*
+    is the first wrapped line's left edge (for first-line/hanging
+    indents), *line_start_normal* every line after it."""
+    lines: list[list[_Token]] = []
+    remaining = tokens
+    line_start = line_start_first
+    while remaining or not lines:
+        line, remaining = _wrap_one_line(remaining, tab_base_x, line_start, right_edge)
+        lines.append(line)
+        line_start = line_start_normal
+        if not remaining:
+            break
     return lines
 
 
@@ -434,6 +485,9 @@ class PDFConverter(Converter):
         #: member's own page (needed to resolve its geometry) when it
         #: isn't the frame currently being drawn; see _frame_page_map.
         self._frame_page_maps: dict[int, dict] = {}
+        #: id(page) -> [(x0,y0,x1,y1), ...] repel-obstacle boxes on that
+        #: page, in PDF points; see _repel_obstacles_for_page.
+        self._repel_obstacles: dict[int, list] = {}
         self._dictionary_by_index = {entry.index: entry for entry in self.document.dictionary}
         self._font_resource_name: dict[str, str] = {}
         font_parts = []
@@ -542,6 +596,53 @@ class PDFConverter(Converter):
             return appearance, default_origin
         master_page_box = page.master_page.page
         return appearance, (master_page_box.x0 + master_page_box.bleed, master_page_box.y0 + master_page_box.bleed)
+
+    def _repel_obstacles_for_page(
+        self, page: PageGroup, exclude: Optional[Frame] = None
+    ) -> list[tuple[float, float, float, float]]:
+        """Every repel-flagged frame's own repel box (exx0..exy1 -- not
+        its plain outer box; see "Frame object common layout" in
+        docs/impression-documents.xml) visible on *page*: its own
+        local/master-linked frames, plus any unlinked master furniture
+        (the same set _draw_frame's master-furniture pass in begin_page
+        draws). In final PDF points, relative to *page*'s own origin.
+        The (frame, rect) pairs are cached per page; *exclude*, if
+        given, is filtered out of the returned rects by identity -- a
+        frame that's itself repel-flagged (e.g. a text frame meant to
+        push *other* frames' text away from it) must not obstruct its
+        own text when it's the one currently being laid out. Used by
+        _flow_paragraphs_into_containers to shrink a text line's
+        available width around an obstacle (dynamic text repel)."""
+        cached = self._repel_obstacles.get(id(page))
+        if cached is None:
+            default_origin = (page.page.x0 + page.page.bleed, page.page.y0 + page.page.bleed)
+            pairs: list[tuple[Frame, tuple[float, float, float, float]]] = []
+
+            def add(frame: Frame) -> None:
+                if not frame.repel:
+                    return
+                appearance, (ox, oy) = self._frame_appearance_and_origin(frame, page, default_origin)
+                x0 = (appearance.exx0 - ox) / UNIT
+                y0 = (appearance.exy0 - oy) / UNIT
+                x1 = (appearance.exx1 - ox) / UNIT
+                y1 = (appearance.exy1 - oy) / UNIT
+                if x1 > x0 and y1 > y0:
+                    pairs.append((frame, (x0, y0, x1, y1)))
+
+            for frame in page.frames:
+                add(frame)
+            if page.master_page is not None:
+                linked_indices = {f.master_index for f in page.frames if f.master}
+                for mframe in page.master_page.frames:
+                    if mframe.master_index not in linked_indices:
+                        add(mframe)
+
+            cached = pairs
+            self._repel_obstacles[id(page)] = cached
+
+        if exclude is None:
+            return [rect for _frame, rect in cached]
+        return [rect for frame, rect in cached if frame is not exclude]
 
     def _draw_frame(
         self,
@@ -783,8 +884,9 @@ class PDFConverter(Converter):
                 self._story_layouts[frame.dictionary_index] = layout
                 lines = layout.get(id(frame), [])
             else:
+                obstacles_by_key = {id(frame): self._repel_obstacles_for_page(page, exclude=frame)}
                 assignments = self._flow_paragraphs_into_containers(
-                    story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)]
+                    story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], obstacles_by_key
                 )
                 lines = assignments.get(id(frame), [])
         else:
@@ -797,8 +899,9 @@ class PDFConverter(Converter):
                 story = self.document.story(entry)
             if story is None:
                 return
+            obstacles_by_key = {id(frame): self._repel_obstacles_for_page(page, exclude=frame)}
             assignments = self._flow_paragraphs_into_containers(
-                story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)]
+                story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], obstacles_by_key
             )
             lines = assignments.get(id(frame), [])
 
@@ -901,6 +1004,7 @@ class PDFConverter(Converter):
 
         frame_page_map = self._frame_page_map(chapter)
         containers = []
+        obstacles_by_key: dict[int, list] = {}
         for cframe in chain_frames:
             member_page = fallback_page if cframe is fallback_frame else frame_page_map.get(id(cframe))
             if member_page is None:
@@ -909,10 +1013,11 @@ class PDFConverter(Converter):
             if box is None:
                 continue
             containers.append((id(cframe), id(member_page), *box))
+            obstacles_by_key[id(cframe)] = self._repel_obstacles_for_page(member_page, exclude=cframe)
 
         if not containers:
             return {}
-        return self._flow_paragraphs_into_containers(story.paragraphs, entry.index, containers)
+        return self._flow_paragraphs_into_containers(story.paragraphs, entry.index, containers, obstacles_by_key)
 
     def _paragraph_tokens(self, paragraph, dictionary_index: int, body_style: Style) -> tuple[list[_Token], Style]:
         tokens: list[_Token] = []
@@ -959,28 +1064,38 @@ class PDFConverter(Converter):
         return str(resolve_number(self.document.numbering, dictionary_index, tag))
 
     def _flow_paragraphs_into_containers(
-        self, paragraphs: tuple, dictionary_index: int, containers: list[tuple[int, int, float, float, float, float]]
+        self,
+        paragraphs: tuple,
+        dictionary_index: int,
+        containers: list[tuple[int, int, float, float, float, float]],
+        obstacles_by_key: Optional[dict[int, list]] = None,
     ) -> dict[int, list]:
         """Lay out *paragraphs* across *containers* in order -- each a
         (key, page_key, x0, y0, x1, y1) box in PDF points -- moving on to
         the next container whenever the current one fills up mid-paragraph
-        (a paragraph's remaining, not-yet-placed lines are re-wrapped for
+        (a paragraph's remaining, not-yet-placed tokens are re-wrapped for
         the new container, since chain members can have different
-        widths). Returns key -> [render_line() call-arg tuples]; a
-        single-container caller (master furniture, or a story confined
-        to one frame) just gets one key back. Logs a best_effort note,
-        once, if the paragraphs run out of containers before they run
-        out of content.
+        widths). Lines are placed one at a time (not a whole paragraph at
+        once), since *obstacles_by_key* -- each container's own key ->
+        repel-flagged frames' boxes on its page (from
+        _repel_obstacles_for_page, with that container's own frame
+        excluded from its own obstacle list) -- can narrow a line's
+        available width differently band by band as Y descends (dynamic
+        text repel around a picture or other obstacle). Returns key -> [render_line()
+        call-arg tuples]; a single-container caller (master furniture, or
+        a story confined to one frame) just gets one key back. Logs a
+        best_effort note, once, if the paragraphs run out of containers
+        before they run out of content.
 
         Real documents sometimes emulate text flowing around an obstacle
-        picture (rather than relying on this converter's unimplemented
-        dynamic repel; see the module docstring) by chaining two frames
-        on the *same* page, where the second's box geometrically overlaps
-        the first's. Starting the second at its own top edge in that case
-        would visually collide with content already placed by the first,
-        so a container sharing an earlier container's page_key never
-        starts higher than the lowest point that page has reached so
-        far."""
+        (rather than relying purely on dynamic repel) by chaining two
+        frames on the *same* page, where the second's box geometrically
+        overlaps the first's. Starting the second at its own top edge in
+        that case would visually collide with content already placed by
+        the first, so a container sharing an earlier container's
+        page_key never starts higher than the lowest point that page has
+        reached so far."""
+        obstacles_by_key = obstacles_by_key or {}
         assignments: dict[int, list] = {key: [] for key, *_ in containers}
         if not containers:
             return assignments
@@ -988,59 +1103,65 @@ class PDFConverter(Converter):
         body_style = self.resolve_style([])
         page_floor: dict[int, float] = {}
         container_index = 0
-        key, page_key, x0, y0, x1, y1 = containers[0]
-        y_cursor = y1
+        key, page_key, cx0, cy0, cx1, cy1 = containers[0]
+        y_cursor = cy1
 
         def advance_container() -> bool:
-            nonlocal container_index, key, page_key, x0, y0, x1, y1, y_cursor
+            nonlocal container_index, key, page_key, cx0, cy0, cx1, cy1, y_cursor
             container_index += 1
             if container_index >= len(containers):
                 return False
-            key, page_key, x0, y0, x1, y1 = containers[container_index]
-            y_cursor = min(y1, page_floor.get(page_key, y1))
+            key, page_key, cx0, cy0, cx1, cy1 = containers[container_index]
+            y_cursor = min(cy1, page_floor.get(page_key, cy1))
             return True
 
         for paragraph in paragraphs:
             tokens, para_style = self._paragraph_tokens(paragraph, dictionary_index, body_style)
-            is_continuation = False
-            while True:
-                left_indent = (para_style.left_indent or 0) / UNIT
-                right_indent = (para_style.right_indent or 0) / UNIT
-                first_indent = 0.0 if is_continuation else (para_style.first_indent or 0) / UNIT
-                right_edge = x1 - right_indent
-                line_start_normal = x0 + left_indent
-                line_start_first = x0 + left_indent + first_indent
-                line_height = _line_height_pt(para_style)
+            left_indent = (para_style.left_indent or 0) / UNIT
+            right_indent = (para_style.right_indent or 0) / UNIT
+            first_indent = (para_style.first_indent or 0) / UNIT
+            line_height = _line_height_pt(para_style)
+            is_first_line = True
+            placed_any_line = False
 
-                lines = _wrap_tokens(tokens, x0, line_start_first, line_start_normal, right_edge)
-                placed_all = True
-                for index, line in enumerate(lines):
-                    if y_cursor - line_height < y0:
-                        # This paragraph doesn't fully fit here; carry its
-                        # remaining lines' tokens over to the next
-                        # container and re-wrap them there.
-                        tokens = [t for remaining in lines[index:] for t in remaining]
-                        placed_all = False
-                        break
+            while tokens or not placed_any_line:
+                line_top = y_cursor
+                line_bottom = y_cursor - line_height
+                if line_bottom < cy0:
+                    if not advance_container():
+                        self.log.best_effort(
+                            "story",
+                            "text overflowed the available frame(s) and was clipped",
+                            location=f"dictionary entry {dictionary_index}",
+                        )
+                        return assignments
+                    continue
+
+                indent = (left_indent + first_indent) if is_first_line else left_indent
+                line_start = cx0 + indent
+                right_edge = cx1 - right_indent
+                obstacles = obstacles_by_key.get(key)
+                if obstacles:
+                    line_start, right_edge = _narrow_for_obstacles(
+                        line_start, right_edge, line_top, line_bottom, obstacles
+                    )
+                if right_edge - line_start < _MIN_USABLE_WIDTH:
+                    # An obstacle leaves no usable room on this Y-band;
+                    # skip past it rather than place a near-empty line.
                     y_cursor -= line_height
-                    page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
-                    is_first_line = (index == 0) and not is_continuation
-                    start_x = line_start_first if is_first_line else line_start_normal
-                    assignments[key].append(
-                        (line, start_x, x0, right_edge, y_cursor, index < len(lines) - 1, para_style.alignment)
-                    )
-                if placed_all:
-                    if para_style.space_after:
-                        y_cursor -= para_style.space_after / UNIT
-                    break
-                if not advance_container():
-                    self.log.best_effort(
-                        "story",
-                        "text overflowed the available frame(s) and was clipped",
-                        location=f"dictionary entry {dictionary_index}",
-                    )
-                    return assignments
-                is_continuation = True
+                    continue
+
+                line, tokens = _wrap_one_line(tokens, cx0, line_start, right_edge)
+                placed_any_line = True
+                y_cursor -= line_height
+                page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
+                assignments[key].append(
+                    (line, line_start, cx0, right_edge, y_cursor, bool(tokens), para_style.alignment)
+                )
+                is_first_line = False
+
+            if para_style.space_after:
+                y_cursor -= para_style.space_after / UNIT
 
         return assignments
 

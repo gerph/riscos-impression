@@ -311,6 +311,26 @@ riscos-impression/
   master furniture already works, instead of logging a bogus
   unresolved-offset error. Commit: *"Flow story text across its whole
   frame chain instead of clipping to the first frame"*.
+* Follow-up: implemented dynamic text repel, closing PBServer's own
+  remaining case noted above -- its letterhead needs body text to flow
+  around a crest picture and an address block, neither of which is a
+  frame-chain relationship. Each repel-flagged frame's own repel box
+  (`exx0..exy1`, a deliberately larger margin than its outer box, not
+  the outer box itself) is gathered per page; text layout now proceeds
+  one line at a time (previously a whole paragraph was wrapped at a
+  fixed width in one call) so a line's available width can be narrowed
+  around whatever obstacles intersect its own Y-band, pushed in from
+  whichever side has less room. Found and fixed one real bug building
+  this: a frame that's itself repel-flagged (PBServer's address block)
+  was including its own repel box as an obstacle to its own text,
+  leaving zero usable width anywhere in its own frame and silently
+  dropping the whole address -- fixed by excluding each container's own
+  frame from its own obstacle list. Re-validated against all 48 real
+  documents in examples/: 0 crashes, 0 errors, 0 structurally-invalid
+  output. Four new regression tests cover the narrowing logic directly,
+  a picture obstacle pushing text past it, and a repel-flagged frame no
+  longer obstructing itself. Commit: *"Add dynamic text repel around
+  obstacle frames"*.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: shared style→CSS and colour→CSS mapping used by
