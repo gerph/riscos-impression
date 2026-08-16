@@ -127,7 +127,8 @@ riscos-impression/
 - [x] Stage 8 — OvProDDL output (reference converter)
 - [x] Stage 9 — Native PDF output
 - [x] Stage 10 — Scrolling HTML output
-- [ ] Stage 11 — Paged-media HTML output
+- [x] Stage 11 — Paged-media HTML output
+- [ ] Stage 11.5 — Markdown output
 - [ ] Stage 12 — CLI and polish
 - [ ] Stage 13 (follow-up) — Real-document audit
 
@@ -359,12 +360,55 @@ riscos-impression/
 * Commit: *"Add scrolling HTML output converter"*.
 
 ### Stage 11 — Paged-media HTML output
-* `output/html_paged.py`: `PagedHTMLConverter(HTML5Converter)` — `@page`
-  rules per Impression page, frames placed by absolute position/size
-  directly from the decoded geometry; optional `subprocess` call to
-  `prince` or `weasyprint` (detected via `shutil.which`, entirely optional)
-  to additionally produce a PDF, logged either way.
+* `output/html_paged.py`: `PagedHTMLConverter(HTML5Converter)` — one
+  page-sized `<div class="ro-page">` per Impression page (styled with
+  `page-break-after` for both on-screen preview as stacked pages and
+  correct pagination when exported), each frame absolutely positioned
+  (`position: absolute`) directly from its own decoded geometry. Reuses
+  output/base.py's `page_origin`/`to_page_coordinates` (the same
+  top-left-origin, Y-down conversion the OvProDDL converter uses) rather
+  than pdfdoc.py's bottom-left convention, since that's CSS's own native
+  coordinate system.
+* Deliberately simpler than the PDF converter: a browser's own block
+  layout wraps text within a frame's sized `<div>` natively, so none of
+  pdfdoc.py's approximate-metrics line-wrapping is needed. Two things
+  that follow from staying simple, both logged: a story confined to one
+  frame renders in full there, clipped (`overflow: hidden`) if it
+  doesn't fit, with no attempt made to measure whether it actually does
+  (that would need the same manual text-metrics work this format's own
+  native wrapping exists to avoid); a story spanning a real multi-frame
+  chain only ever renders in its first frame -- the same limitation
+  pdfdoc.py started with before chain flow was added for it. Dynamic
+  text repel (as pdfdoc.py does) is not attempted either -- frames are
+  positioned independently, so an obstacle and a text frame can visually
+  overlap exactly as positioned in the source document.
+* Optional PDF export via `subprocess`, calling `prince` or
+  `weasyprint` if either is found on PATH (`shutil.which`); logged
+  either way (which tool exported it, or that neither was found and
+  export was skipped, never a hard failure). Verified for real against
+  this machine's own `prince` install: a real multi-page PDF with
+  correctly extractable text came out the other end.
+* Real-corpus validation (all 48 documents in examples/): 0 crashes, 0
+  errors, and every generated file parses cleanly with Python's
+  built-in `html.parser`.
 * Commit: *"Add paged-media HTML output converter with optional Prince/WeasyPrint PDF"*.
+
+### Stage 11.5 — Markdown output
+* `output/markdown.py`: a best-effort plain-text/Markdown converter --
+  serialises each story's text, inferring heading levels from a
+  paragraph style's font size relative to the body style (larger,
+  paragraph-scoped styles rank as headings; exact levels are a
+  judgement call, not a confirmed document fact, and should be
+  documented as such). Won't work well on everything; the goal is
+  extracting most real text usefully, not full fidelity.
+* Table detection: a best-effort attempt at recognising a grid of
+  bordered frames (consistent rows/columns by position) on one page as
+  a Markdown table; anything that doesn't look like a clean grid falls
+  back to plain paragraphs.
+* Pictures are left as simple placeholders (e.g. `[Draw]`, matching the
+  other converters' own placeholder labelling) -- no inline image
+  support, Markdown isn't the place for it.
+* Commit: *"Add best-effort Markdown output converter"*.
 
 ### Stage 12 — CLI and polish
 * `cli.py`: `riscos-impression convert <input> --format {ddl,pdf,html-scroll,html-paged} [--to-pdf] [--strict] [-o output] [--log-level] [--json-log]`.
