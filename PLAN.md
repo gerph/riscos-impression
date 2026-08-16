@@ -422,6 +422,28 @@ riscos-impression/
   against all 48 real documents: 0 crashes, 0 new errors; visually
   confirmed against Fletcher itself that the address block's right
   edge is now flush.
+* **Post-Stage-14 fix (3)**: PCI_Spec's own title block (Distribution/
+  Title/Drawing Number/Issue/Author/Date/...) turned out to be
+  genuinely missing from the PDF, not just overlapping other content --
+  a *second*, unrelated bug from the same page. Root-caused to
+  `_line_height_pt`'s handling of proportional (percentage) line
+  spacing: the raw stored value is percent x100 (12000 = 120%), not a
+  literal percent, but was being treated as the latter -- 12000% for a
+  12pt style is a 1728pt line height, instantly overflowing a single
+  line past the whole frame and silently dropping the rest of the
+  story, the same failure shape as the right_indent fix above. Traced
+  to c/styles in the sibling riscos-source repo: the original converter
+  passes this field straight through, unscaled, to OvationPro's own
+  `{leading 1 N}` DDL directive -- the x100 scaling is something
+  OvationPro's own DDL interpreter does, not anything visible in the
+  conversion source this project otherwise draws from, so this had to
+  be confirmed empirically instead. Corpus-wide search found the exact
+  same style (line_spacing=12000, font_size=192) reused verbatim across
+  at least 14 of the 48 local example documents -- a shared corporate
+  spec-document template -- so this one fix likely restores real body
+  content across a substantial slice of the whole corpus, not just
+  PCI_Spec. Re-validated: 0 crashes, 0 documents with entirely blank
+  extracted text.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS

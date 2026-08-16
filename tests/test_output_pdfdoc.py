@@ -9,6 +9,7 @@ from riscos_impression.output.pdfdoc import (
     _AVERAGE_WIDTH_FACTOR,
     _approx_width,
     _fill_colour_op,
+    _line_height_pt,
     _narrow_for_obstacles,
     _next_tab_stop,
     _PDFWriter,
@@ -135,6 +136,34 @@ def test_approx_width_character_outside_riscos_latin1_falls_back_to_average_for_
     size_pt = 160 / 16.0
     text = "hi中"  # the CJK character has no RISC OS Latin1 byte at all
     assert _approx_width(text, style) == len(text) * size_pt * _AVERAGE_WIDTH_FACTOR["Helvetica"]
+
+
+# ---------------------------------------------------------------------------
+# Line height
+# ---------------------------------------------------------------------------
+
+
+def test_line_height_proportional_value_is_percent_times_100():
+    # Regression test: a real document's own style (shared by a
+    # corporate template across at least 14 of the 48 local example
+    # documents) stores a proportional line_spacing of 12000 -- taking
+    # that as a literal 12000% produced a 1728pt line height for a
+    # 12pt style, which overflowed the very first line and silently
+    # dropped the rest of the story. 12000 is percent x100, i.e. 120%.
+    style = _style(1, is_body_text=True, font_size=192, line_spacing_raw=12000)  # 12pt, 120%
+    assert _line_height_pt(style) == 12.0 * 1.2 * 1.2
+
+
+def test_line_height_fixed_value_is_unaffected():
+    # Top bit set = fixed leading; remaining 24 bits minus 0x10000 is the
+    # fixed value in millipoints (0x80014e20 -> +20000 millipoints = 20pt).
+    style = _style(1, is_body_text=True, font_size=160, line_spacing_raw=0x80014E20)
+    assert _line_height_pt(style) == 20.0
+
+
+def test_line_height_no_line_spacing_field_uses_default_120_percent():
+    style = _style(1, is_body_text=True, font_size=160, line_spacing_raw=None)
+    assert _line_height_pt(style) == 10.0 * 1.2
 
 
 # ---------------------------------------------------------------------------

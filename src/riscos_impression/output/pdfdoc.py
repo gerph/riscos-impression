@@ -352,7 +352,24 @@ def _line_height_pt(style: Style) -> float:
     if style.line_spacing_raw is not None:
         if style.line_spacing_is_fixed:
             return abs(style.line_spacing) / UNIT
-        percent = style.line_spacing if style.line_spacing else 100
+        # The proportional value is stored as percent x100 (e.g. 12000 =
+        # 120.00%), not a literal percent -- confirmed empirically, not
+        # from the conversion source (docs/impression-documents.xml's
+        # own note just says "the remaining 24 bits directly", which is
+        # exactly what the original converter's DDL emission does too:
+        # it passes the raw value straight through to OvationPro's own
+        # `{leading 1 N}` DDL directive unscaled, per c/styles in the
+        # sibling riscos-source repo -- so OvationPro's own DDL
+        # interpreter is where the real x100 scaling actually happens,
+        # not anything reproducible from this converter's own source).
+        # Taking the raw value as a literal percent instead produced a
+        # 100x-too-tall line height (1728pt for a 12pt style, seen on a
+        # style shared by a real corporate document template across at
+        # least 14 of the 48 local example documents), which silently
+        # dropped a whole story's remaining content once the first
+        # oversized line overflowed its frame -- see PLAN.md's Stage 9
+        # addenda.
+        percent = (style.line_spacing / 100.0) if style.line_spacing else 100
         return size * 1.2 * (percent / 100.0)
     return size * 1.2
 
