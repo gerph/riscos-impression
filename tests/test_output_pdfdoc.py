@@ -536,6 +536,53 @@ def test_first_line_baseline_uses_ascent_not_full_line_height(tmp_path):
     assert f"1 0 0 1 0 {_fmt(expected_y)} Tm".encode("latin-1") in data
 
 
+def test_render_line_applies_font_aspect_ratio_via_tz(tmp_path):
+    # Regression test: the user reported a real document's own table
+    # header, styled with a 140%-ish font_aspect_ratio, rendering with
+    # regular (unstretched) text -- _render_line never emitted PDF's
+    # own Tz (horizontal scaling) operator at all, unlike
+    # _draw_drawfile_text (used only for text *within* a DrawFile
+    # picture), which already did. font_aspect_ratio maps directly
+    # onto a PDF Tz percentage (0x10000 raw = unity, no inversion --
+    # confirmed against ovprodll.py's own DDL emission, which maps
+    # this field straight onto a style's "scale" property). Tz is
+    # text *state*, not reset by ET/BT like Tm, so a later token with
+    # no aspect ratio at all must still explicitly reset to 100%, or
+    # it would silently inherit an earlier token's own stretched value.
+    from riscos_impression.output.pdfdoc import PDFConverter, _Token
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._content = []
+
+    stretched = _style(1, font_size=160, font_aspect_ratio=0x8000)  # 50%
+    normal = _style(2, font_size=160)
+    tokens = [_Token("word", "Half", stretched), _Token("word", "Normal", normal)]
+    converter._render_line(tokens, start_x=0.0, tab_base_x=0.0, right_edge=1000.0, y=0.0, justify=False, alignment=None)
+    content = "".join(converter._content)
+
+    assert "50 Tz" in content
+    assert "100 Tz" in content
+    assert content.index("50 Tz") < content.index("(Half)") < content.index("100 Tz") < content.index("(Normal)")
+
+
+def test_approx_width_scales_with_font_aspect_ratio():
+    # _approx_width folds in font_aspect_ratio (rather than each of
+    # its own several call sites separately) so line wrapping,
+    # tab-stop/segment-width measurement, and justification all stay
+    # consistent with what Tz actually draws -- confirmed against the
+    # same real document: applying Tz alone (without this) stretched a
+    # table header's own text wide enough to visibly overlap the next
+    # column, since the column's own tab stop was still positioned
+    # assuming 100%-width text.
+    from riscos_impression.output.pdfdoc import _approx_width
+
+    normal = _style(0, is_body_text=True, font_size=160)
+    doubled = _style(1, font_size=160, font_aspect_ratio=0x20000)  # 200%
+    assert round(_approx_width("Hello", doubled), 3) == round(2 * _approx_width("Hello", normal), 3)
+
+
 def test_convert_produces_a_well_formed_pdf(tmp_path):
     document, PDFConverter = _document_with_one_text_frame()
     converter = PDFConverter(document)

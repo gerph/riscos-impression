@@ -386,6 +386,15 @@ def _riscos_metrics_font_name(style: Style) -> Optional[str]:
 
 def _approx_width(text: str, style: Style) -> float:
     size = (style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
+    # A style's own horizontal aspect ratio (see _render_line's own Tz
+    # operator) visually stretches/squashes rendered glyphs -- folded
+    # in here, rather than at each of this function's own several
+    # call sites, so every width-dependent computation (line wrapping,
+    # tab-stop/segment-width measurement, justification) stays
+    # consistent with what's actually drawn, matching ovprodll.py's
+    # own DDL emission (font_aspect_ratio maps directly onto a style's
+    # "scale" property, 0x10000 raw = unity, no inversion).
+    aspect = style.font_aspect_ratio / 0x10000 if style.font_aspect_ratio else 1.0
     metrics_font = _riscos_metrics_font_name(style)
     if metrics_font is not None:
         total_per_mille = 0.0
@@ -395,13 +404,13 @@ def _approx_width(text: str, style: Style) -> float:
                 break
             total_per_mille += per_mille
         else:
-            return total_per_mille / 1000.0 * size
+            return total_per_mille / 1000.0 * size * aspect
         # A character fell outside the metrics table (rare -- anything
         # not representable in RISC OS Latin1 at all); fall through to
         # the flat per-family average below for the *whole* string,
         # same as when there's no metrics table for this font at all.
     family = choose_standard_font(style).split("-")[0]
-    return len(text) * size * _AVERAGE_WIDTH_FACTOR.get(family, 0.5)
+    return len(text) * size * _AVERAGE_WIDTH_FACTOR.get(family, 0.5) * aspect
 
 
 def _line_height_pt(style: Style) -> float:
@@ -2264,6 +2273,7 @@ class PDFConverter(Converter):
         parts = ["BT\n"]
         current_font = None
         current_size = None
+        current_hscale = None
         current_colour_key = None
         x = origin_x
         for idx, tok in enumerate(tokens):
@@ -2277,6 +2287,18 @@ class PDFConverter(Converter):
             if font != current_font or size != current_size:
                 parts.append(f"/{self._font_resource_name[font]} {_fmt(size)} Tf\n")
                 current_font, current_size = font, size
+            # Tz (horizontal scaling) is text *state*, not reset by ET/BT
+            # like Tm -- a style with no aspect ratio at all must still
+            # explicitly reset to 100% here, or it would silently
+            # inherit whatever a previous, differently-styled line last
+            # set it to. Directly proportional (0x10000 raw = unity),
+            # unlike a picture's own xscale/yscale -- confirmed against
+            # ovprodll.py's own DDL emission, which maps this field
+            # straight onto a style's "scale" property with no inversion.
+            hscale_pct = 100.0 * tok.style.font_aspect_ratio / 0x10000 if tok.style.font_aspect_ratio else 100.0
+            if hscale_pct != current_hscale:
+                parts.append(f"{_fmt(hscale_pct)} Tz\n")
+                current_hscale = hscale_pct
             colour = (
                 tok.style.foreground_colour(self.document.colours)
                 if tok.style.foreground_colour_word is not None
