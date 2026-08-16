@@ -374,6 +374,27 @@ def _line_height_pt(style: Style) -> float:
     return size * 1.2
 
 
+#: Adobe's own standard AFM Ascender values (per 1000 units of em) for
+#: the three families this converter maps text on to; Symbol/
+#: ZapfDingbats fall back to Helvetica's, which is close enough for the
+#: rare case either is actually used for a whole line's worth of text.
+_ASCENT_PER_MILLE = {"Helvetica": 718, "Times": 683, "Courier": 629}
+
+
+def _ascent_pt(style: Style) -> float:
+    """A line's own font ascent -- the distance from a text box's top
+    edge down to its *first* line's baseline, as opposed to
+    _line_height_pt's full ascent+descent+leading figure (correct for
+    the gap *between* two baselines, but too large for the gap between
+    a box's top edge and its first baseline: using it there pushes
+    every frame's text down by roughly the descent+leading amount,
+    visibly low compared to the real document -- confirmed against a
+    real page image the user supplied for PCI_Spec)."""
+    size = (style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
+    family = choose_standard_font(style).split("-")[0]
+    return size * _ASCENT_PER_MILLE.get(family, _ASCENT_PER_MILLE["Helvetica"]) / 1000.0
+
+
 # ---------------------------------------------------------------------------
 # Colour
 # ---------------------------------------------------------------------------
@@ -1330,14 +1351,22 @@ class PDFConverter(Converter):
         container_index = 0
         key, page_key, cx0, cy0, cx1, cy1 = containers[0]
         y_cursor = cy1
+        #: Set whenever a container is fresh (just started, or just
+        #: advanced into) -- its very first line drops by that line's
+        #: own ascent (see _ascent_pt), not a full line_height, since
+        #: y_cursor here means "the box's own top edge", not "the
+        #: previous line's baseline". Every later line, in any
+        #: paragraph, drops by the normal full line_height.
+        first_line_pending = True
 
         def advance_container() -> bool:
-            nonlocal container_index, key, page_key, cx0, cy0, cx1, cy1, y_cursor
+            nonlocal container_index, key, page_key, cx0, cy0, cx1, cy1, y_cursor, first_line_pending
             container_index += 1
             if container_index >= len(containers):
                 return False
             key, page_key, cx0, cy0, cx1, cy1 = containers[container_index]
             y_cursor = min(cy1, page_floor.get(page_key, cy1))
+            first_line_pending = True
             return True
 
         for paragraph in paragraphs:
@@ -1350,8 +1379,14 @@ class PDFConverter(Converter):
             placed_any_line = False
 
             while tokens or not placed_any_line:
+                # The very first line dropped into a fresh container
+                # only needs to clear its own font ascent below the
+                # box's top edge, not a full line_height (that figure
+                # includes descent/leading, which belongs *between*
+                # lines, not above the first one) -- see _ascent_pt.
+                drop = _ascent_pt(para_style) if first_line_pending else line_height
                 line_top = y_cursor
-                line_bottom = y_cursor - line_height
+                line_bottom = y_cursor - drop
                 if line_bottom < cy0:
                     if not advance_container():
                         self.log.best_effort(
@@ -1390,12 +1425,14 @@ class PDFConverter(Converter):
                 if right_edge - line_start < _MIN_USABLE_WIDTH:
                     # An obstacle leaves no usable room on this Y-band;
                     # skip past it rather than place a near-empty line.
-                    y_cursor -= line_height
+                    y_cursor -= drop
+                    first_line_pending = False
                     continue
 
                 line, tokens = _wrap_one_line(tokens, cx0, line_start, right_edge)
                 placed_any_line = True
-                y_cursor -= line_height
+                y_cursor -= drop
+                first_line_pending = False
                 page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
                 assignments[key].append(
                     (line, line_start, cx0, right_edge, y_cursor, bool(tokens), para_style.alignment)

@@ -444,6 +444,20 @@ riscos-impression/
   content across a substantial slice of the whole corpus, not just
   PCI_Spec. Re-validated: 0 crashes, 0 documents with entirely blank
   extracted text.
+* **Post-Stage-14 fix (4)**: the user supplied a real page image
+  showing PCI_Spec's own footer for comparison, and every frame's text
+  sat visibly too low against it. Root cause: a container's first
+  line's baseline was placed a full `_line_height_pt` below the box's
+  top edge -- correct for the gap *between* two consecutive baselines
+  (which includes descent and inter-line leading), but too large for
+  the gap between a box's own top edge and its *first* baseline, which
+  should only need to clear the font's ascent. Added `_ascent_pt`
+  (Adobe's own standard AFM Ascender values -- 718/683/629 per 1000em
+  for Helvetica/Times/Courier) and used it for exactly the first line
+  placed into each container (chain member or single frame alike),
+  leaving every subsequent line's spacing untouched. Confirmed against
+  the supplied image that text now sits close to each frame's top edge
+  as expected.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS

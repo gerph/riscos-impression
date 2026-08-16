@@ -166,6 +166,20 @@ def test_line_height_no_line_spacing_field_uses_default_120_percent():
     assert _line_height_pt(style) == 10.0 * 1.2
 
 
+def test_ascent_pt_is_smaller_than_line_height_pt():
+    # Regression test: a real page image the user supplied for
+    # PCI_Spec showed every frame's first line sitting visibly too low
+    # -- using the full ascent+descent+leading line_height as the drop
+    # from a box's top edge to its first baseline pushes it down by
+    # roughly the descent+leading amount too much. _ascent_pt is the
+    # narrower figure that belongs there instead.
+    from riscos_impression.output.pdfdoc import _ascent_pt
+
+    style = _style(1, is_body_text=True, font_style_name="Homerton.Medium", font_size=160)
+    assert _ascent_pt(style) == 10.0 * 718 / 1000.0
+    assert _ascent_pt(style) < _line_height_pt(style)
+
+
 # ---------------------------------------------------------------------------
 # PDF string encoding
 # ---------------------------------------------------------------------------
@@ -337,6 +351,20 @@ def _document_with_one_text_frame(*, text="Hello"):
     story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text=text, style_slots=()),)),))
     document.story = lambda entry: story  # noqa: ARG005 - test stub
     return document, PDFConverter
+
+
+def test_first_line_baseline_uses_ascent_not_full_line_height(tmp_path):
+    from riscos_impression.output.pdfdoc import _ascent_pt, _fmt
+
+    document, PDFConverter = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    body = _style(0, is_body_text=True, font_size=160)
+    expected_y = 100.0 - _ascent_pt(body)  # 100pt-tall frame's own top edge
+    assert f"1 0 0 1 0 {_fmt(expected_y)} Tm".encode("latin-1") in data
 
 
 def test_convert_produces_a_well_formed_pdf(tmp_path):
