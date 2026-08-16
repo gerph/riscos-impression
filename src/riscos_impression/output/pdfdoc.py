@@ -823,11 +823,23 @@ class PDFConverter(Converter):
         self._page_objs: list[int] = []
         self._chapter_number = 0
         self._page_number = 0
-        #: dictionary_index -> {id(frame): [render_line() call-arg tuples]},
-        #: computed once per story (across its whole frame chain, if any)
-        #: the first time any of its frames is encountered; see
-        #: _compute_chain_layout.
-        self._story_layouts: dict[int, dict] = {}
+        #: (id(chapter), dictionary_index) -> {id(frame): [render_line()
+        #: call-arg tuples]}, computed once per story (across its whole
+        #: frame chain, if any) the first time any of its frames is
+        #: encountered in that chapter; see _compute_chain_layout. Keyed
+        #: by chapter too, not dictionary_index alone -- confirmed
+        #: against a real document (FieldWork): a running footer's own
+        #: dictionary_index is shared across every chapter that repeats
+        #: it, and _resolve_content_chain_quietly's own chain resolution
+        #: is chapter-relative (it takes chapter as a parameter), so a
+        #: length-1 "chain" that happens to resolve on the very first
+        #: chapter encountered isn't a real, cross-chapter chain at all
+        #: -- caching it under dictionary_index alone made every later
+        #: chapter's own (entirely different, unrelated) frame silently
+        #: look up an empty result in the first chapter's cached layout
+        #: instead of ever being flowed at all, so the footer only ever
+        #: appeared on its very first occurrence.
+        self._story_layouts: dict[tuple[int, int], dict] = {}
         #: chapter id -> {id(frame): PageGroup}, for locating a chain
         #: member's own page (needed to resolve its geometry) when it
         #: isn't the frame currently being drawn; see _frame_page_map.
@@ -1610,8 +1622,9 @@ class PDFConverter(Converter):
             return
         x0, y0, x1, y1 = box
 
-        if dictionary_dedupe and frame.dictionary_index in self._story_layouts:
-            lines = self._story_layouts[frame.dictionary_index].get(id(frame), [])
+        layout_key = (id(chapter), frame.dictionary_index)
+        if dictionary_dedupe and layout_key in self._story_layouts:
+            lines = self._story_layouts[layout_key].get(id(frame), [])
         elif dictionary_dedupe:
             # Flowing a story across its whole frame chain needs to happen
             # once, globally, the first time any of its frames is
@@ -1628,7 +1641,7 @@ class PDFConverter(Converter):
                 return
             layout = self._compute_chain_layout(story, entry, chapter, frame, page)
             if layout is not None:
-                self._story_layouts[frame.dictionary_index] = layout
+                self._story_layouts[layout_key] = layout
                 lines = layout.get(id(frame), [])
             else:
                 obstacles_by_key = {id(frame): self._repel_obstacles_for_page(page, exclude=frame)}
