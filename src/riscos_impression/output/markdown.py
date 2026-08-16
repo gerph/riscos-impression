@@ -82,7 +82,7 @@ class MarkdownConverter(Converter):
         self._rendered_dictionary_indices: set[int] = set()
         self._dictionary_by_index = {entry.index: entry for entry in self.document.dictionary}
         self._logged_picture_note = False
-        self._body_font_size = self.resolve_style([]).font_size or 160
+        self._body_font_size = self._resolve_body_font_size()
 
         chapter_parts = []
         for chapter in self.document.chapters:
@@ -274,6 +274,17 @@ class MarkdownConverter(Converter):
             if ratio >= threshold:
                 return level
         return None
+
+    def _resolve_body_font_size(self) -> int:
+        """The body style's own font_size, for the heading-ratio
+        calculation -- or a plausible default (10pt, matching every
+        other converter's own fallback) for the edge case of a
+        document with no styles at all (e.g. one with no chapters,
+        never actually reaching a heading decision either way)."""
+        try:
+            return self.resolve_style([]).font_size or 160
+        except ValueError:
+            return 160
 
     def _resolve_number_text(self, tag: int, dictionary_index: int) -> str:
         record = next(

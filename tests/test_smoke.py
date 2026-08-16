@@ -9,5 +9,8 @@ def test_version_is_set():
 
 
 def test_cli_runs(capsys):
-    assert main([]) == 0
+    # No subcommand given: prints usage and reports a non-zero exit,
+    # now that the real `convert` subcommand exists (see test_cli.py
+    # for the actual conversion behaviour).
+    assert main([]) == 1
     assert "riscos-impression" in capsys.readouterr().out

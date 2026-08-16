@@ -129,7 +129,7 @@ riscos-impression/
 - [x] Stage 10 — Scrolling HTML output
 - [x] Stage 11 — Paged-media HTML output
 - [x] Stage 11.5 — Markdown output
-- [ ] Stage 12 — CLI and polish
+- [x] Stage 12 — CLI and polish
 - [ ] Stage 13 (follow-up) — Real-document audit
 
 ## Stages
@@ -431,8 +431,24 @@ riscos-impression/
 * Commit: *"Add best-effort Markdown output converter"*.
 
 ### Stage 12 — CLI and polish
-* `cli.py`: `riscos-impression convert <input> --format {ddl,pdf,html-scroll,html-paged} [--to-pdf] [--strict] [-o output] [--log-level] [--json-log]`.
+* `cli.py`: `riscos-impression convert <input> --format {ddl,pdf,html-scroll,html-paged,markdown} [--to-pdf] [--strict] [-o output] [--log-level] [--json-log]`
+  (`markdown` added to the original format list, matching Stage 11.5).
+  Exit codes: 0 clean, 1 couldn't even start (bad input, or a `--strict`
+  failure), 2 completed but the log contains an `error`-level entry.
 * README usage documentation.
+* Found and fixed one real robustness gap while building the CLI's own
+  test suite (a genuine end-to-end run against a file on disk, unlike
+  every other test so far, which built an in-memory `ImpressionDocument`
+  directly): `MarkdownConverter.convert()` eagerly resolved the body
+  style outside any `catch()` boundary, so a document with no styles at
+  all (a real, valid edge case -- io/reader.py's own test already
+  builds one) crashed uncaught before ever reaching its own chapter
+  walk. Every other converter only resolves a style lazily, inside the
+  walk, already protected by `catch()`; fixed Markdown's own eager call
+  to fall back to a plausible default (10pt, matching every other
+  converter's own fallback) instead of propagating the exception.
+  Verified all five converters against the same empty-document fixture
+  after the fix: none crash.
 * Commit: *"Add command-line interface"*.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
