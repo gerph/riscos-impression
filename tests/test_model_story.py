@@ -172,6 +172,19 @@ def test_embed_mark():
     assert items[1] == EmbedMark(embed_tag=1234)
 
 
+def test_embed_mark_captures_the_active_style_stack():
+    # Regression test: a real document had a paragraph consisting of
+    # nothing but an embedded picture (no Run at all), styled with a
+    # named style carrying a "Centre" alignment effect -- EmbedMark
+    # used to be built with no style_slots of its own at all, so a
+    # converter had no way to discover that alignment, unlike a Run
+    # under the same CTRL_G/CTRL_H style application.
+    content = ContentBuilder().ctrl_style(CTRL_G, [5]).ctrl_s_embed(embed_tag=1234).bytes()
+    story = _story_from_content(content)
+    (item,) = story.paragraphs[0].items
+    assert item == EmbedMark(embed_tag=1234, style_slots=(5,))
+
+
 def test_merge_mark():
     content = ContentBuilder().ctrl_s_merge("CustomerName").bytes()
     story = _story_from_content(content)

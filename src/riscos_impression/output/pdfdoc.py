@@ -43,10 +43,23 @@ ConversionLog rather than guessed at silently:
   still doesn't fit anywhere -- is logged and clipped.
 * DrawFile pictures are rendered as real PDF vector content (paths --
   fill/stroke colour, width, winding rule -- and single-line text, via
-  formats/drawfile.py's object decoder), mapping the DrawFile's own
-  bounding box on to the target frame's box. Dash patterns and precise
-  cap/join styles are parsed but not honoured (lines render solid with
-  default caps/joins); a Sprite object embedded *within* a DrawFile,
+  formats/drawfile.py's object decoder), at the picture's own true
+  size (native DrawFile bounds, scaled by the frame's own declared
+  display scale -- pict.xscale/yscale; see _draw_drawfile_picture),
+  centred within the target frame's box and clipped to it -- NOT
+  stretched to fill the frame's own box, which gave a visibly wrong
+  size/aspect whenever the frame wasn't sized to exactly match the
+  picture's own native bounds at 100% scale (confirmed against a real
+  document and the user's own reading of Impression's picture info
+  dialog). The frame's own declared xshift/yshift position and angle
+  aren't applied -- see that method's own docstring for why (a
+  plausible-looking xshift/yshift interpretation was tried and
+  rejected: it clipped away real, visible picture content in every
+  real example checked) -- centring is used instead as a safer
+  default until the real anchor convention is confirmed. Dash patterns
+  and precise cap/join styles are parsed but not honoured (lines
+  render solid with default caps/joins); a Sprite object embedded
+  *within* a DrawFile,
   and any other undecoded object type (text area, options, transformed
   text/sprite), still falls back to a labelled placeholder box for just
   that object, logged once per picture. A picture that isn't a valid
@@ -67,6 +80,20 @@ ConversionLog rather than guessed at silently:
   already-decoded path opcodes (MOVE/DRAW/CLOSE/END; CURVE is
   recognised but not decoded, the same limitation as the OvProDDL
   converter).
+* A picture frame with a non-zero embed_tag is anchored inline within
+  a text story (at the point a matching EmbedMark occurs), not drawn
+  independently at its own raw page position -- see
+  docs/impression-documents.xml, "Frame object common layout"
+  (embedtag). It's laid out as its own block: it ends the current
+  line, at the frame's own real, intended size (confirmed against a
+  real document and the user's own reading of Impression's picture
+  info dialog -- the frame's box IS the picture's true on-page size,
+  not something to be rederived from the paragraph's own column
+  width), shrinking only if that doesn't fit the current column at all
+  (preserving aspect ratio), and pushes every following line down
+  below it, rather than being placed at a fixed box that could overlay
+  already-flowing text wherever it
+  happened to intersect it.
 * Master-page furniture (frames placed only on a master page, with no
   corresponding locally-linked frame on a given content page) is drawn
   as a background layer behind that page's own content, once per
@@ -457,9 +484,12 @@ def _draw_rgb_op(word: int, stroke: bool) -> str:
 
 @dataclass
 class _Token:
-    kind: str  #: "word" | "space" | "tab" | "break"
+    kind: str  #: "word" | "space" | "tab" | "break" | "embed"
     text: str
     style: Style
+    #: Only set for kind="embed": the PictureFrame anchored inline at
+    #: this point in the story; see _paragraph_tokens.
+    embed_frame: Optional[Frame] = None
 
 
 def _strip_trailing_space(line: list[_Token]) -> None:
@@ -550,17 +580,32 @@ def _wrap_one_line(
     for: a tab whose target would land past *right_edge* forces a line
     break first, rather than being allowed to carry the rest of the line
     off past the frame's (and possibly the page's) edge. Also stops
-    early, without consuming it, at a forced "break" token (a
-    PageBreakMark). Returns (line_tokens, remaining_tokens); at least
-    one token is always consumed when *tokens* is non-empty and doesn't
-    start with a break (an over-wide single word or tab still gets its
-    own line rather than being dropped)."""
+    early at a forced "break" token (a PageBreakMark), consuming it (an
+    empty line is a complete, correct response to a forced page
+    break). Also stops early at an "embed" token (an inline picture),
+    but WITHOUT consuming it -- the caller has its own, separate
+    picture-placement logic for that (see
+    _flow_paragraphs_into_containers) and needs to see the token itself
+    to run it. Returns (line_tokens, remaining_tokens); at least one
+    token is always consumed when *tokens* is non-empty and doesn't
+    start with a break or an embed (an over-wide single word or tab
+    still gets its own line rather than being dropped)."""
     line: list[_Token] = []
     x = line_start
     for i, tok in enumerate(tokens):
         if tok.kind == "break":
             _strip_trailing_space(line)
             return line, tokens[i + 1 :]
+        if tok.kind == "embed":
+            # Unlike "break" (fully consumed here -- an empty line is
+            # a complete, correct response to a forced page break), an
+            # embed token is left in place for the caller to see and
+            # handle itself (placing the picture as its own block,
+            # with its own container-overflow logic; see
+            # _flow_paragraphs_into_containers) -- this function has no
+            # picture-geometry concerns of its own.
+            _strip_trailing_space(line)
+            return line, tokens[i:]
         if tok.kind == "tab":
             stop, _kind = _next_tab_stop(x, tab_base_x, tok.style)
             if stop > right_edge and line:
@@ -670,6 +715,9 @@ class PDFConverter(Converter):
         #: id(page) -> [(x0,y0,x1,y1), ...] repel-obstacle boxes on that
         #: page, in PDF points; see _repel_obstacles_for_page.
         self._repel_obstacles: dict[int, list] = {}
+        #: chapter id -> {embed_tag: Frame}, for resolving an inline
+        #: EmbedMark to the frame it anchors; see _embed_frame_map.
+        self._embed_frame_maps: dict[int, dict[int, Frame]] = {}
         self._dictionary_by_index = {entry.index: entry for entry in self.document.dictionary}
         self._font_resource_name: dict[str, str] = {}
         font_parts = []
@@ -838,6 +886,17 @@ class PDFConverter(Converter):
         """Draw *frame*, whose own coordinates are relative to
         *source_origin*'s canvas. See _frame_appearance_and_origin for
         what changes when *frame* is master-linked."""
+        if frame.embed_tag:
+            # Anchored inline within a text story instead, at the
+            # matching EmbedMark's own position -- never drawn at its
+            # own raw position on the page in normal front-to-back
+            # order; see docs/impression-documents.xml, "Frame object
+            # common layout" (embedtag) and _embed_frame_map. Drawing
+            # it here too, at its raw (and often stale/irrelevant) box,
+            # was the direct cause of inline pictures visually
+            # overlaying running text instead of the text flowing
+            # around them.
+            return
         if isinstance(frame, GuideFrame):
             return  # non-printing
         if isinstance(frame, GroupFrame):
@@ -929,6 +988,24 @@ class PDFConverter(Converter):
     # -- Pictures -----------------------------------------------------------
 
     def _draw_picture(self, pict: PictureFrame, appearance: PictureFrame) -> None:
+        x0, y0 = self._to_pt(appearance.x0, appearance.y0)
+        x1, y1 = self._to_pt(appearance.x1, appearance.y1)
+        self._draw_picture_at(pict, x0, y0, x1, y1)
+
+    def _draw_embedded_picture(self, pict: PictureFrame, x0: float, y0: float, x1: float, y1: float) -> None:
+        """As _draw_picture, but for a picture anchored inline within a
+        text story (a non-zero embed_tag; see _embed_frame_map) rather
+        than one drawn at its own raw position on the page: *x0..y1*
+        are already the picture's own computed inline placement in the
+        current frame's local point space (see
+        _flow_paragraphs_into_containers), not derived from the
+        frame's own stored box at all. Deliberately does not draw the
+        frame's own fill/border (unlike a page-positioned picture) --
+        those are defined relative to the frame's own raw box, which
+        has no correspondence to this recomputed inline position."""
+        self._draw_picture_at(pict, x0, y0, x1, y1)
+
+    def _draw_picture_at(self, pict: PictureFrame, x0: float, y0: float, x1: float, y1: float) -> None:
         if pict.dictionary_index < 0:
             return
         entry = self._dictionary_by_index.get(pict.dictionary_index)
@@ -937,17 +1014,16 @@ class PDFConverter(Converter):
             return
         if entry.type is not DictionaryEntryType.PICTURE:
             return
-
-        x0, y0 = self._to_pt(appearance.x0, appearance.y0)
-        x1, y1 = self._to_pt(appearance.x1, appearance.y1)
         if x1 <= x0 or y1 <= y0:
             return
 
         with self.catch("picture", location=f"dictionary entry {entry.index}"):
             data = self.document.picture_bytes(entry)
-            self._draw_picture_content(data, entry, x0, y0, x1, y1)
+            self._draw_picture_content(data, entry, x0, y0, x1, y1, pict)
 
-    def _draw_picture_content(self, data: bytes, entry, x0: float, y0: float, x1: float, y1: float) -> None:
+    def _draw_picture_content(
+        self, data: bytes, entry, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame
+    ) -> None:
         kind = entry.embedded_object_type
 
         if kind is EmbeddedObjectType.EPS:
@@ -965,7 +1041,7 @@ class PDFConverter(Converter):
         if kind is EmbeddedObjectType.DRAW:
             draw = DrawFile.from_bytes(data)
             if draw is not None:
-                self._draw_drawfile_picture(draw, x0, y0, x1, y1)
+                self._draw_drawfile_picture(draw, x0, y0, x1, y1, pict)
                 return
             sprite = SpriteArea.from_bytes(data)
             self._draw_placeholder(x0, y0, x1, y1, "Sprite")
@@ -996,24 +1072,66 @@ class PDFConverter(Converter):
 
     # -- DrawFile pictures -----------------------------------------------------
 
-    def _draw_drawfile_picture(self, draw: DrawFile, x0: float, y0: float, x1: float, y1: float) -> None:
+    def _draw_drawfile_picture(
+        self, draw: DrawFile, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame
+    ) -> None:
         """Render a decoded DrawFile's objects directly as PDF vector
-        content, mapping its own declared bounding box onto the target
-        frame's box (stretch to fit, matching how a Sprite object fills
-        its own bounding box per the DrawFile format itself). See the
-        module docstring for what's approximated (dash patterns, caps/
-        joins) versus what's a genuine placeholder (Sprite objects
-        embedded within the file, and any other undecoded object type)."""
+        content, using the picture frame's own declared display scale
+        (pict.xscale/yscale) to size the DrawFile's own native-size
+        content, then centring it within the frame's box
+        [x0,y0,x1,y1] -- NOT stretched to fill it. Confirmed against a
+        real document and the user's own reading of Impression's
+        picture info dialog: a picture frame is a clip window onto its
+        content, sized independently of that content's own true size,
+        not a box the content is stretched to fill (stretching gave a
+        visibly, sometimes drastically, wrong size and aspect ratio
+        whenever the frame's own box didn't happen to exactly match
+        the picture's native bounds at 100% scale).
+
+        pict.xscale/yscale are stored as the *inverse* of the picture's
+        displayed scale (confirmed against the real document: a raw
+        value of 0x20000, i.e. 2.0, is a genuine 50% display scale --
+        matches ovprodll.py's own _tr_setscale, which this project's
+        DDL output already relies on for the same fields).
+
+        pict.xshift/yshift and pict.angle are NOT applied here.
+        xshift/yshift looked, from their on-disk field names and
+        ovprodll.py's own DDL emission, like a millipoint offset of the
+        content's own bottom-left corner from the frame's bottom-left
+        -- but every real inline picture checked (three, in one real
+        document) had a yshift value that, applied that way, clipped
+        away a real, visible part of the picture (confirmed against
+        the user's own reference image) rather than just repositioning
+        it within an otherwise-empty margin; the true anchor/sign
+        convention needs the real OvationPro DDL "picturedata bottomleft"
+        semantics to pin down properly, not a guess against one
+        (possibly misleading) data point. Centring instead guarantees
+        the whole scaled picture stays visible -- a safer default than
+        risking silently cropping real content -- until that's
+        confirmed. Rotation is a separate, unimplemented piece of work
+        regardless; a non-zero angle is logged once rather than
+        silently ignored. See the module docstring for what else is
+        approximated (dash patterns, caps/joins) versus what's a
+        genuine placeholder (Sprite objects embedded within the file,
+        and any other undecoded object type)."""
         bounds = draw.bounds
-        sx = (x1 - x0) / bounds.width if bounds.width else 1.0
-        sy = (y1 - y0) / bounds.height if bounds.height else 1.0
+        display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
+        display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
+        sx = _DRAW_UNIT_TO_PT * display_scale_x
+        sy = _DRAW_UNIT_TO_PT * display_scale_y
+        displayed_w = bounds.width * sx
+        displayed_h = bounds.height * sy
+        origin_x = x0 + max(0.0, ((x1 - x0) - displayed_w) / 2.0)
+        origin_y = y0 + max(0.0, ((y1 - y0) - displayed_h) / 2.0)
 
         def to_pt(dx: int, dy: int) -> tuple[float, float]:
-            return x0 + (dx - bounds.x0) * sx, y0 + (dy - bounds.y0) * sy
+            return origin_x + (dx - bounds.x0) * sx, origin_y + (dy - bounds.y0) * sy
 
         self._content.append("q\n")
         self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(x1 - x0)} {_fmt(y1 - y0)} re W n\n")
         notes: list[str] = []
+        if pict.angle:
+            notes.append("a DrawFile picture's own rotation is not applied; it is drawn unrotated")
         for obj in draw.objects:
             self._draw_drawfile_object(obj, draw.fonts, to_pt, (sx, sy), notes)
         self._content.append("Q\n")
@@ -1195,7 +1313,7 @@ class PDFConverter(Converter):
             else:
                 obstacles_by_key = {id(frame): self._repel_obstacles_for_page(page, exclude=frame)}
                 assignments = self._flow_paragraphs_into_containers(
-                    story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], obstacles_by_key
+                    story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], chapter, obstacles_by_key
                 )
                 lines = assignments.get(id(frame), [])
         else:
@@ -1210,7 +1328,7 @@ class PDFConverter(Converter):
                 return
             obstacles_by_key = {id(frame): self._repel_obstacles_for_page(page, exclude=frame)}
             assignments = self._flow_paragraphs_into_containers(
-                story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], obstacles_by_key
+                story.paragraphs, entry.index, [(id(frame), id(page), x0, y0, x1, y1)], chapter, obstacles_by_key
             )
             lines = assignments.get(id(frame), [])
 
@@ -1218,8 +1336,12 @@ class PDFConverter(Converter):
             return
         self._content.append("q\n")
         self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(x1 - x0)} {_fmt(y1 - y0)} re W n\n")
-        for render_args in lines:
-            self._render_line(*render_args)
+        for entry in lines:
+            if entry[0] == "embed":
+                _, pict, ex0, ey0, ex1, ey1 = entry
+                self._draw_embedded_picture(pict, ex0, ey0, ex1, ey1)
+            else:
+                self._render_line(*entry)
         self._content.append("Q\n")
 
     def _inset_box_pt(self, frame: Frame) -> Optional[tuple[float, float, float, float]]:
@@ -1262,6 +1384,27 @@ class PDFConverter(Converter):
                 if record.value is not None:
                     mapping[id(record.value)] = page
         self._frame_page_maps[id(chapter)] = mapping
+        return mapping
+
+    def _embed_frame_map(self, chapter: Chapter) -> dict[int, Frame]:
+        """embed_tag -> the Frame it's carried by, across every content
+        page of *chapter*; built once per chapter and cached. A frame
+        with a non-zero embed_tag is anchored inline within a text
+        story at the point a matching EmbedMark occurs, instead of
+        being drawn at its own raw position on the page in normal
+        front-to-back order -- see docs/impression-documents.xml,
+        "Frame object common layout" (embedtag) and "Embedded and
+        merge markers"."""
+        cached = self._embed_frame_maps.get(id(chapter))
+        if cached is not None:
+            return cached
+        mapping: dict[int, Frame] = {}
+        for page in chapter.pages:
+            for record in page.records:
+                frame = record.value
+                if isinstance(frame, Frame) and frame.embed_tag:
+                    mapping[frame.embed_tag] = frame
+        self._embed_frame_maps[id(chapter)] = mapping
         return mapping
 
     def _resolve_content_chain_quietly(self, story: Story, chapter: Chapter) -> list:
@@ -1326,14 +1469,18 @@ class PDFConverter(Converter):
 
         if not containers:
             return {}
-        return self._flow_paragraphs_into_containers(story.paragraphs, entry.index, containers, obstacles_by_key)
+        return self._flow_paragraphs_into_containers(
+            story.paragraphs, entry.index, containers, chapter, obstacles_by_key
+        )
 
-    def _paragraph_tokens(self, paragraph, dictionary_index: int, body_style: Style) -> tuple[list[_Token], Style]:
+    def _paragraph_tokens(
+        self, paragraph, dictionary_index: int, body_style: Style, chapter: Chapter
+    ) -> tuple[list[_Token], Style]:
         tokens: list[_Token] = []
         # A mark (most commonly a leading TabMark -- real documents use
         # one to right-align a list's own number column, before any
-        # Run) appearing before the paragraph's first Run has no style
-        # of its own to inherit otherwise; falling back to the
+        # Run) appearing before the paragraph's first Run/EmbedMark has
+        # no style of its own to inherit otherwise; falling back to the
         # document's body style instead of the paragraph's own applied
         # style silently used the wrong tab ruler for it (confirmed
         # against a real document's numbered contents list: a leading
@@ -1341,9 +1488,14 @@ class PDFConverter(Converter):
         # tab in the same line correctly used the paragraph's own,
         # producing inconsistent alignment from row to row depending on
         # how each row's own text happened to interact with the wrong
-        # ruler).
-        first_run_slots = next((item.style_slots for item in paragraph.items if isinstance(item, Run)), None)
-        current_style = self.resolve_style(first_run_slots) if first_run_slots is not None else body_style
+        # ruler). EmbedMark counts too, alongside Run -- a paragraph
+        # consisting of nothing but a single embedded picture (a real,
+        # confirmed case) has no Run at all for a style to otherwise
+        # come from.
+        first_style_slots = next(
+            (item.style_slots for item in paragraph.items if isinstance(item, (Run, EmbedMark))), None
+        )
+        current_style = self.resolve_style(first_style_slots) if first_style_slots is not None else body_style
         for item in paragraph.items:
             if isinstance(item, Run):
                 current_style = self.resolve_style(item.style_slots)
@@ -1364,7 +1516,29 @@ class PDFConverter(Converter):
             elif isinstance(item, MergeMark):
                 tokens.append(_Token("word", f"<<{item.field_name}>>", current_style))
             elif isinstance(item, EmbedMark):
-                continue  # drawn separately as its own page frame; see module docstring
+                # Like Run, an EmbedMark carries its own style_slots
+                # (e.g. a "Centre" alignment effect applied around it,
+                # confirmed against a real document) -- update
+                # current_style the same way a Run does, both for its
+                # own token and for whatever paragraph content follows.
+                current_style = self.resolve_style(item.style_slots)
+                frame = self._embed_frame_map(chapter).get(item.embed_tag)
+                if isinstance(frame, PictureFrame) and frame.x1 > frame.x0 and frame.y1 > frame.y0:
+                    tokens.append(_Token("embed", "", current_style, embed_frame=frame))
+                else:
+                    # Not a picture (format doc: "frames" in general can
+                    # carry an embed_tag, but every real example found
+                    # is a PictureFrame -- see module docstring), or no
+                    # matching frame at all, or a degenerate zero-size
+                    # box; there's nothing sensible to lay out inline,
+                    # so the reference is silently skipped, same as
+                    # before this was implemented at all.
+                    if frame is not None:
+                        self.log.best_effort(
+                            "story",
+                            "an embedded frame that isn't a picture is not placed inline",
+                            location=f"dictionary entry {dictionary_index}",
+                        )
         return tokens, (tokens[0].style if tokens else body_style)
 
     def _resolve_number_text(self, tag: int, dictionary_index: int) -> str:
@@ -1390,6 +1564,7 @@ class PDFConverter(Converter):
         paragraphs: tuple,
         dictionary_index: int,
         containers: list[tuple[int, int, float, float, float, float]],
+        chapter: Chapter,
         obstacles_by_key: Optional[dict[int, list]] = None,
     ) -> dict[int, list]:
         """Lay out *paragraphs* across *containers* in order -- each a
@@ -1403,11 +1578,24 @@ class PDFConverter(Converter):
         _repel_obstacles_for_page, with that container's own frame
         excluded from its own obstacle list) -- can narrow a line's
         available width differently band by band as Y descends (dynamic
-        text repel around a picture or other obstacle). Returns key -> [render_line()
-        call-arg tuples]; a single-container caller (master furniture, or
-        a story confined to one frame) just gets one key back. Logs a
-        best_effort note, once, if the paragraphs run out of containers
-        before they run out of content.
+        text repel around a picture or other obstacle). Returns key ->
+        [entry, ...], where each entry is either a render_line() call-arg
+        tuple, or an inline picture placement ("embed", frame, x0, y0,
+        x1, y1) -- see _draw_story's own dispatch on entry[0]. A single-
+        container caller (master furniture, or a story confined to one
+        frame) just gets one key back. Logs a best_effort note, once, if
+        the paragraphs run out of containers before they run out of
+        content.
+
+        An inline picture (a non-zero-embed_tag PictureFrame referenced
+        by an EmbedMark; see _paragraph_tokens/_embed_frame_map) is laid
+        out as its own block: it ends the current line (if any text has
+        already been placed on it), is scaled to the paragraph's own
+        current usable width preserving its own aspect ratio, and pushes
+        every following line down below it -- rather than being drawn
+        independently at its own raw, page-relative box (which, since
+        nothing here ever accounted for its size, could overlay already-
+        placed running text instead of displacing it).
 
         Real documents sometimes emulate text flowing around an obstacle
         (rather than relying purely on dynamic repel) by chaining two
@@ -1446,7 +1634,7 @@ class PDFConverter(Converter):
             return True
 
         for paragraph in paragraphs:
-            tokens, para_style = self._paragraph_tokens(paragraph, dictionary_index, body_style)
+            tokens, para_style = self._paragraph_tokens(paragraph, dictionary_index, body_style, chapter)
             left_indent = (para_style.left_indent or 0) / UNIT
             right_indent = (para_style.right_indent or 0) / UNIT
             first_indent = (para_style.first_indent or 0) / UNIT
@@ -1455,6 +1643,73 @@ class PDFConverter(Converter):
             placed_any_line = False
 
             while tokens or not placed_any_line:
+                if tokens and tokens[0].kind == "embed":
+                    pict = tokens[0].embed_frame
+                    # The frame's own box is the picture's real,
+                    # intended on-page size (confirmed against a real
+                    # document and the user's own reading of
+                    # Impression's picture info dialog: a 77.08mm x
+                    # 51.14mm frame in the document matched a 77.08mm x
+                    # 51.14mm frame box here exactly) -- not something
+                    # to be re-derived from the paragraph's own column
+                    # width, which is usually much wider. Only shrunk,
+                    # preserving aspect, if it doesn't fit the current
+                    # column at all; never enlarged to fill it.
+                    frame_width_pt = (pict.x1 - pict.x0) / UNIT
+                    frame_height_pt = (pict.y1 - pict.y0) / UNIT
+                    while True:
+                        indent = (left_indent + first_indent) if is_first_line else left_indent
+                        avail_x0 = cx0 + indent
+                        avail_x1 = cx1 - right_indent
+                        if avail_x1 - avail_x0 < _MIN_USABLE_WIDTH:
+                            avail_x0, avail_x1 = cx0, cx1
+                        avail_width = avail_x1 - avail_x0
+                        if frame_width_pt <= 0 or frame_width_pt <= avail_width:
+                            embed_width = frame_width_pt
+                            embed_height = frame_height_pt
+                        else:
+                            embed_width = avail_width
+                            embed_height = avail_width * (frame_height_pt / frame_width_pt)
+                        # When the picture's own real size is narrower
+                        # than the column, its horizontal position
+                        # within that column follows the paragraph's
+                        # own alignment -- confirmed against a real
+                        # document: the exact paragraph carrying an
+                        # inline picture had a "Centre" alignment
+                        # effect applied to it, and the picture was
+                        # indeed centred within its column, not left-
+                        # aligned. Matches _render_line's own alignment
+                        # handling for text (1=centre, 2=right; see the
+                        # module docstring for why those two are an
+                        # unconfirmed-but-conventional guess).
+                        spare = avail_width - embed_width
+                        if para_style.alignment == 1:
+                            embed_x0 = avail_x0 + spare / 2.0
+                        elif para_style.alignment == 2:
+                            embed_x0 = avail_x0 + spare
+                        else:
+                            embed_x0 = avail_x0
+                        embed_x1 = embed_x0 + embed_width
+                        if y_cursor - embed_height >= cy0:
+                            break
+                        if not advance_container():
+                            self.log.best_effort(
+                                "story",
+                                "text overflowed the available frame(s) and was clipped",
+                                location=f"dictionary entry {dictionary_index}",
+                            )
+                            return assignments
+                    embed_y1 = y_cursor
+                    embed_y0 = y_cursor - embed_height
+                    assignments[key].append(("embed", pict, embed_x0, embed_y0, embed_x1, embed_y1))
+                    y_cursor = embed_y0
+                    page_floor[page_key] = min(page_floor.get(page_key, y_cursor), y_cursor)
+                    placed_any_line = True
+                    first_line_pending = False
+                    is_first_line = False
+                    tokens = tokens[1:]
+                    continue
+
                 # The very first line dropped into a fresh container
                 # only needs to clear its own font ascent below the
                 # box's top edge, not a full line_height (that figure

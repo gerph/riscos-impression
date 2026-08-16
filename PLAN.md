@@ -765,6 +765,90 @@ riscos-impression/
   five output formats: 0 crashes. Visually confirmed against PCI_Spec
   that both diagrams' full text content (scale labels, box captions,
   address values) now renders.
+* **Post-Stage-14 fix (2)**: the user reported that PCI_Spec's inline
+  DrawFile diagrams were overlaying the running text instead of
+  pushing it down. Root cause: a picture frame with a non-zero
+  embed_tag is meant to be "anchored inline within a text story, at
+  the point a matching CTRL_S embedded-object marker occurs, rather
+  than being placed directly on the page in normal front-to-back
+  order" (docs/impression-documents.xml, "Frame object common
+  layout") -- but this converter drew it at its own raw page position
+  regardless, while the story's own text flow just silently skipped
+  the corresponding EmbedMark and carried on as if the picture didn't
+  exist, so the two independently-positioned things visually collided.
+  Fixed by teaching `pdfdoc.py`'s text flow (`_paragraph_tokens`,
+  `_flow_paragraphs_into_containers`) to resolve an EmbedMark to its
+  frame (a new `_embed_frame_map`, chapter-scoped like the existing
+  `_frame_page_map`) and lay it out as its own block: it ends the
+  current line, occupies its own space, and pushes every following
+  line down below it; `_draw_frame`'s normal page walk now skips any
+  embed_tag frame entirely, so it's drawn exactly once, inline, never
+  at its stale raw position.
+* **Post-Stage-14 fix (3)**: even once placed inline, the picture came
+  out far too large -- almost the paragraph's full column width. The
+  user supplied the picture's own values straight from Impression's
+  info dialog (frame: 77.08mm x 51.14mm, 0 inset; picture: x=-6.07mm,
+  y=23.07mm, angle=0, scale=50%, aspect=100%), which let two real,
+  separate bugs be pinned down precisely: (a) the inline block's own
+  size was derived from the paragraph's current column width, when
+  the *frame's own box* (confirmed to match the info dialog's
+  77.08mm x 51.14mm exactly) is the picture's real, correct on-page
+  size regardless of how wide the surrounding text column is; and
+  (b) `_draw_drawfile_picture` stretched the DrawFile's own native
+  bounds to exactly fill whatever box it was given, which is wrong
+  for *any* picture (inline or not) whose frame wasn't sized to
+  exactly match its content at 100% scale -- confirmed by direct
+  arithmetic against the real document's own DrawFile bounds, which
+  didn't match a "stretch to fill" scale in either dimension. Fixed:
+  the inline block now sizes itself from the frame's own real box
+  (shrinking, preserving aspect, only if it doesn't fit the current
+  column at all), and `_draw_drawfile_picture` now sizes content from
+  its own native bounds times the frame's declared display scale
+  (pict.xscale/yscale, confirmed stored as the *inverse* of the
+  displayed scale -- 0x20000 raw is genuine 50%, matching
+  ovprodll.py's own `_tr_setscale`), rather than stretching to fill.
+  A plausible-looking interpretation of pict.xshift/yshift (as a
+  bottom-left-relative offset) was tried and rejected: applied to
+  every real inline picture in the same document, it clipped away
+  real, visible picture content in every case, not just repositioned
+  it within empty margin -- so the content is centred within its
+  frame instead, a safer default until the real anchor/sign
+  convention can be confirmed properly (a genuine, open follow-up).
+  Picture rotation (pict.angle) is unimplemented regardless; a
+  non-zero angle is logged once rather than silently ignored.
+  Re-validated against all 48 real documents across all five output
+  formats: 0 crashes. Visually confirmed against PCI_Spec's own
+  reference image that both inline diagrams now render at their
+  correct size, fully visible, positioned in the flow exactly where
+  the reference shows them.
+* **Post-Stage-14 fix (4)**: the user pointed out, from inspecting the
+  real document directly in Impression, that the paragraph carrying
+  the first inline picture has a "Centre" alignment effect applied to
+  it -- and the picture (narrower than its own text column) was
+  sitting flush against the column's left edge instead of centred, the
+  one thing about inline pictures `_render_line`'s own alignment
+  handling for ordinary text never covered. Tracing this found the
+  real root cause one level down, in the document model itself, not
+  just pdfdoc.py: `model/story.py`'s `EmbedMark` was built with no
+  style information at all, unlike `Run` (which always carries the
+  active `style_slots`) -- so a paragraph consisting of nothing but an
+  embedded picture (the real, confirmed case here) had no way for
+  *any* converter to discover what style, including alignment, applied
+  to it. Fixed at the source: `EmbedMark` now carries `style_slots`
+  too, populated the same way `Run`'s already are, from the CTRL_G/
+  CTRL_H style stack active at that exact point in the story.
+  `pdfdoc.py`'s `_paragraph_tokens` now resolves the embed's own style
+  from that (also fixing the "leading item with no style to inherit"
+  fallback added earlier this stage, which only checked for a leading
+  `Run`, not a leading `EmbedMark`), and the inline block's own
+  horizontal position now follows `para_style.alignment` exactly the
+  way `_render_line` already does for text (1=centre, 2=right).
+  Re-validated against all 48 real documents across all five output
+  formats: 0 crashes. Confirmed against PCI_Spec that the resolved
+  alignment for that exact paragraph is now `1` (centre), matching
+  what the user read directly from the Impression editor, and that the
+  picture now renders centred in its column, matching the reference
+  image.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a

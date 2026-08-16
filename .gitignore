@@ -3,6 +3,7 @@
 # Stage 13 for the process of auditing and promoting a sanitised subset
 # to committed test fixtures.
 /examples/
+/moreexamples/
 
 # Python
 __pycache__/

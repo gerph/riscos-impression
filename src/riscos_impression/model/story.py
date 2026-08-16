@@ -90,6 +90,14 @@ class PageBreakMark:
 @dataclass(frozen=True)
 class EmbedMark:
     embed_tag: int
+    #: The style stack active at this exact point in the story (see
+    #: CTRL_G/CTRL_H below), same convention as Run.style_slots -- an
+    #: embedded picture can carry its own paragraph-level attributes
+    #: (e.g. a "Centre" alignment effect, confirmed against a real
+    #: document) via a style applied around it, even when the paragraph
+    #: contains no other Run at all for that style to otherwise attach
+    #: to.
+    style_slots: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,7 +226,9 @@ def _decode_text_line(data: bytes, payload_start: int, line_end: int, builder: _
             discriminator = binary.u32(data, i + 4)
             if discriminator == SEMBED:
                 embed_tag = binary.u32(data, i + 4 + 8)
-                builder.current_items.append(EmbedMark(embed_tag=embed_tag))
+                builder.current_items.append(
+                    EmbedMark(embed_tag=embed_tag, style_slots=tuple(builder.style_stack))
+                )
             elif discriminator == SMERGE:
                 field_name, _ = binary.nul_string(data, i + 4 + 12)
                 builder.current_items.append(MergeMark(field_name=field_name))

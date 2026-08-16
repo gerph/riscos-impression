@@ -4,7 +4,7 @@ from riscos_impression.model.colours import Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import Paragraph, Run, Story, TabMark
+from riscos_impression.model.story import EmbedMark, Paragraph, Run, Story, TabMark
 from riscos_impression.model.styles import TabStop
 from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
@@ -625,9 +625,10 @@ def test_paragraph_tokens_leading_mark_uses_the_paragraphs_own_style():
     document = _document(styles=[body, numbered])
     converter = PDFConverter(document)
     converter.begin_document()
+    chapter = Chapter(section=_section(), offset=0, master_page_1=None, master_page_2=None, pages=())
 
     paragraph = Paragraph(items=(TabMark(), Run(text="1", style_slots=(1,))))
-    tokens, para_style = converter._paragraph_tokens(paragraph, dictionary_index=0, body_style=body)
+    tokens, para_style = converter._paragraph_tokens(paragraph, dictionary_index=0, body_style=body, chapter=chapter)
 
     assert tokens[0].kind == "tab"
     assert tokens[0].style.tab_stops == numbered.tab_stops
@@ -693,6 +694,240 @@ def test_centre_and_right_tabs_keep_a_short_line_together(tmp_path):
     assert b"(Sheet) Tj" in data
     assert b"(LIVE) Tj" in data  # the last word; only present if the whole segment made it onto the line
     assert not any("overflowed" in e.message for e in converter.log.entries)
+
+
+def test_embed_frame_map_finds_a_frame_by_its_embed_tag():
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    picture = _picture(embed_tag=42, dictionary_index=1)
+    other = _picture(embed_tag=0, dictionary_index=2)  # not embedded; must be ignored
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=100000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, picture), _frame_record(1108, other)),
+    )
+    chapter = Chapter(section=_section(), offset=900, master_page_1=None, master_page_2=None, pages=(page,))
+    converter = PDFConverter(_document())
+    converter.begin_document()
+
+    mapping = converter._embed_frame_map(chapter)
+
+    assert mapping == {42: picture}
+
+
+def test_inline_drawfile_picture_pushes_following_text_below_it(tmp_path):
+    """Regression test: the user reported that PCI_Spec's inline
+    DrawFile diagrams (referenced from the story via an EmbedMark, and
+    carried by a PictureFrame with a matching non-zero embed_tag) were
+    overlaying the running text instead of pushing it down -- because
+    the referenced frame was drawn independently at its own raw,
+    page-relative box (see docs/impression-documents.xml, "Frame
+    object common layout": an embed-tagged frame is "anchored inline
+    within a text story... rather than being placed directly on the
+    page in normal front-to-back order"), while the story's own text
+    flow just skipped the EmbedMark entirely and carried on as if the
+    picture didn't exist -- so the two independently-positioned things
+    visually collided wherever the picture's raw box happened to
+    intersect the running text.
+
+    This drives a real conversion end-to-end and checks the actual
+    computed Y coordinates: "Before" sits at its own ascent-based
+    first-line position, the picture block starts right below it, at
+    the *frame's own real box size* (60pt x 40pt here -- confirmed
+    against a real document that this, not the paragraph's own much
+    wider column, is a picture's true intended on-page size), and
+    "After" sits below *that*, using the normal line-height drop --
+    not overlapping either the picture or "Before".
+    """
+    from riscos_impression.output.pdfdoc import PDFConverter, _ascent_pt, _fmt, _line_height_pt
+
+    body = _style(0, is_body_text=True, font_size=160)  # 10pt
+    text_frame = _frame(x0=0, y0=0, x1=200000, y1=300000, dictionary_index=0)  # 200pt-wide column
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    # A 60pt x 40pt frame box -- its own real on-page size, well
+    # within the 200pt-wide text column -- deliberately placed at an
+    # unrelated raw page position far from the text frame; if this raw
+    # position leaked into the output at all, the picture would be
+    # drawn in the wrong place (or drawn twice); it must not appear.
+    picture_frame = _picture(
+        x0=500000, y0=500000, x1=560000, y1=540000, embed_tag=42, dictionary_index=1,
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=600000, y1=600000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, text_frame), _frame_record(1108, picture_frame)),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=600000, y1=600000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    document = _document(chapters=[chapter], master_pages=[master_page], styles=[body], header=header)
+    text_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    picture_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.extend([text_entry, picture_entry])
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    story = Story(
+        frame_chain=(),
+        paragraphs=(
+            Paragraph(
+                items=(
+                    Run(text="Before", style_slots=()),
+                    EmbedMark(embed_tag=42),
+                    Run(text="After", style_slots=()),
+                )
+            ),
+        ),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+    content = data.decode("latin-1")
+
+    assert not converter.log.has_errors()
+    assert content.count("(Before) Tj") == 1
+    assert content.count("(After) Tj") == 1
+    # The fill colour operator is unique to this one path; it must
+    # appear exactly once -- twice would mean the picture was ALSO
+    # drawn independently at its own raw page position (the exact bug
+    # being fixed), not just inline.
+    assert content.count("1 0 0 rg") == 1  # 0x0000FF00 -> pure red, see colour_rgb
+
+    resolved = converter.resolve_style(())
+    before_y = 300.0 - _ascent_pt(resolved)
+    embed_height = 40.0  # the frame's own real height (60pt x 40pt), unrelated to the 200pt column
+    embed_y1 = before_y
+    embed_y0 = embed_y1 - embed_height
+    after_y = embed_y0 - _line_height_pt(resolved)
+
+    assert f"1 0 0 1 0 {_fmt(before_y)} Tm" in content
+    assert f"1 0 0 1 0 {_fmt(after_y)} Tm" in content
+
+
+def test_inline_drawfile_picture_honours_a_centre_alignment_effect(tmp_path):
+    """Regression test: a real document's inline picture sat inside a
+    paragraph carrying a "Centre" alignment effect (confirmed via the
+    document's own EmbedMark.style_slots), and the picture -- narrower
+    than its own text column -- was left flush against the column's
+    left edge instead of centred within it, unlike ordinary text lines
+    (which already honour alignment via _render_line)."""
+    from riscos_impression.output.pdfdoc import PDFConverter, _fmt
+
+    body = _style(0, is_body_text=True, font_size=160)
+    centred = _style(1, alignment=1, paragraph_apply=True)  # centre
+    text_frame = _frame(x0=0, y0=0, x1=200000, y1=300000, dictionary_index=0)  # 200pt-wide column
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    picture_frame = _picture(
+        x0=500000, y0=500000, x1=560000, y1=540000, embed_tag=42, dictionary_index=1,
+    )  # 60pt x 40pt, narrower than the 200pt column
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=600000, y1=600000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, text_frame), _frame_record(1108, picture_frame)),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=600000, y1=600000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    document = _document(chapters=[chapter], master_pages=[master_page], styles=[body, centred], header=header)
+    text_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    picture_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.extend([text_entry, picture_entry])
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    story = Story(
+        frame_chain=(),
+        paragraphs=(Paragraph(items=(EmbedMark(embed_tag=42, style_slots=(1,)),)),),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+    content = data.decode("latin-1")
+
+    assert not converter.log.has_errors()
+    # 60pt-wide picture centred in a 200pt column -> 70pt margin either side.
+    expected_x0 = 70.0
+    assert f"{_fmt(expected_x0)} " in content
+    # The clip rect for the embed block should start at the centred x0.
+    assert f"{_fmt(expected_x0)} 260 60 40 re W n" in content
+
+
+def test_inline_drawfile_picture_shrinks_to_fit_a_narrower_column(tmp_path):
+    """A frame whose own real box is wider than the paragraph's
+    current column can't be placed at full size; it should shrink
+    (preserving aspect) to the column's own width instead of
+    overflowing it, the one case _inline_drawfile_picture_pushes...
+    above doesn't cover (there, the frame already fit)."""
+    from riscos_impression.output.pdfdoc import PDFConverter, _fmt, _line_height_pt
+
+    body = _style(0, is_body_text=True, font_size=160)
+    text_frame = _frame(x0=0, y0=0, x1=100000, y1=300000, dictionary_index=0)  # 100pt-wide column
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    # 200pt x 100pt frame (2:1 aspect) -- wider than the 100pt column.
+    picture_frame = _picture(
+        x0=500000, y0=500000, x1=700000, y1=600000, embed_tag=42, dictionary_index=1,
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=800000, y1=800000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, text_frame), _frame_record(1108, picture_frame)),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=800000, y1=800000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    document = _document(chapters=[chapter], master_pages=[master_page], styles=[body], header=header)
+    text_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    picture_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.extend([text_entry, picture_entry])
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    story = Story(
+        frame_chain=(),
+        paragraphs=(Paragraph(items=(EmbedMark(embed_tag=42), Run(text="After", style_slots=()))),),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+    content = data.decode("latin-1")
+
+    assert not converter.log.has_errors()
+    resolved = converter.resolve_style(())
+    # Shrunk to the 100pt column width; aspect (2:1) preserved -> 50pt tall.
+    embed_y1 = 300.0
+    embed_height = 100.0 * (100.0 / 200.0)
+    embed_y0 = embed_y1 - embed_height
+    # first_line_pending is cleared once the embed itself is placed, so
+    # "After" (the paragraph's next item) uses the normal line-height
+    # drop, not an ascent-only one -- that only applies to the very
+    # first thing placed into a fresh container.
+    after_y = embed_y0 - _line_height_pt(resolved)
+
+    assert f"1 0 0 1 0 {_fmt(after_y)} Tm" in content
 
 
 def test_multi_page_chain_flows_text_across_frames(tmp_path):
@@ -1063,25 +1298,25 @@ def test_drawfile_text_size_accounts_for_the_points_vs_drawunits_mismatch(tmp_pa
     # at roughly 1/100th its intended size. text.size_y is already in
     # points (1/640 point per the format), unlike a path's Draw-unit-
     # denominated line_width, so scaling it directly by the picture's
-    # own points-per-Draw-unit ratio was a unit mismatch. Uses
-    # realistic Draw-unit-scale bounds (tens of thousands of units, not
-    # a round number matching the target box in points) -- with a 1:1-
-    # scale bounds/target box, the bug and the fix give the same
-    # answer, which is exactly why this needed its own test.
-    from riscos_impression.output.pdfdoc import PDFConverter, _DRAW_UNIT_TO_PT, _fmt
+    # own points-per-Draw-unit ratio was a unit mismatch. At the
+    # picture frame's own default 100% display scale (see
+    # _draw_drawfile_picture), the correct font size is simply
+    # text.size_y/640 points, independent of the frame's own box size
+    # entirely (a picture is no longer stretched to fill its frame;
+    # see that method's own docstring) -- the old, buggy formula gave
+    # a font size roughly 100x too small instead.
+    from riscos_impression.output.pdfdoc import PDFConverter, _fmt
 
     fonts = build_font_table({1: "Homerton.Medium"})
     text = build_text(text="Hello", font_number=1, size_x=8960, size_y=8960, baseline_x=0, baseline_y=0)
-    bounds = (0, 0, 25600, 25600)  # a 100 OS-unit-square native canvas
-    document = _picture_document(build_drawfile(fonts + text, bounds=bounds), x1=100000, y1=100000)  # 100pt target
+    document = _picture_document(build_drawfile(fonts + text, bounds=(0, 0, 25600, 25600)))
 
     converter = PDFConverter(document)
     out = tmp_path / "out.pdf"
     converter.convert(out)
     data = out.read_bytes()
 
-    sy = 100.0 / 25600  # target points per source Draw unit
-    expected_size_pt = (8960 / 640.0) * (sy / _DRAW_UNIT_TO_PT)
+    expected_size_pt = 8960 / 640.0
     assert expected_size_pt > 1.0  # sanity: this is nowhere near the old ~0.01pt bug
     assert f"{_fmt(expected_size_pt)} Tf".encode("latin-1") in data
 
