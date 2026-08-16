@@ -1114,7 +1114,7 @@ class PDFConverter(Converter):
     def _draw_picture(self, pict: PictureFrame, appearance: PictureFrame) -> None:
         x0, y0 = self._to_pt(appearance.x0, appearance.y0)
         x1, y1 = self._to_pt(appearance.x1, appearance.y1)
-        self._draw_picture_at(pict, x0, y0, x1, y1)
+        self._draw_picture_at(pict, x0, y0, x1, y1, apply_shift=True)
 
     def _draw_embedded_picture(self, pict: PictureFrame, x0: float, y0: float, x1: float, y1: float) -> None:
         """As _draw_picture, but for a picture anchored inline within a
@@ -1126,10 +1126,15 @@ class PDFConverter(Converter):
         frame's own stored box at all. Deliberately does not draw the
         frame's own fill/border (unlike a page-positioned picture) --
         those are defined relative to the frame's own raw box, which
-        has no correspondence to this recomputed inline position."""
-        self._draw_picture_at(pict, x0, y0, x1, y1)
+        has no correspondence to this recomputed inline position.
+        apply_shift=False for the same reason: pict.xshift/yshift (see
+        _draw_drawfile_picture) is an offset from the *frame's own real
+        box*, which this recomputed placement isn't."""
+        self._draw_picture_at(pict, x0, y0, x1, y1, apply_shift=False)
 
-    def _draw_picture_at(self, pict: PictureFrame, x0: float, y0: float, x1: float, y1: float) -> None:
+    def _draw_picture_at(
+        self, pict: PictureFrame, x0: float, y0: float, x1: float, y1: float, apply_shift: bool
+    ) -> None:
         if pict.dictionary_index < 0:
             return
         entry = self._dictionary_by_index.get(pict.dictionary_index)
@@ -1143,10 +1148,10 @@ class PDFConverter(Converter):
 
         with self.catch("picture", location=f"dictionary entry {entry.index}"):
             data = self.document.picture_bytes(entry)
-            self._draw_picture_content(data, entry, x0, y0, x1, y1, pict)
+            self._draw_picture_content(data, entry, x0, y0, x1, y1, pict, apply_shift)
 
     def _draw_picture_content(
-        self, data: bytes, entry, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame
+        self, data: bytes, entry, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame, apply_shift: bool
     ) -> None:
         kind = entry.embedded_object_type
 
@@ -1165,7 +1170,7 @@ class PDFConverter(Converter):
         if kind is EmbeddedObjectType.DRAW:
             draw = DrawFile.from_bytes(data)
             if draw is not None:
-                self._draw_drawfile_picture(draw, x0, y0, x1, y1, pict)
+                self._draw_drawfile_picture(draw, x0, y0, x1, y1, pict, apply_shift)
                 return
             sprite = SpriteArea.from_bytes(data)
             self._draw_placeholder(x0, y0, x1, y1, "Sprite")
@@ -1197,14 +1202,14 @@ class PDFConverter(Converter):
     # -- DrawFile pictures -----------------------------------------------------
 
     def _draw_drawfile_picture(
-        self, draw: DrawFile, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame
+        self, draw: DrawFile, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame, apply_shift: bool
     ) -> None:
         """Render a decoded DrawFile's objects directly as PDF vector
         content, using the picture frame's own declared display scale
         (pict.xscale/yscale) to size the DrawFile's own native-size
-        content, then centring it within the frame's box
-        [x0,y0,x1,y1] -- NOT stretched to fill it. Confirmed against a
-        real document and the user's own reading of Impression's
+        content, positioned within the frame's box [x0,y0,x1,y1]
+        (clipped to it) -- NOT stretched to fill it. Confirmed against
+        a real document and the user's own reading of Impression's
         picture info dialog: a picture frame is a clip window onto its
         content, sized independently of that content's own true size,
         not a box the content is stretched to fill (stretching gave a
@@ -1218,26 +1223,82 @@ class PDFConverter(Converter):
         matches ovprodll.py's own _tr_setscale, which this project's
         DDL output already relies on for the same fields).
 
-        pict.xshift/yshift and pict.angle are NOT applied here.
-        xshift/yshift looked, from their on-disk field names and
-        ovprodll.py's own DDL emission, like a millipoint offset of the
-        content's own bottom-left corner from the frame's bottom-left
-        -- but every real inline picture checked (three, in one real
-        document) had a yshift value that, applied that way, clipped
-        away a real, visible part of the picture (confirmed against
-        the user's own reference image) rather than just repositioning
-        it within an otherwise-empty margin; the true anchor/sign
-        convention needs the real OvationPro DDL "picturedata bottomleft"
-        semantics to pin down properly, not a guess against one
-        (possibly misleading) data point. Centring instead guarantees
-        the whole scaled picture stays visible -- a safer default than
-        risking silently cropping real content -- until that's
-        confirmed. Rotation is a separate, unimplemented piece of work
-        regardless; a non-zero angle is logged once rather than
-        silently ignored. See the module docstring for what else is
-        approximated (dash patterns, caps/joins) versus what's a
-        genuine placeholder (Sprite objects embedded within the file,
-        and any other undecoded object type)."""
+        pict.xshift/yshift, when *apply_shift* (only true for a
+        page-positioned picture -- see _draw_embedded_picture), anchor
+        the content's own bottom-left corner at (anchor_x - xshift,
+        frame_y0 - yshift), where anchor_x is the frame's own LEFT edge
+        for an ungrouped picture but its RIGHT edge for a grouped one.
+
+        The *original* C DDL emitter's own "picturedata" block
+        (`c/frames`' ixpictdata(): `{bottomleft 1}{x %d}` with
+        `-pictp->xshift`, `{y %d}` with `pictp->yshift` verbatim, i.e.
+        y NOT negated, x anchored at the frame's own left edge always)
+        matched a real embedded picture's own dialog reading exactly
+        when this was first confirmed -- but that picture was embedded
+        (apply_shift=False; see below), and a second real picture
+        (page-positioned, grouped) later gave readings that only
+        matched with y NEGATED and x anchored at the frame's own RIGHT
+        edge instead of its left: dialog x=-93.15mm, y=-54.82mm,
+        scale=150%, drawfile size 101.65mm x 126.58mm against raw
+        xshift=264060, yshift=155383, xscale=43690 -- x, y, and scale
+        all match to within 0.005mm with that anchor and sign, and the
+        drawfile's own displayed size (bounds x display scale) matches
+        the dialog's reported size exactly too, confirming the scale
+        formula independently of the anchor question. Both the sign
+        and the anchor were re-checked against the earlier,
+        already-working ungrouped picture (confirmed pixel-for-pixel
+        against a real document's own reference image) for consistency
+        rather than trusting one data point in isolation: y-negation
+        improves its own overlap from 95% to a perfect 100% either way,
+        but the right-edge x anchor that fixes the grouped picture
+        makes this ungrouped one *worse* (100% down to 31%) -- so
+        "grouped" genuinely is the discriminator for which edge x
+        anchors from, not a coincidence specific to one picture.
+
+        An earlier attempt at applying any shift at all (see PLAN.md)
+        was rejected after it clipped away real content on every inline
+        picture checked -- but every one of those was embedded
+        (apply_shift=False here): _draw_embedded_picture's own box is a
+        *recomputed* inline placement, not the frame's real stored box
+        the shift is declared relative to, so anchoring against it was
+        never going to land right regardless of the formula's own
+        correctness.
+
+        Two further real pictures on the same page never reach a
+        trustworthy overlap despite an exhaustive search (both signs,
+        every combination of x0/x1/centre and y0/y1/centre, against
+        this picture's own frame, its group's own frame, and a
+        visually-related sibling picture's own frame -- over 300
+        combinations tried, none within 30% of full coverage) -- their
+        own raw xshift/yshift, converted the same way, still matches
+        Impression's own dialog reading for each exactly (confirmed
+        directly, not merely inferred), so the *numbers* are right;
+        no *anchor* reconciles them with either picture's own tiny
+        frame. Both share something the two resolved pictures don't:
+        the user confirmed Impression's own "Lock Values" dialog
+        option is unticked for both (ticked for both resolved
+        pictures) -- suggestively consistent with a stale/inapplicable
+        stored offset (this project has already found one other real,
+        confirmed case elsewhere of a style's own leftover value from
+        before an edit that never got cleared -- see _line_height_pt's
+        own docstring), though unconfirmed as the actual mechanism.
+        Since a real picture frame is never deliberately left almost
+        entirely empty, an implausible-result check catches cases like
+        this automatically regardless of the underlying cause: if the
+        shifted content's own overlap with the frame covers under half
+        the frame's area, that's treated as a sign the shift isn't
+        trustworthy for this picture and centring (shrunk to fit first
+        if the content doesn't fit natively -- see below) is used
+        instead -- which, if the Lock-Values theory holds, is likely
+        already the *correct* rendering for these two pictures, not
+        merely a fallback for an unsolved case.
+
+        Rotation (pict.angle) remains unimplemented regardless; a
+        non-zero angle is logged once rather than silently ignored.
+        See the module docstring for what else is approximated (dash
+        patterns, caps/joins) versus what's a genuine placeholder
+        (Sprite objects embedded within the file, and any other
+        undecoded object type)."""
         bounds = draw.bounds
         display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
         display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
@@ -1245,8 +1306,68 @@ class PDFConverter(Converter):
         sy = _DRAW_UNIT_TO_PT * display_scale_y
         displayed_w = bounds.width * sx
         displayed_h = bounds.height * sy
-        origin_x = x0 + max(0.0, ((x1 - x0) - displayed_w) / 2.0)
-        origin_y = y0 + max(0.0, ((y1 - y0) - displayed_h) / 2.0)
+
+        shifted = None
+        if apply_shift:
+            # A *grouped* picture's own x anchor is the frame's right
+            # edge, not its left -- confirmed against a real document:
+            # a grouped picture's own dialog-confirmed x/y/scale gave
+            # only ~18% overlap anchored at x0 (y alone matched the
+            # frame exactly; x left ~80% of the frame's own width
+            # uncovered), but a perfect 100% anchored at x1 instead --
+            # and re-checking the already-validated ungrouped picture
+            # the same way confirms the split: x1 gives it only 31%,
+            # versus x0's already-confirmed 100%. y stays anchored at
+            # the frame's own bottom edge either way.
+            #
+            # x's own anchor also moves inward by the frame's own
+            # hinset -- confirmed against a second real (ungrouped)
+            # picture whose x was otherwise off by exactly hinset/UNIT
+            # in mm (5669 raw = 2.00mm, matching the discrepancy to
+            # 0.001mm): x0+hinset for an ungrouped picture, x1-hinset
+            # for a grouped one (inward from whichever edge x anchors
+            # from). y needs no equivalent vinset correction -- checked
+            # against the same picture (adding or subtracting vinset,
+            # itself equal to hinset here, moved y's own dialog-
+            # equivalent value well away from the confirmed reading).
+            x_anchor = (x1 - pict.hinset / UNIT) if pict.grouped else (x0 + pict.hinset / UNIT)
+            shifted_x = x_anchor - pict.xshift / UNIT
+            shifted_y = y0 - pict.yshift / UNIT
+            overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))
+            overlap_h = max(0.0, min(y1, shifted_y + displayed_h) - max(y0, shifted_y))
+            frame_area = (x1 - x0) * (y1 - y0)
+            if frame_area <= 0 or (overlap_w * overlap_h) / frame_area >= 0.5:
+                shifted = (shifted_x, shifted_y)
+
+        if shifted is not None:
+            origin_x, origin_y = shifted
+        else:
+            # No shift applied (or the implausible-result check above
+            # rejected it): if the native-scale content doesn't even
+            # fit within the frame, centring alone shows an arbitrary
+            # *crop* -- confirmed against the same real document (its
+            # own UK-relief inset map, nested within a GroupFrame, one
+            # of the 3 unexplained cases above): centred at native
+            # scale, the frame's own small clip window happened to
+            # land on the South-West of Great Britain instead of
+            # Norfolk, the actual region the map exists to show.
+            # Shrinking the content to fit entirely within the frame
+            # first is never going to match Impression's own real,
+            # presumably-cropped rendering exactly, but it guarantees
+            # the whole, correctly-proportioned picture -- including
+            # whatever the crop was meant to draw attention to -- is
+            # at least visible somewhere in the frame, rather than an
+            # unpredictable, possibly wrong-region slice of it at full
+            # size.
+            frame_w, frame_h = x1 - x0, y1 - y0
+            if displayed_w > frame_w or displayed_h > frame_h:
+                fit_scale = min(frame_w / displayed_w if displayed_w else 1.0, frame_h / displayed_h if displayed_h else 1.0)
+                sx *= fit_scale
+                sy *= fit_scale
+                displayed_w *= fit_scale
+                displayed_h *= fit_scale
+            origin_x = x0 + max(0.0, (frame_w - displayed_w) / 2.0)
+            origin_y = y0 + max(0.0, (frame_h - displayed_h) / 2.0)
 
         def to_pt(dx: int, dy: int) -> tuple[float, float]:
             return origin_x + (dx - bounds.x0) * sx, origin_y + (dy - bounds.y0) * sy

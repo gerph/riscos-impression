@@ -1475,9 +1475,9 @@ def test_master_furniture_is_rebased_onto_the_content_page(tmp_path):
     assert not converter.log.has_errors()
 
 
-def _picture_document(picture_bytes: bytes, *, x0=0, y0=0, x1=100000, y1=100000):
+def _picture_document(picture_bytes: bytes, *, x0=0, y0=0, x1=100000, y1=100000, **picture_overrides):
     document, _unused = _document_with_one_text_frame()
-    picture = _picture(x0=x0, y0=y0, x1=x1, y1=y1, dictionary_index=1)
+    picture = _picture(x0=x0, y0=y0, x1=x1, y1=y1, dictionary_index=1, **picture_overrides)
     page = PageGroup(
         page=Page(x0=0, y0=0, x1=100000, y1=150000, bleed=0, master_page_name=""),
         offset=1000,
@@ -1530,6 +1530,223 @@ def test_drawfile_path_renders_as_real_vector_fill_content(tmp_path):
     assert b"\nf\n" in data  # a real fill paint operator, not the placeholder's stroked box
     assert b"(\\[Draw\\])" not in data  # the old placeholder's label text
     assert not converter.log.has_errors()
+
+
+def _first_moveto_point(data: bytes) -> tuple[float, float]:
+    match = re.search(rb"([\d.-]+) ([\d.-]+) m\n", data)
+    assert match is not None, data
+    return float(match.group(1)), float(match.group(2))
+
+
+def test_page_positioned_picture_xshift_yshift_anchors_content_to_the_frames_own_box(tmp_path):
+    # Regression test: the user reported a real document (FieldWork)
+    # rendering a location-marker map with its label cut off and the
+    # marker landing nowhere near its real-world location -- confirmed
+    # to be xshift/yshift being ignored entirely (the picture's content
+    # was simply centred in its frame instead). xshift/yshift anchor
+    # the drawfile content's own bottom-left corner at (-xshift,
+    # -yshift) from the frame's own bottom-left -- x confirmed against
+    # the exact millimetre value read directly from Impression's own
+    # picture info dialog for a real picture; y initially assumed
+    # (wrongly) to be positive, matching the original C DDL emitter's
+    # own "picturedata" block verbatim (`c/frames`' ixpictdata():
+    # `{y %d}` with `pictp->yshift`, no negation) -- but a second real
+    # picture's own dialog reading confirmed negative instead (see
+    # _draw_drawfile_picture's own docstring for the full numeric
+    # confirmation, including a geometric cross-check against the
+    # first picture too: negated y gives that picture perfect overlap
+    # with its own frame, versus merely good with positive y). A
+    # 40x40pt square drawfile in a 40x40pt frame (so the shifted
+    # content still overlaps the frame comfortably, i.e. the fallback
+    # in the sibling test below doesn't kick in here) confirms this:
+    # changing xshift/yshift by a known amount must shift the drawn
+    # content by exactly that amount, in the expected direction.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 25600, 25600), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 25600, 25600))
+
+    baseline = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=0, yshift=0)
+    out0 = tmp_path / "baseline.pdf"
+    PDFConverter(baseline).convert(out0)
+    x0, y0 = _first_moveto_point(out0.read_bytes())
+
+    shifted = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, yshift=500)
+    out1 = tmp_path / "shifted.pdf"
+    PDFConverter(shifted).convert(out1)
+    x1, y1 = _first_moveto_point(out1.read_bytes())
+
+    # xshift=1000 (1pt) -> content moves LEFT by 1pt (origin_x = x0 -
+    # xshift/UNIT); yshift=500 (0.5pt) -> content moves DOWN by 0.5pt
+    # (origin_y = y0 - yshift/UNIT).
+    assert round(x1 - x0, 3) == -1.0
+    assert round(y1 - y0, 3) == -0.5
+
+
+def test_picture_xshift_anchor_moves_inward_by_the_frames_own_hinset(tmp_path):
+    # Regression test: the user supplied a third real document's own
+    # dialog reading, for a second (ungrouped) picture on the same
+    # page as the one confirming the sign/anchor formula above:
+    # x=-17.87mm, y=-4.09mm, scale=70%, against raw xshift=44995,
+    # yshift=11595, xscale=93623, hinset=vinset=5669. y and scale
+    # matched the existing formula exactly, but x was off by exactly
+    # hinset/UNIT in mm (5669 raw = 2.00mm -- and the discrepancy
+    # between the naive x and the dialog reading was exactly 2.00mm
+    # too, to the thousandth of a millimetre): x's own anchor moves
+    # inward by the frame's own hinset -- x0+hinset for an ungrouped
+    # picture, x1-hinset for a grouped one. A third real picture (the
+    # document's own wind-direction diagram, hinset=0) matched the
+    # unmodified formula exactly on its own, confirming this is a
+    # correction for hinset specifically, not a change to the base
+    # formula.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 25600, 25600), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 25600, 25600))
+
+    no_inset = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, hinset=0)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(no_inset).convert(out_a)
+    xa, _ = _first_moveto_point(out_a.read_bytes())
+
+    with_inset = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, hinset=2000)
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(with_inset).convert(out_b)
+    xb, _ = _first_moveto_point(out_b.read_bytes())
+
+    # hinset=2000 (2pt) -> content moves 2pt to the RIGHT (inward from
+    # the frame's own left edge, still anchored there since this
+    # picture is ungrouped).
+    assert round(xb - xa, 3) == 2.0
+
+
+def test_grouped_picture_xshift_anchors_from_the_frames_right_edge_not_left(tmp_path):
+    # Regression test: the user reported a real document's own
+    # location-marker map (a *grouped* picture, nested in a
+    # GroupFrame) still pointing at the wrong place -- "just south of
+    # Birmingham" -- after the sibling test's own sign fix. Supplying
+    # the picture's own dialog-reported drawfile size (101.65mm x
+    # 126.58mm) confirmed the scale/size formula was already exactly
+    # right (matches this project's own bounds x display-scale
+    # calculation to the hundredth of a millimetre), narrowing the
+    # remaining bug to x positioning specifically -- y already matched
+    # the frame's own height exactly, but x covered under a fifth of
+    # the frame's own width, as if x were anchored somewhere else
+    # entirely. It was: a grouped picture's own x is anchored from the
+    # frame's own *right* edge, not its left, unlike every ungrouped
+    # picture confirmed so far (see _draw_drawfile_picture's own
+    # docstring for the full numeric confirmation, including a
+    # geometric cross-check against the ungrouped picture that
+    # confirmed the sign fix -- anchoring *it* from the right edge
+    # instead makes its own overlap markedly worse, confirming the
+    # split is real, not a coincidence specific to one picture).
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 25600, 25600), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 25600, 25600))
+
+    # Frame wider than the (40pt) content, so a reasonable xshift can
+    # still land the right-anchored content within it -- unlike the
+    # sibling test's own 40x40pt frame, sized to exactly match a
+    # left-anchored picture's own content instead.
+    grouped_a = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=48000, yshift=0, grouped=True)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(grouped_a).convert(out_a)
+    xa, _ = _first_moveto_point(out_a.read_bytes())
+
+    grouped_b = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=47000, yshift=0, grouped=True)
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(grouped_b).convert(out_b)
+    xb, _ = _first_moveto_point(out_b.read_bytes())
+
+    # xshift 1pt smaller -> content moves 1pt to the RIGHT (still
+    # anchored from the frame's own right edge, x1=80pt).
+    assert round(xb - xa, 3) == 1.0
+    assert round(xa, 3) == 80.0 - 48.0  # anchored at x1, not x0
+
+    # The same-shaped picture, ungrouped, anchors from x0 instead --
+    # a small xshift (so the shift stays trustworthy against a frame
+    # sized to match the content, as in the sibling test above) lands
+    # near the frame's own left edge, not its right.
+    ungrouped = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, yshift=0, grouped=False)
+    out_c = tmp_path / "c.pdf"
+    PDFConverter(ungrouped).convert(out_c)
+    xc, _ = _first_moveto_point(out_c.read_bytes())
+    assert round(xc, 3) == -1.0
+
+
+def test_page_positioned_picture_falls_back_to_centring_when_the_shift_would_leave_the_frame_mostly_empty(tmp_path):
+    # Regression test: the same real document (FieldWork) also has 2
+    # page-positioned pictures, both nested in the same GroupFrame,
+    # whose own xshift/yshift, applied via the formula confirmed by
+    # the sibling test above, land the content with little or no
+    # overlap with the frame at all -- as if anchored against
+    # something other than this frame's own box, for reasons not yet
+    # understood (see _draw_drawfile_picture's own docstring). Since a
+    # real picture frame is never deliberately left almost entirely
+    # empty, this is treated as a sign the shift isn't trustworthy for
+    # that picture and centring is used instead. A drawfile much
+    # bigger than its own frame, shifted so far (in both x and y, well
+    # beyond anything a real document would use, so this doesn't
+    # depend on either axis's own sign convention) the two barely
+    # overlap, must render identically regardless of the exact
+    # (wildly different) shift values -- both fall back to the same
+    # centred position.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(256000, 0) + line(256000, 256000) + line(0, 256000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 256000, 256000), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 256000, 256000))
+
+    document_a = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=2000000, yshift=1000000)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(document_a).convert(out_a)
+    xa, ya = _first_moveto_point(out_a.read_bytes())
+
+    document_b = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=-3000000, yshift=5000000)
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(document_b).convert(out_b)
+    xb, yb = _first_moveto_point(out_b.read_bytes())
+
+    assert (xa, ya) == (xb, yb)
+
+
+def test_untrustworthy_shift_shrinks_oversized_content_to_fit_instead_of_cropping(tmp_path):
+    # Regression test: the user reported the sibling test's own real
+    # document (FieldWork) still showing the *wrong region* on one of
+    # its 2 grouped/nested pictures after the centring fallback above
+    # -- a UK-relief inset map whose own native-scale content is much
+    # bigger than its frame landed, once centred, on the South-West of
+    # Great Britain instead of Norfolk (the region the map exists to
+    # show), since centring alone still only shows an arbitrary crop.
+    # When the fallback's own content doesn't fit the frame at native
+    # scale, it's now shrunk (preserving aspect ratio) until it does,
+    # guaranteeing the *whole* picture is visible somewhere in the
+    # frame -- never matching Impression's own real, presumably-cropped
+    # rendering exactly, but never hiding the one region a crop might
+    # have been aimed at either.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(256000, 0) + line(256000, 256000) + line(0, 256000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 256000, 256000), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 256000, 256000))
+
+    document = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=2000000, yshift=1000000)
+    out = tmp_path / "out.pdf"
+    PDFConverter(document).convert(out)
+    data = out.read_bytes()
+
+    # Every coordinate the path's own corners are drawn at (both "m"
+    # and "l" operators) must fall within the frame's own [0,40] box
+    # on both axes -- nothing cropped away, unlike native-scale
+    # centring, which would have put at least one corner well outside.
+    coords = [float(v) for v in re.findall(r"([\d.]+) [\d.]+ [ml]\n", data.decode("latin-1"))]
+    coords += [float(v) for v in re.findall(r"[\d.]+ ([\d.]+) [ml]\n", data.decode("latin-1"))]
+    assert coords  # sanity: the path was actually found
+    assert all(-0.01 <= c <= 40.01 for c in coords)
 
 
 def test_drawfile_sprite_sub_object_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
