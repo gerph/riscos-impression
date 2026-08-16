@@ -1,7 +1,7 @@
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import ChapterNumberMark, MergeMark, Paragraph, Run, Story
+from riscos_impression.model.story import ChapterNumberMark, EmbedMark, MergeMark, Paragraph, Run, Story
 from riscos_impression.output.html_scrolling import ScrollingHTMLConverter
 
 from tests.test_output_ovprodll import _picture
@@ -100,6 +100,46 @@ def test_drawfile_picture_frame_renders_as_real_svg_content(tmp_path):
     assert "<svg " in text
     assert "<path " in text
     assert "<img" not in text
+    assert not converter.log.has_errors()
+
+
+def test_embed_tagged_picture_frame_is_not_also_drawn_independently(tmp_path):
+    """Regression test: the user reported PCI_Spec's 3 DrawFile diagrams
+    appearing repeated (once inline, once again independently, near
+    the end of the document) in scrolling HTML. A PictureFrame with a
+    non-zero embed_tag is anchored inline within a text story at the
+    matching EmbedMark's own position (_render_embed), not drawn again
+    at its own top-level position in the page's frame list -- mirrors
+    html_paged.py's own, already-fixed _render_frame check (and
+    pdfdoc.py's _draw_frame) exactly. This converter has no page
+    geometry of its own, so a leaked independent draw doesn't show up
+    at a visibly wrong position the way it did for html_paged.py --
+    it just renders twice, wherever the raw frame happens to sit in
+    the page's flat frame list (in PCI_Spec, at the very end)."""
+    text_frame = _frame(dictionary_index=0)
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    picture_frame = _picture(x0=500000, y0=500000, x1=560000, y1=540000, embed_tag=42, dictionary_index=1)
+    document, _ = _document_with_frames(
+        [_frame_record(1008, text_frame), _frame_record(1108, picture_frame)]
+    )
+    text_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    picture_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.extend([text_entry, picture_entry])
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    story = Story(
+        frame_chain=(),
+        paragraphs=(Paragraph(items=(Run(text="Before", style_slots=()), EmbedMark(embed_tag=42))),),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert text.count("<svg ") == 1
     assert not converter.log.has_errors()
 
 

@@ -1444,6 +1444,75 @@ riscos-impression/
   code before being fixed. Full suite (335 tests) green; re-validated
   across all 111 real documents with 0 crashes.
 
+* **Post-Stage-14 fix (20)**: a further reference image
+  (PCISpec-HTMLPagedContents2.png) showed fix (19)'s title block now
+  correct, but the Contents list's own two-digit chapter numbers
+  (10-14) still badly broken -- chapter number, name, and page number
+  all overlapping/misplaced, while single-digit chapters (1-9) were
+  fine. Root cause: `append_measured` unconditionally advanced
+  `cursor_pt` by a Run's own measured width, even while accumulating
+  text destined for a `position:absolute` span opened by a preceding
+  right/centre/decimal tab (`tab_span_open`). `cursor_pt` is already
+  set to that tab's own `stop_pt` when the tab is processed (a
+  right-aligned segment's own right edge lands exactly on the stop, by
+  construction), so adding the segment's width again on top
+  double-counted it. Invisible for narrow content (a single digit's
+  extra width still left `cursor_pt` short of the next stop) but wrong
+  for wider content (two digits' extra width pushed `cursor_pt` past
+  the intended next stop, so the following tab's "first stop past
+  cursor" search skipped it and landed on a later stop instead) --
+  confirmed by tracing chapter 10's row HTML against chapter 1's:
+  identical style/ruler, but the second tab resolved to a different
+  stop. Fixed by only advancing `cursor_pt` in `append_measured` when
+  `tab_span_open` is `False` -- text inside an absolute-positioned
+  span still renders normally, it just no longer affects where a
+  subsequent tab lands.
+
+  Numerically cross-checked the regenerated Contents list against the
+  already-validated PDF converter's own output: chapter 10's row page
+  number ("7") lands at frame-relative X 439.37pt in both, computed
+  independently (PDF via each span's own absolute bounding box minus
+  the frame's own left edge; HTML via the tab stop arithmetic). All 14
+  chapter rows now share the same number/name/page-number column
+  structure as chapters 1-9.
+
+  New regression test: a 3-stop right/left/right ruler mirroring the
+  real Contents list's own structure, with two rows differing only in
+  the first (right-tab) segment's width (1 vs 2 digits) -- confirms
+  the second and third tabs land on the same stops regardless,
+  confirmed to fail against the pre-fix code before being fixed. Full
+  suite (336 tests) green; re-validated across all 111 real documents
+  with 0 crashes.
+
+* **Post-Stage-14 fix (21)**: the user separately reported PCI_Spec's
+  3 DrawFile diagrams appearing repeated in the *scrolling* HTML
+  output (embed-tagged pictures, anchored inline in running text via
+  `EmbedMark`, rendering twice: once inline at the correct position,
+  once more independently). This is exactly the bug fix (15), earlier
+  in this session, already fixed for `html_paged.py`'s own
+  `_render_frame` -- a `PictureFrame` with a non-zero `embed_tag` is
+  drawn inline at its matching `EmbedMark`'s position only, never
+  drawn again at its own raw, top-level position in the page's frame
+  list -- but `html_scrolling.py`'s own `_render_frame` never got the
+  equivalent check, so the same underlying bug persisted there,
+  unnoticed until now. Confirmed against the real document: 3 unique
+  `<svg>` diagrams, each present twice (6 total) in the pre-fix
+  output, all 6 identical in pairs by content hash; the second copy of
+  each fell wherever the frame happened to sit in the page's flat
+  frame list (in this document, at the very end -- hence "on the last
+  page" in the user's report, even though this converter has no page
+  concept of its own). Fixed by adding the identical `embed_tag` skip
+  check to `html_scrolling.py`'s `_render_frame`.
+
+  New regression test, modelled directly on html_paged.py's own
+  `test_embed_tagged_picture_frame_is_not_also_drawn_independently`:
+  a text frame with an inline `EmbedMark` plus a separate,
+  embed-tagged `PictureFrame` placed at an unrelated raw page
+  position; confirms exactly one `<svg>` renders, confirmed to fail
+  against the pre-fix code before being fixed. Full suite (337 tests)
+  green; re-validated across all 111 real documents (both html-paged
+  and html-scroll) with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

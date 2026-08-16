@@ -108,6 +108,20 @@ class ScrollingHTMLConverter(HTML5Converter):
         return "".join(parts)
 
     def _render_frame(self, frame: Frame, chapter: Chapter) -> str:
+        if frame.embed_tag:
+            # Anchored inline within a text story instead, at the
+            # matching EmbedMark's own position (_render_embed) --
+            # never drawn again at its own top-level position in the
+            # page's frame list; mirrors html_paged.py's own
+            # _render_frame check (and pdfdoc.py's _draw_frame) exactly.
+            # Confirmed against a real document (PCI_Spec): 3 DrawFile
+            # diagrams embedded inline in running text were rendered
+            # once inline (correct) and a second time at their own raw
+            # frame position (this converter has no page geometry, so
+            # that raw position just falls wherever the frame happens
+            # to sit in the page's frame list -- in this document, at
+            # the very end).
+            return ""
         if isinstance(frame, (GuideFrame, GroupFrame)):
             return ""  # non-printing / no visual content of its own
         if isinstance(frame, PictureFrame):

@@ -351,6 +351,75 @@ def test_tab_skips_a_stop_the_cursor_has_already_passed():
     assert round(long_width + spacer_width(long_row), 1) == 150.0
 
 
+def test_right_tabbed_segment_does_not_double_count_its_own_width():
+    # A right-tab's own segment is rendered position: absolute -- out
+    # of normal flow -- so its own text width must NOT additionally
+    # advance the cursor a second tab has to search past (cursor_pt is
+    # already set to that stop's own position when the governing tab
+    # is processed). Confirmed against a real document (PCI_Spec): a
+    # numbered-contents row's own two-digit chapter number ("10"-"14",
+    # right-aligned) is wider than a single digit's, and before this
+    # fix that extra width pushed the cursor for the *next* tab in the
+    # same row (a left tab for the chapter name) far enough to skip
+    # over its own, nearer stop entirely and land on the page-number
+    # column's stop instead -- the "chapter names overlapping/
+    # misplaced" symptom. This mirrors that row's own three-stop
+    # right/left/right ruler, with only the first segment's width
+    # varying between the two rows.
+    style = _style(
+        1,
+        font_size=160,
+        tab_stops=(
+            TabStop(kind=2, position=113385),
+            TabStop(kind=0, position=121889),
+            TabStop(kind=2, position=396850),
+        ),
+        left_indent=121889,
+        first_indent_absolute=121889 - 93544,
+    )
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160), style])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+
+    single_digit_row = converter._render_items(
+        (
+            TabMark(),
+            Run(text="1", style_slots=(1,)),
+            TabMark(),
+            Run(text="History", style_slots=(1,)),
+            TabMark(),
+            Run(text="2", style_slots=(1,)),
+        ),
+        0, None, style, 510.24,
+    )
+    double_digit_row = converter._render_items(
+        (
+            TabMark(),
+            Run(text="10", style_slots=(1,)),
+            TabMark(),
+            Run(text="External Dependencies", style_slots=(1,)),
+            TabMark(),
+            Run(text="7", style_slots=(1,)),
+        ),
+        0, None, style, 510.24,
+    )
+
+    import re
+
+    def spans(html: str) -> list[str]:
+        return re.findall(r'style="([^"]*)"', html)
+
+    # Both rows' second (chapter-name) tab must resolve to the SAME
+    # left-tab spacer stop, and their third (page-number) tab to the
+    # SAME right-tab position -- regardless of the first segment's own
+    # (1 vs 2 digit) width.
+    assert "display:inline-block;width:8.50pt" in single_digit_row
+    assert "display:inline-block;width:8.50pt" in double_digit_row
+    assert single_digit_row.count("left:274.96pt") == 1
+    assert double_digit_row.count("left:274.96pt") == 1
+    assert ">External Dependencies<" in double_digit_row
+    assert ">7<" in double_digit_row
+
+
 def test_left_tab_stays_in_normal_flow_and_does_not_overlap_later_rows(tmp_path):
     # Regression test: the user supplied a reference image (PCISpec-
     # HTMLPagedOverwrite.png) showing PCI_Spec's "On Entry:"/"On Exit:"

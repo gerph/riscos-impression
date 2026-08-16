@@ -740,7 +740,25 @@ class PagedHTMLConverter(HTML5Converter):
         def append_measured(text: str) -> None:
             nonlocal cursor_pt
             buffer.append(text)
-            cursor_pt += _approx_width(text, current_style)
+            if not tab_span_open:
+                # A centre/right/decimal-governed segment is rendered
+                # position: absolute -- out of normal flow entirely, so
+                # (matching a browser's own layout, and pdfdoc.py's own
+                # x = the segment's own already-aligned right edge,
+                # which coincides with the stop by construction) its
+                # own text must NOT advance the cursor a second time on
+                # top of the stop position cursor_pt was already set to
+                # when the tab was processed. Confirmed against a real
+                # document (PCI_Spec): a numbered-contents row's own
+                # two-digit chapter number ("10"-"14", right-aligned)
+                # is wider than a single digit's, and adding its width
+                # here on top of its own stop pushed the cursor for the
+                # *next* tab in the same row far enough to skip over
+                # the chapter-name column's own (nearer) left stop
+                # entirely, landing it on the page-number column's
+                # right stop instead -- exactly the "chapter names
+                # overlapping/misplaced" symptom reported.
+                cursor_pt += _approx_width(text, current_style)
 
         for item in items:
             if isinstance(item, Run):
