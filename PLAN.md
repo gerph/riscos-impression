@@ -1124,6 +1124,33 @@ riscos-impression/
     being fixed. Full suite (323 tests) green; re-validated across all
     111 real documents with 0 crashes in all five output formats.
 
+* **Post-Stage-14 fix (12)**: after fix (11), the user reported PCI_Spec
+  looked "much better" but still had three symptoms: bold/italic/
+  underline appeared to be missing everywhere, DrawFile SVG text was
+  wildly oversized and overlapping, and a paragraph's own literal
+  leading spaces (used as a poor man's first-line indent) weren't
+  showing. The user then spotted the real, single root cause
+  themselves from a raw HTML snippet: `style="font-family: Times,
+  "Times New Roman", serif; ...` -- `_FAMILY_HINTS` and
+  `_DEFAULT_FONT_STACK` (html_base.py) quoted multi-word font names
+  with `"`, but the CSS this produces is always embedded inside a
+  double-quoted HTML/SVG `style="..."` attribute; the embedded `"`
+  terminates that attribute early, silently corrupting every property
+  after `font-family` in the same style -- font-weight, font-style,
+  text-decoration, colour, and (in DrawFile SVG `<text>` elements, the
+  worst-affected case) `font-size` itself, which explains the "text
+  too big" report: with no font-size applied at all, SVG text renders
+  at the browser's own default. Fixed by using single quotes for the
+  font names instead (`'Times New Roman'` etc.) -- valid CSS either
+  way, and avoids the nesting entirely. One new regression test
+  asserts no font_family_css result ever contains a `"`. Full suite
+  (324 tests) green; re-validated across all 111 real documents with 0
+  crashes in both HTML formats.
+  (The leading-space indent issue is separate -- HTML collapses
+  literal leading/repeated spaces by default, unlike pdfdoc.py's own
+  manual token layout -- and is still open; likely fix is
+  `white-space: pre-wrap` on paragraph CSS.)
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

@@ -169,16 +169,24 @@ def colour_to_css(colour: Optional[Colour]) -> Optional[str]:
 #: (and anything unrecognised) falls through to the sans-serif stack --
 #: see choose_standard_font in pdfdoc.py for the same mapping used
 #: there for the PDF converter's standard-14 fonts.
+#: Single-quoted, not double -- these values are embedded inside a
+#: double-quoted HTML/SVG style="..." attribute (see css_style_attr and
+#: _drawfile_svg_text); a literal " here would terminate that attribute
+#: early and corrupt everything after it. Confirmed against a real
+#: document (PCI_Spec from the local examples/ corpus): every property
+#: following a quoted font name in the same style attribute (bold,
+#: italic, colour, and -- in SVG -- font-size) was silently lost,
+#: since the browser stopped parsing the attribute at the embedded ".
 _FAMILY_HINTS = [
-    ("courier", '"Courier New", Courier, monospace'),
-    ("corpus", '"Courier New", Courier, monospace'),
-    ("system", '"Courier New", Courier, monospace'),
-    ("mono", '"Courier New", Courier, monospace'),
-    ("times", 'Times, "Times New Roman", serif'),
-    ("trinity", 'Times, "Times New Roman", serif'),
-    ("serif", 'Times, "Times New Roman", serif'),
+    ("courier", "'Courier New', Courier, monospace"),
+    ("corpus", "'Courier New', Courier, monospace"),
+    ("system", "'Courier New', Courier, monospace"),
+    ("mono", "'Courier New', Courier, monospace"),
+    ("times", "Times, 'Times New Roman', serif"),
+    ("trinity", "Times, 'Times New Roman', serif"),
+    ("serif", "Times, 'Times New Roman', serif"),
 ]
-_DEFAULT_FONT_STACK = '"Helvetica Neue", Helvetica, Arial, sans-serif'
+_DEFAULT_FONT_STACK = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
 
 def _font_family_css_for_name(font_style_name: Optional[str]) -> str:

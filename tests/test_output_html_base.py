@@ -55,6 +55,21 @@ def test_style_css_properties_bold_italic_underline():
     assert props["text-decoration"] == "underline"
 
 
+def test_font_family_css_never_contains_a_double_quote():
+    # Regression test: a real document (PCI_Spec from the local
+    # examples/ corpus) lost every property AFTER font-family in a
+    # style attribute (bold, italic, colour, and -- in DrawFile SVG
+    # text -- font-size) whenever the resolved font mapped to a quoted
+    # font-family name (e.g. "Times New Roman", "Courier New",
+    # "Helvetica Neue"): css_style_attr's result is embedded inside a
+    # double-quoted HTML/SVG style="..." attribute, so a literal "
+    # within the CSS value itself terminates that attribute early,
+    # corrupting everything after it. Every font-family value must use
+    # single quotes internally instead.
+    for name in ("Homerton.Medium", "Trinity.Medium", "Corpus.Medium", "Unknown.Font"):
+        assert '"' not in font_family_css(_style(1, font_style_name=name))
+
+
 def test_style_css_properties_omits_absent_fields():
     style = _style(1, is_body_text=True)
     props = style_css_properties(style, [])
