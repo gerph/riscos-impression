@@ -101,6 +101,39 @@ def test_approx_width_courier_is_exact_afm_value():
 
 
 # ---------------------------------------------------------------------------
+# PDF string encoding
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_str_transcodes_smart_quotes_to_winansi_bytes():
+    from riscos_impression.output.pdfdoc import _pdf_str
+
+    # “/” (curly double quotes, as RISC OS Latin1's C1 range
+    # now decodes to -- see encoding.py) sit at 0x93/0x94 in
+    # WinAnsiEncoding/cp1252, the encoding every text font here
+    # declares. Regression test: these used to come out as literal '?'
+    # once the content stream's own blanket latin-1 encode step ran,
+    # since code points above U+00FF aren't representable in Latin-1
+    # at all.
+    assert _pdf_str("“Galadriel”") == "(\x93Galadriel\x94)"
+
+
+def test_pdf_str_escapes_parens_and_backslash():
+    from riscos_impression.output.pdfdoc import _pdf_str
+
+    assert _pdf_str(r"a (b) \ c") == r"(a \(b\) \\ c)"
+
+
+def test_pdf_str_unrepresentable_character_falls_back_to_question_mark():
+    from riscos_impression.output.pdfdoc import _pdf_str
+
+    # A character with no WinAnsiEncoding/cp1252 equivalent at all (as
+    # opposed to one that just needs transcoding) has no better option
+    # in a single-byte PDF text string.
+    assert _pdf_str("中") == "(?)"
+
+
+# ---------------------------------------------------------------------------
 # Colour
 # ---------------------------------------------------------------------------
 

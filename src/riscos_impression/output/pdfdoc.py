@@ -191,7 +191,19 @@ def _pdf_escape(text: str) -> str:
 
 
 def _pdf_str(text: str) -> str:
-    return f"({_pdf_escape(text)})"
+    """A PDF literal string for *text*. Every text font this converter
+    declares, other than Symbol/ZapfDingbats (which use their own
+    built-in glyph encoding, not a text-encoding table -- see
+    STANDARD_FONTS' /Encoding setup), is declared as WinAnsiEncoding,
+    so *text* is transcoded through the equivalent Windows-1252 codec
+    here rather than left to the content stream's own final latin-1
+    encode step (see end_page) -- which would otherwise silently
+    replace any character above U+00FF with '?', including every RISC
+    OS smart quote/dash/ligature (see encoding.py; these decode to
+    real Unicode code points, not raw Latin-1 ones)."""
+    escaped = _pdf_escape(text)
+    raw = escaped.encode("cp1252", errors="replace")
+    return "(" + raw.decode("latin-1") + ")"
 
 
 def _fmt(value: float) -> str:

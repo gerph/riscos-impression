@@ -351,6 +351,26 @@ riscos-impression/
   a picture obstacle pushing text past it, and a repel-flagged frame no
   longer obstructing itself. Commit: *"Add dynamic text repel around
   obstacle frames"*.
+* **Post-Stage-14 fix**: once the RISC OS Latin1 decode fix (see Stage 5's
+  addendum) made real Unicode characters reach the PDF converter for the
+  first time -- curly quotes, dashes, ligatures -- `_pdf_str`'s final
+  content-stream encode step (`.encode("latin-1", errors="replace")` in
+  `end_page`) silently replaced every one of them with a literal `?`,
+  since none of those code points are representable in Latin-1 at all
+  (this had never been visible before, because the previous bug meant
+  the converter had only ever seen raw 0x80-0x9F byte values, which
+  *are* representable in Latin-1, just as the wrong, invisible C1
+  control characters). Fixed by transcoding through Windows-1252 in
+  `_pdf_str` itself -- the encoding every text font here declares via
+  `/Encoding /WinAnsiEncoding`, and a near-exact match for it -- before
+  the later blanket Latin-1 pass-through. Confirmed against the real
+  document that prompted the original report (`Fletcher,bc5`): the
+  curly-quoted address now extracts and renders correctly. A handful of
+  RISC OS Latin1 characters WinAnsiEncoding itself has no slot for at
+  all (W/Y-circumflex, the RISC OS resize/close icon glyphs) still fall
+  back to `?` -- a genuine, narrow limitation of a single-byte PDF text
+  encoding, not a bug, and out of scope to fix without embedding a
+  custom font program.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS
