@@ -520,6 +520,39 @@ riscos-impression/
   the footer's right-aligned text is back and the whole Contents list
   now lands on three consistent columns, matching the document's own
   reference images and its own exported DDL tab rulers exactly.
+* **Post-Stage-14 fix (6)**: the previous right_indent overflow
+  fallback (see above) was too coarse -- it reset *both* the line's
+  start and right edge back to the container's own full width whenever
+  the two, taken together, left no usable room. That's correct when
+  right_indent alone is the problem (a ruler set up for a wider
+  frame), but a real document's title-block style (PCI_Spec's "Control
+  Info", confirmed against the user's own reference image and directly
+  against Impression's own ruler dialog -- a left bound of about 4cm)
+  deliberately combines a large left_indent (a label column) with a
+  right_indent close to the frame's own full width, since its real
+  content is always short and tab-terminated. Resetting line_start
+  back to 0 as well wiped out that real, intentional hanging indent,
+  left-aligning every label flush against the frame's edge instead of
+  under its intended column. Fixed by only dropping the right margin
+  when the left position alone still leaves enough usable room,
+  falling back to the full container width only when it doesn't.
+  Re-validated against all 48 real documents: 0 crashes. Confirmed
+  against PCI_Spec (extracted word coordinates) that every title-block
+  label now starts at its own intended left column instead of the
+  frame's own edge.
+* **Post-Stage-14 fix (7)**: the user described a real frame's border
+  configuration precisely (top and bottom borders only, confirmed
+  against Impression's own ruler dialog) that let the previously-
+  unconfirmed border0..border3-to-physical-edge mapping finally be
+  established with confidence: border0=top, border1=left, border2=
+  right, border3=bottom -- exactly the clockwise-from-top order the
+  OvProDDL converter's own (border0, border2, border3, border1)
+  reordering already encoded, not an arbitrary permutation as the
+  format doc previously (correctly, at the time) described it.
+  Documented in docs/impression-documents.xml; per-edge border
+  rendering in pdfdoc.py/html_paged.py (currently draw/CSS a full
+  rectangle whenever *any* edge has a border) is a following, not yet
+  implemented, piece of work.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS

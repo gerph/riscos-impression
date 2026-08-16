@@ -1479,20 +1479,44 @@ class PDFConverter(Converter):
                 if right_edge - line_start < _MIN_USABLE_WIDTH:
                     # The paragraph's own indent settings alone (no
                     # obstacle involved) already eliminate all usable
-                    # width in this container -- almost always a style
-                    # whose ruler was set up for a different, usually
-                    # wider, frame (styles are shared across frames of
-                    # any size; compare the tab-ruler note in
-                    # _next_tab_stop for the same class of issue).
-                    # Falling back to the container's own full width is
-                    # safer than leaving it in place: the "obstacle
-                    # leaves no room" skip below would otherwise burn
-                    # through this container, then the whole chain,
-                    # without ever placing this paragraph -- and since
-                    # its tokens are never consumed, every later
-                    # paragraph in the story would be silently dropped
-                    # too, not just this one.
-                    line_start, right_edge = cx0, cx1
+                    # width in this container. Two different real
+                    # causes need two different fixes here:
+                    #  - right_indent alone (with a normal/zero left
+                    #    indent) can be set up for a much wider frame
+                    #    than the one it's actually used in (styles are
+                    #    shared across frames of any size; compare the
+                    #    tab-ruler note in _next_tab_stop for the same
+                    #    class of issue) -- falling back to the
+                    #    container's own full width is the safe, general
+                    #    fix.
+                    #  - right_indent can *also* be set to (near) the
+                    #    frame's own full width deliberately, on a
+                    #    paragraph whose real content is short and
+                    #    tab-terminated (a label before a value column,
+                    #    say -- confirmed against a real document's
+                    #    title-block style, whose "left bound" the user
+                    #    could read directly off Impression's own ruler
+                    #    dialog). Resetting line_start back to the
+                    #    container's own left edge as well, on top of
+                    #    dropping the right margin, wiped out that
+                    #    paragraph's real, intentional hanging first-
+                    #    line indent -- confirmed against the user's own
+                    #    reference image, where the label column should
+                    #    start well right of the frame's own edge, not
+                    #    flush against it.
+                    # Preferring to drop only the right margin (keeping
+                    # line_start as computed) handles both: if
+                    # line_start alone already leaves no usable room
+                    # either, the full container width is still the
+                    # fallback -- the "obstacle leaves no room" skip
+                    # below would otherwise burn through this container,
+                    # then the whole chain, without ever placing this
+                    # paragraph, silently dropping every later paragraph
+                    # in the story too, not just this one.
+                    if cx1 - line_start >= _MIN_USABLE_WIDTH:
+                        right_edge = cx1
+                    else:
+                        line_start, right_edge = cx0, cx1
                 obstacles = obstacles_by_key.get(key)
                 if obstacles:
                     line_start, right_edge = _narrow_for_obstacles(

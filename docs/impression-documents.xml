@@ -395,10 +395,10 @@ exactly A4's PDF-point dimensions (595.276 x 841.890 pt) scaled by
 <offset number="48" name="backcolour" data-size="4">Inline colour value word for the frame's fill colour; see "Inline colour value words". Meaningful only when the "filled" flag bit is set.</offset>
 <offset number="52" name="hinset" data-size="4">Horizontal inset margin between the frame's outer box and its text/content area.</offset>
 <offset number="56" name="vinset" data-size="4">Vertical inset margin.</offset>
-<offset number="60" name="border0" data-size="1">Border style for one edge of the frame; 0xFF means no border is drawn on that edge, any other value indicates a border is present. See the note below.</offset>
-<offset number="61" name="border1" data-size="1">Border style for another edge; see border0.</offset>
-<offset number="62" name="border2" data-size="1">Border style for another edge; see border0.</offset>
-<offset number="63" name="border3" data-size="1">Border style for the remaining edge; see border0.</offset>
+<offset number="60" name="border0" data-size="1">Border style for the frame's top edge; 0xFF means no border is drawn on that edge, any other value indicates a border is present. See the note below.</offset>
+<offset number="61" name="border1" data-size="1">Border style for the frame's left edge; see border0.</offset>
+<offset number="62" name="border2" data-size="1">Border style for the frame's right edge; see border0.</offset>
+<offset number="63" name="border3" data-size="1">Border style for the frame's bottom edge; see border0.</offset>
 <offset number="64" name="bordercolour" data-size="4">Inline colour value word for the border; see "Inline colour value words". A value of -1 means no colour override (a default colour is used).</offset>
 <offset number="68" name="embedtag" data-size="4">Non-zero tag value. Frames with a non-zero embedtag are anchored inline within a text story, at the point a matching CTRL_S embedded-object marker occurs (see "Text Story Data"), rather than being placed directly on the page in normal front-to-back order.</offset>
 <offset number="72" name="groupn" data-size="1">Group number this frame belongs to, meaningful when the "grouped" flag bit is set (see "Frame flags word"); 0 = not grouped.</offset>
@@ -407,13 +407,16 @@ exactly A4's PDF-point dimensions (595.276 x 841.890 pt) scaled by
 </offset-table>
 </p>
 <p>
-The exact meaning of a non-0xFF border value, and the mapping of
-border0..border3 to the frame's physical top, left, bottom, and right
-edges, could not be established with confidence from the conversion
-source. The converter reorders them as (border0, border2, border3,
-border1) when building a four-bit edge-presence mask for its own
-output, which rules out a simple clockwise or "top, left, bottom,
-right" ordering, but does not by itself reveal the true one.
+The mapping of border0..border3 to the frame's physical top, left,
+right, and bottom edges is confirmed empirically (a real document's
+frame, with border0 and border3 present and border1/border2 both
+0xFF, was confirmed against Impression's own ruler dialog to have a
+border on its top and bottom edges only): border0 is top, border1 is
+left, border2 is right, border3 is bottom. The converter's own
+(border0, border2, border3, border1) reordering, used when building a
+four-bit edge-presence mask for its own DDL `{border}` output, is
+exactly this same top/left/right/bottom order read out clockwise from
+the top -- not an arbitrary permutation.
 </p>
 
 <subsubsection title="Frame flags word">

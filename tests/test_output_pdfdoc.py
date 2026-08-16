@@ -1,3 +1,5 @@
+import re
+
 from riscos_impression.model.colours import Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
@@ -540,6 +542,68 @@ def test_oversized_right_indent_falls_back_to_the_full_container_width(tmp_path)
     assert b"(Indented) Tj" in data
     assert b"(AfterIt) Tj" in data
     assert not converter.log.has_errors()
+
+
+def test_oversized_right_indent_preserves_a_real_intentional_left_indent(tmp_path):
+    """Regression test: a real document's title-block style (PCI_Spec)
+    has BOTH a large left_indent (a label column, ~113pt in) and a
+    right_indent set to nearly the frame's own full width -- confirmed
+    against the user's own reference image (labels like "Distribution:"
+    start well right of the frame's own edge) and against Impression's
+    own ruler dialog (a "left bound" of about 4cm). The general
+    right_indent fallback above (dropping BOTH margins back to the
+    container's full width) wiped out this real, intentional indent,
+    left-aligning every label flush against the frame's own edge
+    instead. Only the right margin should be dropped when the left
+    position alone still leaves enough room."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    # Frame is 300pt wide; left_indent of 113pt leaves 187pt of real
+    # room, comfortably above _MIN_USABLE_WIDTH, but right_indent is
+    # set to 295pt (near the frame's own width), which alone would
+    # leave under 10pt if line_start were also reset to 0.
+    labelled = _style(1, font_size=160, left_indent=113000, right_indent_raw=295000, paragraph_apply=True)
+    frame = _frame(x0=0, y0=0, x1=300000, y1=100000, dictionary_index=0)
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=300000, y1=150000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, frame),),
+    )
+    section = _section(create_number=1, master_page_index=0)
+    master_page = PageGroup(
+        page=Page(x0=0, y0=0, x1=300000, y1=150000, bleed=0, master_page_name=""), offset=100, records=(),
+    )
+    header = _header(mainpages2=900, masterpages1=50, contents2=100000)
+    chapter = Chapter(
+        section=section, offset=900, master_page_1=master_page, master_page_2=None, pages=(page,)
+    )
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document = _document(
+        chapters=[chapter], master_pages=[master_page], styles=[body, labelled], header=header
+    )
+    document.dictionary.append(dict_entry)
+    story = Story(
+        frame_chain=(),
+        paragraphs=(Paragraph(items=(Run(text="Distribution:", style_slots=(1,)),)),),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+    content = data.decode("latin-1")
+
+    assert "(Distribution:) Tj" in content
+    assert not converter.log.has_errors()
+
+    # The label's own Tm x-coordinate must reflect the real 113pt
+    # indent, not 0 (which is what unconditionally resetting line_start
+    # back to the container's own left edge would produce).
+    match = re.search(r"1 0 0 1 ([\d.]+) [\d.]+ Tm\n.*?\(Distribution:\) Tj", content, re.S)
+    assert match is not None
+    assert float(match.group(1)) > 100.0
 
 
 def test_paragraph_tokens_leading_mark_uses_the_paragraphs_own_style():
