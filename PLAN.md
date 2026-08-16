@@ -246,6 +246,27 @@ riscos-impression/
 * `formats/eps.py`: header parse (per the documented layout) and
   pass-through byte access, ready for Stage 9's PDF converter.
 * Commit: *"Add conversion framework base class, logging, and embedded-format stubs"*.
+* **Post-Stage-14 fix**: `Converter.resolve_style()`'s cascade treated
+  `tab_stops` as fully non-cascading (always the body style's own
+  ruler, never a specific named style's), because a style with no tab
+  bits set decodes to an *empty* tuple rather than `None`, and folding
+  it into the generic "override if not None" cascade loop would have
+  let that empty ruler wrongly wipe out a real one already cascaded
+  from further out the stack. But excluding it entirely went too far
+  the other way: no named style's own ruler was ever actually used, by
+  any converter, anywhere -- confirmed against a real document
+  (PCI_Spec) and two of the user's own reference images, where every
+  tab-using paragraph across the whole page (a title block *and* its
+  Contents/TOC list) landed on inconsistent, wrong columns instead of
+  each other's own, differently-spaced rulers. Fixed with a dedicated
+  cascade step just for `tab_stops`: override only when the applied
+  style's own ruler is non-empty, otherwise keep whatever's already
+  cascaded -- the same "None means absent" rule every other field
+  already follows, just phrased for this field's own empty-tuple
+  sentinel. Re-validated against all 48 real documents across all five
+  output formats: 0 crashes. Visually confirmed against PCI_Spec's own
+  reference images that both the title block and the Contents list now
+  align correctly.
 
 ### Stage 8 — OvProDDL output (reference converter)
 * `output/ovprodll.py`: `OvProDDLConverter(Converter)`, porting the DDL

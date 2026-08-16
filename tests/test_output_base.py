@@ -6,7 +6,7 @@ from riscos_impression.io.source import DocumentSource
 from riscos_impression.model.document import FileHeader, ImpressionDocument
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import ObjectRecord, ObjectType, Page, Section, TextFrame
-from riscos_impression.model.styles import Style
+from riscos_impression.model.styles import Style, TabStop
 from riscos_impression.model.story import Story
 from riscos_impression.output.base import Converter, page_origin, to_page_coordinates
 from tests.fixtures.builders import build_header
@@ -133,6 +133,38 @@ def test_resolve_style_cascades_over_body():
     assert resolved.bold == 1
     assert resolved.italic == 0
     assert resolved.font_size == 160
+
+
+def test_resolve_style_tab_stops_from_a_named_style_override_body():
+    # Regression test: a real document (PCI_Spec from the local
+    # examples/ corpus) had every tab-using paragraph landing on
+    # inconsistent, wrong columns -- traced to tab_stops always
+    # resolving to the body style's own (much larger, differently
+    # spaced) ruler, never the specific named style's own one, because
+    # tab_stops was fully non-cascading. A style whose own ruler is
+    # non-empty must override, the same as any other cascading field.
+    body_ruler = (TabStop(kind=0, position=50000), TabStop(kind=0, position=100000))
+    style_ruler = (TabStop(kind=0, position=212598),)
+    body = _style(0, is_body_text=True, tab_stops=body_ruler)
+    named = _style(1, tab_stops=style_ruler)
+    converter = Converter(_document(styles=[body, named]))
+
+    resolved = converter.resolve_style([1])
+    assert resolved.tab_stops == style_ruler
+
+
+def test_resolve_style_tab_stops_empty_ruler_does_not_override_body():
+    # A style with no tab bits set of its own (tab_stops == ()) means
+    # "this style doesn't define a ruler", not "this style defines an
+    # empty one" -- it must fall through to whatever's already
+    # cascaded, exactly like None does for every other field.
+    body_ruler = (TabStop(kind=0, position=50000),)
+    body = _style(0, is_body_text=True, tab_stops=body_ruler)
+    named = _style(1, tab_stops=())
+    converter = Converter(_document(styles=[body, named]))
+
+    resolved = converter.resolve_style([1])
+    assert resolved.tab_stops == body_ruler
 
 
 def test_resolve_style_unknown_slot_is_ignored():

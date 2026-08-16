@@ -50,6 +50,14 @@ def to_page_coordinates(origin: PageOrigin, x: int, y: int) -> tuple[int, int]:
 
 #: Style fields that identify or describe the record itself, rather than
 #: participate in cascading (None-means-absent) inheritance.
+#:
+#: tab_stops is handled separately in resolve_style, not via this set's
+#: usual "None means absent" cascade rule: its own absent-value sentinel
+#: is an *empty tuple* (a style whose own `tabs` bitmask has no bits
+#: set), not None, so folding it into the generic loop below would let
+#: any such style wrongly wipe out an already-cascaded ruler from
+#: further out the stack. `tabs` itself (the raw on-disk bitmask) stays
+#: fully non-cascading -- nothing reads it once tab_stops is decoded.
 _NON_CASCADING_STYLE_FIELDS = frozenset(
     {
         "index",
@@ -117,7 +125,14 @@ class Converter:
         """The effective style for a run active under *style_slots* (in
         stack order, outermost first): the body style (slot 0), with
         each named style in turn overriding any field it actually
-        specifies (a non-None value). Unknown slot numbers are ignored."""
+        specifies (a non-None value). Unknown slot numbers are ignored.
+
+        tab_stops is the one field that cascades on its own, non-empty
+        rule instead: a style whose own `tabs` bitmask has no bits set
+        decodes to an empty tab_stops tuple, which means "this style
+        doesn't define a ruler of its own", not "this style defines an
+        empty ruler" -- so it must not override one already cascaded
+        from further out the stack (see _NON_CASCADING_STYLE_FIELDS)."""
         styles_by_slot = {style.index: style for style in self.document.styles}
         body = styles_by_slot.get(0)
         if body is None:
@@ -128,6 +143,8 @@ class Converter:
             style = styles_by_slot.get(slot)
             if style is None:
                 continue
+            if style.tab_stops:
+                values["tab_stops"] = style.tab_stops
             for field in dataclasses.fields(Style):
                 if field.name in _NON_CASCADING_STYLE_FIELDS:
                     continue
