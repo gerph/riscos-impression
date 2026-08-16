@@ -29,6 +29,17 @@ rather than silently attempted:
   not attempted; every frame is positioned independently via CSS
   `position: absolute`, so an obstacle's box and a text frame's box can
   visually overlap exactly as they do in the source document.
+
+Paragraph-level formatting (left/right margin, first-line indent,
+alignment, space before/after, line height) is applied as inline CSS on
+each `<p>` via html_base.py's paragraph_css_properties, using the
+enclosing frame's own real content width to sanity-check right_indent
+the same way pdfdoc.py does (an oversized right_indent, authored for a
+wider frame than it's actually used in, is dropped rather than
+squeezing a frame's text into an unreadable column) -- meaningful here
+because a frame's width in this converter matches the source document's
+own geometry exactly, unlike scrolling HTML's reflowed, viewport-width
+columns.
 """
 
 from __future__ import annotations
@@ -53,7 +64,14 @@ from riscos_impression.model.story import (
     TabMark,
 )
 from riscos_impression.output.base import page_origin, to_page_coordinates
-from riscos_impression.output.html_base import HTML5Converter, colour_to_css, css_style_attr, escape_html, style_css_properties
+from riscos_impression.output.html_base import (
+    HTML5Converter,
+    colour_to_css,
+    css_style_attr,
+    escape_html,
+    paragraph_css_properties,
+    style_css_properties,
+)
 
 #: Millipoints per CSS point; see docs/impression-documents.xml's note
 #: under "Frame object common layout".
@@ -227,7 +245,8 @@ class PagedHTMLConverter(HTML5Converter):
         if isinstance(frame, PictureFrame):
             content = self._render_picture(frame)
         elif isinstance(frame, (TextFrame, BlankFrame)):
-            content = self._render_text_frame(frame, chapter)
+            content_width_pt = max(0.0, width - 2 * h_inset)
+            content = self._render_text_frame(frame, chapter, content_width_pt)
 
         style_attr = "; ".join(styles)
         return f'<div class="ro-frame" style="{style_attr}">{content}</div>\n'
@@ -243,7 +262,7 @@ class PagedHTMLConverter(HTML5Converter):
             return ""
         return self._picture_html(pict, entry)
 
-    def _render_text_frame(self, frame, chapter: Chapter) -> str:
+    def _render_text_frame(self, frame, chapter: Chapter, content_width_pt: float) -> str:
         if frame.dictionary_index < 0:
             return ""
         entry = self._dictionary_by_index.get(frame.dictionary_index)
@@ -269,15 +288,30 @@ class PagedHTMLConverter(HTML5Converter):
                 "(unlike the PDF converter)",
                 location=f"dictionary entry {entry.index}",
             )
-        return self._render_story(story, entry.index, chapter)
+        return self._render_story(story, entry.index, chapter, content_width_pt)
 
-    def _render_story(self, story: Story, dictionary_index: int, chapter: Chapter) -> str:
-        return "".join(self._render_paragraph(p, dictionary_index, chapter) for p in story.paragraphs)
+    def _render_story(self, story: Story, dictionary_index: int, chapter: Chapter, content_width_pt: float) -> str:
+        return "".join(
+            self._render_paragraph(p, dictionary_index, chapter, content_width_pt) for p in story.paragraphs
+        )
 
-    def _render_paragraph(self, paragraph, dictionary_index: int, chapter: Chapter) -> str:
+    def _render_paragraph(self, paragraph, dictionary_index: int, chapter: Chapter, content_width_pt: float) -> str:
         spans: list[str] = []
         buffer: list[str] = []
         current_style = self.resolve_style([])
+
+        # The style whose paragraph-level attributes (margins,
+        # first-line indent, alignment, spacing) apply to the whole
+        # block -- the paragraph's own first Run/EmbedMark's style,
+        # mirroring pdfdoc.py's own para_style selection in
+        # _paragraph_tokens (a leading mark with no style of its own,
+        # e.g. a TabMark, must not fall back to body directly).
+        first_style_slots = next(
+            (item.style_slots for item in paragraph.items if isinstance(item, (Run, EmbedMark))), None
+        )
+        para_style = self.resolve_style(first_style_slots) if first_style_slots is not None else current_style
+        para_attr = css_style_attr(paragraph_css_properties(para_style, max_width_pt=content_width_pt))
+        p_open = f'<p style="{para_attr}">' if para_attr else "<p>"
 
         def flush() -> None:
             if not buffer:
@@ -314,8 +348,8 @@ class PagedHTMLConverter(HTML5Converter):
         flush()
 
         if not spans:
-            return "<p>&nbsp;</p>\n"
-        return f"<p>{''.join(spans)}</p>\n"
+            return f"{p_open}&nbsp;</p>\n"
+        return f"{p_open}{''.join(spans)}</p>\n"
 
     def _render_embed(self, embed_tag: int, chapter: Chapter) -> str:
         for page in chapter.pages:

@@ -46,7 +46,7 @@ def test_convert_produces_well_formed_html_with_text(tmp_path):
     assert text.startswith("<!DOCTYPE html>")
     assert "<section class=\"chapter\"" in text
     assert "Hello world" in text
-    assert "<p>" in text
+    assert "<p " in text  # always carries an inline style (line-height at least)
     assert not converter.log.has_errors()
 
 

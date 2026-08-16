@@ -1067,6 +1067,63 @@ riscos-impression/
   reference image: a clean, non-overlapping heading with correct gaps
   before and after it.
 
+* **Post-Stage-14 fix (11)**: the user asked whether the recent PDF
+  fixes had made it across to the two HTML converters, and pointed at
+  two concrete symptoms in PCI_Spec (from the local examples/ corpus)
+  converted to `html-scroll`: no paragraph indentation at all, and
+  DrawFile pictures at the wrong size with their own text misplaced.
+  Both were real, substantial gaps rather than regressions:
+
+  - `style_css_properties` (applied per-`<span>`) only ever carried
+    font/colour attributes; nothing anywhere applied a resolved
+    style's paragraph-level attributes (left/right margin, first-line
+    indent, alignment, space before/after, line height) to the `<p>`
+    element itself, in *either* HTML converter. Added
+    `paragraph_css_properties` (html_base.py), applied by both
+    converters' `_render_paragraph` to whichever style the paragraph's
+    own first Run/EmbedMark carries -- mirroring pdfdoc.py's own
+    `para_style` selection in `_paragraph_tokens`, including its
+    "a leading mark with no style of its own must not fall back to
+    body directly" handling. Includes its own copy of
+    `_line_height_pt`'s fixed-value floor (fix (10) above) and a
+    `right_indent`/`max_width_pt` sanity check mirroring pdfdoc.py's
+    own oversized-right-indent fallback (confirmed against the same
+    PCI_Spec style whose right_indent was authored for a much wider
+    frame) -- meaningful only in `html-paged`, whose frames keep the
+    source document's own real width (now threaded from `_render_frame`
+    down through `_render_paragraph` as `content_width_pt`); `html-
+    scroll` deliberately never applies `margin-right` at all, since it
+    has no frame width of its own to check it against (by design --
+    see that converter's own module docstring) and the one real
+    right_indent value found in the corpus is wildly oversized for a
+    reflowed, viewport-width column.
+  - `_drawfile_svg` was stretching a DrawFile's own bounding box to
+    exactly fill the picture frame's box (two independent x/y scale
+    factors derived from `width_pt`/`height_pt`), ignoring the frame's
+    own declared display scale (`pict.xscale`/`yscale`) entirely --
+    the exact stretch-to-fit bug already found and fixed for the PDF
+    converter's `_draw_drawfile_picture` (Stage 9's own addenda), just
+    never carried across to this converter when that fix landed.
+    Reworked to mirror `_draw_drawfile_picture` exactly: size from
+    `pict.xscale`/`yscale`, centre within the picture's own box (not
+    stretch to fill), relying on the SVG viewport's own default clipping
+    (plus an explicit `overflow: hidden`) the same way pdfdoc.py clips
+    via an explicit rectangle. This also fixes `_drawfile_svg_text`'s
+    own font-size formula "for free": it already divided its scale
+    factor back through `_DRAW_UNIT_TO_PT` to recover "the dimensionless
+    magnification the picture is actually being drawn at" (a pict-scale
+    concept), but was being fed a bounds/frame-box stretch ratio instead
+    -- unrelated to the picture's own declared scale, and the real
+    source of the "text badly misplaced" half of the user's report.
+  - Ten new regression tests (`paragraph_css_properties`'s margins/
+    indent/alignment/spacing/line-height mapping, its right_indent
+    clamp both with and without a known width, its fixed-line-height
+    floor, and `_drawfile_svg`'s pict-scale centring), confirmed to
+    fail against the pre-fix code (an import error for the first
+    group, since `paragraph_css_properties` didn't exist yet) before
+    being fixed. Full suite (323 tests) green; re-validated across all
+    111 real documents with 0 crashes in all five output formats.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

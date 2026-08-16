@@ -15,6 +15,15 @@ document.master_pages, only each chapter's own content pages, so
 master-only furniture is naturally never seen. A master-*linked*
 frame's own dictionary_index is still honoured normally, the same way
 every other frame's is.
+
+Paragraph-level formatting (left margin, first-line indent, alignment,
+space before/after, line height) is applied as inline CSS on each `<p>`
+via html_base.py's paragraph_css_properties -- except right_indent,
+which is left out entirely here: it's a delta from the *original*
+frame's own right edge, a width this format deliberately never tracks
+(see above), so there's nothing sensible to sanity-check it against
+before turning it into a CSS margin on a reflowed, viewport-width
+column (unlike html_paged.py, whose frames keep their real width).
 """
 
 from __future__ import annotations
@@ -36,7 +45,13 @@ from riscos_impression.model.story import (
     Story,
     TabMark,
 )
-from riscos_impression.output.html_base import HTML5Converter, css_style_attr, escape_html, style_css_properties
+from riscos_impression.output.html_base import (
+    HTML5Converter,
+    css_style_attr,
+    escape_html,
+    paragraph_css_properties,
+    style_css_properties,
+)
 
 _DOCUMENT_CSS = """\
 body { margin: 2em auto; max-width: 40em; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; line-height: 1.4; }
@@ -135,6 +150,19 @@ class ScrollingHTMLConverter(HTML5Converter):
         buffer: list[str] = []
         current_style = self.resolve_style([])
 
+        # The style whose paragraph-level attributes (margins,
+        # first-line indent, alignment, spacing) apply to the whole
+        # block -- the paragraph's own first Run/EmbedMark's style,
+        # mirroring pdfdoc.py's own para_style selection in
+        # _paragraph_tokens (a leading mark with no style of its own,
+        # e.g. a TabMark, must not fall back to body directly).
+        first_style_slots = next(
+            (item.style_slots for item in paragraph.items if isinstance(item, (Run, EmbedMark))), None
+        )
+        para_style = self.resolve_style(first_style_slots) if first_style_slots is not None else current_style
+        para_attr = css_style_attr(paragraph_css_properties(para_style))
+        p_open = f'<p style="{para_attr}">' if para_attr else "<p>"
+
         def flush() -> None:
             if not buffer:
                 return
@@ -170,8 +198,8 @@ class ScrollingHTMLConverter(HTML5Converter):
         flush()
 
         if not spans:
-            return "<p>&nbsp;</p>\n"
-        return f"<p>{''.join(spans)}</p>\n"
+            return f"{p_open}&nbsp;</p>\n"
+        return f"{p_open}{''.join(spans)}</p>\n"
 
     def _render_embed(self, embed_tag: int, chapter: Chapter) -> str:
         for page in chapter.pages:

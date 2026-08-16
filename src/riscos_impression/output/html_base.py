@@ -9,9 +9,11 @@ equivalent of pdfdoc.py's approximate-metrics wrapping concern here.
 
 DrawFile pictures are rendered as an inline SVG fragment (paths --
 fill/stroke colour, width, winding rule -- and single-line text, via
-formats/drawfile.py's object decoder), mapping the DrawFile's own
-bounding box on to the picture's own width/height. This mirrors
-pdfdoc.py's own DrawFile rendering closely, with two differences: SVG's
+formats/drawfile.py's object decoder), sized from the picture frame's
+own declared display scale (pict.xscale/yscale) and centred within the
+picture's own width/height -- NOT stretched to fill it (see
+_drawfile_svg's own docstring). This mirrors pdfdoc.py's own DrawFile
+rendering closely, with two differences: SVG's
 Y-down coordinate convention needs an explicit flip (PDF's own
 convention already matches Draw's Y-up one directly), and text with a
 non-square x/y font-size ratio is rendered at its plain y-based size
@@ -228,6 +230,99 @@ def style_css_properties(style: Style, colours) -> dict[str, str]:
     return props
 
 
+#: Used only when a style carries no font_size at all, matching
+#: pdfdoc.py's own _DEFAULT_FONT_SIZE_16THS (10pt).
+_DEFAULT_FONT_SIZE_16THS = 160
+
+#: DDL/Style alignment codes -> CSS text-align keywords; 0 (left) needs
+#: no explicit property at all, matching the browser's own default.
+_ALIGNMENT_CSS = {1: "center", 2: "right", 3: "justify"}
+
+#: Below this usable width (in points), a right_indent is treated as
+#: implausible for its own frame rather than trusted -- matches
+#: pdfdoc.py's own _MIN_USABLE_WIDTH threshold and reasoning.
+_MIN_USABLE_WIDTH_PT = 10.0
+
+
+def paragraph_line_height_pt(style: Style) -> float:
+    """CSS line-height (in points) for a resolved paragraph Style --
+    ported from pdfdoc.py's own _line_height_pt, kept independently
+    here rather than imported (matching this project's convention of
+    self-contained converters; see the module docstring). Includes the
+    same fixed-value floor pdfdoc.py uses: a FIXED line spacing value
+    smaller than the style's own natural 120% default is a stale
+    snapshot from some earlier, smaller font size the style was last
+    edited at (confirmed against a real document, Telegraph from the
+    local moreexamples/ corpus, whose "Main Heading" style's own frozen
+    leading was barely 70% of its current font size) and must not be
+    trusted verbatim -- it can still widen spacing when genuinely
+    larger than the natural default, just never shrink it into overlap."""
+    size = (style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
+    if style.line_spacing_raw is not None:
+        if style.line_spacing_is_fixed:
+            return max(abs(style.line_spacing) / UNIT, size * 1.2)
+        percent = (style.line_spacing / 100.0) if style.line_spacing else 100
+        return size * 1.2 * (percent / 100.0)
+    return size * 1.2
+
+
+def paragraph_css_properties(style: Style, max_width_pt: Optional[float] = None) -> dict[str, str]:
+    """The block-level CSS properties for a resolved paragraph Style:
+    left/right margin, first-line indent, alignment, space before/
+    after, and line height -- the paragraph-level counterpart to
+    style_css_properties' run-level font/colour properties, applied to
+    a <p> element as a whole rather than to individual <span>s within
+    it. Confirmed missing entirely from both HTML converters against a
+    real document (PCI_Spec from the local examples/ corpus): its
+    styles' left/right margins and first-line indents never appeared in
+    the HTML output at all, since only style_css_properties (which
+    never touched any of these fields) was ever applied.
+
+    Uses whichever style the paragraph's own first Run/EmbedMark
+    carries (see each converter's _render_paragraph, which mirrors
+    pdfdoc.py's own para_style selection in _paragraph_tokens) --
+    not necessarily the same style every individual run within the
+    paragraph uses, but the one whose paragraph-level attributes
+    (margins, alignment, spacing) actually apply to the whole block,
+    matching how Impression's own paragraph formatting works.
+
+    *max_width_pt*, when given, is the paragraph's own frame's real
+    available (content) width -- only meaningful where that width is
+    actually known and CSS-relevant, i.e. paged HTML output, whose
+    frames are sized to match the original document exactly. right_indent
+    is dropped whenever it would leave less than _MIN_USABLE_WIDTH_PT of
+    that box (after left_indent too), rather than trusted verbatim --
+    mirrors pdfdoc.py's own oversized-right-indent fallback, confirmed
+    against the same real document (PCI_Spec): a title-block style's
+    right_indent was authored for a much wider frame than it's actually
+    used in, and applying it verbatim there would squeeze that frame's
+    own text into an unreadably narrow (here, potentially negative)
+    column. Left at the default None (scrolling HTML has no frame width
+    of its own to check against at all -- see that converter's module
+    docstring), right_indent is left out entirely instead, rather than
+    risk an oversized page-layout-specific margin landing on a reflowed,
+    viewport-width column it was never designed for."""
+    props: dict[str, str] = {}
+    if style.left_indent:
+        props["margin-left"] = f"{style.left_indent / UNIT:.2f}pt"
+    if style.right_indent and max_width_pt is not None:
+        left_indent_pt = (style.left_indent / UNIT) if style.left_indent else 0.0
+        right_indent_pt = style.right_indent / UNIT
+        if max_width_pt - left_indent_pt - right_indent_pt >= _MIN_USABLE_WIDTH_PT:
+            props["margin-right"] = f"{right_indent_pt:.2f}pt"
+    if style.first_indent:
+        props["text-indent"] = f"{style.first_indent / UNIT:.2f}pt"
+    alignment_css = _ALIGNMENT_CSS.get(style.alignment)
+    if alignment_css:
+        props["text-align"] = alignment_css
+    if style.space_before:
+        props["margin-top"] = f"{style.space_before / UNIT:.2f}pt"
+    if style.space_after:
+        props["margin-bottom"] = f"{style.space_after / UNIT:.2f}pt"
+    props["line-height"] = f"{paragraph_line_height_pt(style):.2f}pt"
+    return props
+
+
 def css_style_attr(props: dict[str, str]) -> str:
     return "; ".join(f"{key}: {value}" for key, value in props.items())
 
@@ -270,10 +365,10 @@ class HTML5Converter(Converter):
         height_pt = (pict.y1 - pict.y0) / UNIT
         with self.catch("picture", location=f"dictionary entry {entry.index}"):
             data = self.document.picture_bytes(entry)
-            return self._picture_html_for_data(data, entry, width_pt, height_pt)
+            return self._picture_html_for_data(data, entry, pict, width_pt, height_pt)
         return self._placeholder_img("data", width_pt, height_pt)
 
-    def _picture_html_for_data(self, data: bytes, entry, width_pt: float, height_pt: float) -> str:
+    def _picture_html_for_data(self, data: bytes, entry, pict, width_pt: float, height_pt: float) -> str:
         kind = entry.embedded_object_type
 
         if kind is EmbeddedObjectType.EPS:
@@ -289,7 +384,7 @@ class HTML5Converter(Converter):
         if kind is EmbeddedObjectType.DRAW:
             draw = DrawFile.from_bytes(data)
             if draw is not None:
-                return self._drawfile_svg(draw, width_pt, height_pt)
+                return self._drawfile_svg(draw, pict, width_pt, height_pt)
             if SpriteArea.from_bytes(data) is None:
                 self.log.error(
                     "picture", "picture classified as a drawable format but decoded as neither DrawFile nor Sprite"
@@ -320,29 +415,50 @@ class HTML5Converter(Converter):
 
     # -- DrawFile pictures -----------------------------------------------------
 
-    def _drawfile_svg(self, draw: DrawFile, width_pt: float, height_pt: float) -> str:
-        """A decoded DrawFile's objects as an inline SVG fragment,
-        mapping the DrawFile's own bounding box on to the picture's own
-        width/height (stretch to fit, matching PDFConverter's own
-        DrawFile rendering and the DrawFile format's own "a Sprite
-        object fills its bounding box" convention). See the module
-        docstring and pdfdoc.py's own DrawFile section for what's
-        approximated versus a genuine placeholder."""
+    def _drawfile_svg(self, draw: DrawFile, pict, width_pt: float, height_pt: float) -> str:
+        """A decoded DrawFile's objects as an inline SVG fragment, using
+        the picture frame's own declared display scale (pict.xscale/
+        yscale) to size the DrawFile's own native-size content, then
+        centring it within the picture's own box [width_pt, height_pt]
+        -- NOT stretched to fill it. Mirrors pdfdoc.py's own
+        _draw_drawfile_picture exactly (including its xscale/yscale
+        sign convention and its reasoning for centring rather than
+        applying xshift/yshift; see that method's own docstring for the
+        full explanation). A real document (PCI_Spec from the local
+        examples/ corpus) showed DrawFile pictures at visibly, sometimes
+        drastically, wrong size, with their own text badly misplaced --
+        the same stretch-to-fit failure mode already found and fixed
+        for the PDF converter, just never carried across to this one.
+        The SVG viewport clips anything the centred content overflows,
+        the same as pdfdoc.py's own explicit clip rectangle. See the
+        module docstring and pdfdoc.py's own DrawFile section for what
+        else is approximated versus a genuine placeholder."""
         bounds = draw.bounds
-        sx = width_pt / bounds.width if bounds.width else 1.0
-        sy = height_pt / bounds.height if bounds.height else 1.0
+        display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
+        display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
+        sx = _DRAW_UNIT_TO_PT * display_scale_x
+        sy = _DRAW_UNIT_TO_PT * display_scale_y
+        displayed_w = bounds.width * sx
+        displayed_h = bounds.height * sy
+        origin_x = max(0.0, (width_pt - displayed_w) / 2.0)
+        origin_y = max(0.0, (height_pt - displayed_h) / 2.0)
 
         def to_svg(dx: int, dy: int) -> tuple[float, float]:
             # SVG is Y-down from the top-left; Draw is Y-up from the
             # bottom-left, so the Y axis needs flipping (unlike
-            # pdfdoc.py, which shares PDF's own Y-up convention).
-            return (dx - bounds.x0) * sx, height_pt - (dy - bounds.y0) * sy
+            # pdfdoc.py, which shares PDF's own Y-up convention) --
+            # measured from the top of the CENTRED content, not the
+            # picture's own top edge.
+            return origin_x + (dx - bounds.x0) * sx, origin_y + (bounds.y1 - dy) * sy
 
         parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt:.1f}pt" '
-            f'height="{height_pt:.1f}pt" viewBox="0 0 {width_pt:.1f} {height_pt:.1f}">'
+            f'height="{height_pt:.1f}pt" viewBox="0 0 {width_pt:.1f} {height_pt:.1f}" '
+            f'style="overflow: hidden;">'
         ]
         notes: list[str] = []
+        if pict.angle:
+            notes.append("a DrawFile picture's own rotation is not applied; it is drawn unrotated")
         for obj in draw.objects:
             self._drawfile_svg_object(obj, draw.fonts, to_svg, (sx, sy), parts, notes)
         parts.append("</svg>")
