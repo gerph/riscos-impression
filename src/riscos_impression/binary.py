@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import struct
 
+from riscos_impression import encoding
+
 
 def u8(data: bytes, offset: int) -> int:
     return data[offset]
@@ -56,20 +58,22 @@ def bits(word: int, index: int, width: int) -> int:
 def cstring(data: bytes, offset: int, length: int) -> str:
     """Read a fixed-length RISC OS character-string field: text terminated
     by whichever comes first of a NUL or CR byte, or the field's own
-    length, with any trailing padding discarded."""
+    length, with any trailing padding discarded. Decoded as RISC OS
+    Latin1 (see encoding.py), not plain ISO-8859-1."""
     raw = data[offset : offset + length]
     for terminator in (0x00, 0x0D):
         index = raw.find(terminator)
         if index != -1:
             raw = raw[:index]
-    return raw.decode("latin-1")
+    return encoding.decode(raw)
 
 
 def nul_string(data: bytes, offset: int) -> tuple[str, int]:
-    """Read a NUL-terminated string starting at *offset*.
+    """Read a NUL-terminated string starting at *offset*, decoded as
+    RISC OS Latin1 (see encoding.py), not plain ISO-8859-1.
 
     Returns the decoded string and the offset of the byte following the
     terminator.
     """
     end = data.index(0x00, offset)
-    return data[offset:end].decode("latin-1"), end + 1
+    return encoding.decode(data[offset:end]), end + 1

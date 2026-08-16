@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Union
 
-from riscos_impression import binary
+from riscos_impression import binary, encoding
 
 ILINESTR_SIZE = 8
 
@@ -164,7 +164,11 @@ def _decode_text_line(data: bytes, payload_start: int, line_end: int, builder: _
         c = binary.u8(data, i)
 
         if c >= 32:
-            builder.text_buffer.append(chr(c))
+            # RISC OS Latin1 (alphabet 101), not plain ISO-8859-1 -- see
+            # docs/impression-documents.xml, "Text and character
+            # encoding". Bytes below 0x80 are unaffected; this only
+            # matters once c reaches the C1 range.
+            builder.text_buffer.append(encoding.decode_byte(c))
             i += 1
             continue
 

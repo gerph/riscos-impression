@@ -47,3 +47,17 @@ def test_nul_string():
     text, offset_after = binary.nul_string(data, 7)
     assert text == "Hello"
     assert offset_after == 13
+
+
+def test_cstring_decodes_c1_range_as_riscos_latin1_not_plain_latin1():
+    # 0x94/0x95 are curly double quotes in RISC OS Latin1 (alphabet
+    # 101), not the non-printing C1 control codes plain ISO-8859-1
+    # would give.
+    data = b"\x94Galadriel\x95\x00"
+    assert binary.cstring(data, 0, len(data)) == "“Galadriel”"
+
+
+def test_nul_string_decodes_c1_range_as_riscos_latin1_not_plain_latin1():
+    data = b"\x94Galadriel\x95\x00"
+    text, _ = binary.nul_string(data, 0)
+    assert text == "“Galadriel”"

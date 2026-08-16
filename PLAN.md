@@ -205,6 +205,20 @@ riscos-impression/
 * Tests: synthetic story byte streams, one per control code family.
 * Likely two commits given size: *"Add paragraph/heading numbering
   decoding"*, then *"Add text story and inline control-code decoding"*.
+* **Post-Stage-14 fix**: literal text bytes (`c >= 32`) were decoded via
+  plain `chr(c)`, equivalent to ISO-8859-1 -- wrong for RISC OS's own
+  "Latin1" alphabet (number 101), whose C1 control range (0x80-0x9F) is
+  remapped to visible characters (smart quotes, dashes, ligatures, a
+  few UI glyphs) rather than left as non-printing control codes. Found
+  via a real document (`Fletcher,bc5`): a curly-quoted name decoded as
+  literal `\x94`/`\x95` bytes instead of “ ”. Fixed by routing every
+  text decode -- this one, plus `binary.cstring`/`binary.nul_string`
+  (so also colour/style/font names, and DrawFile text) -- through a new
+  `encoding.py` module with the correct alphabet-101 table, reproduced
+  from the independent `python-codecs-riscos` project and cross-checked
+  against the real document. See `docs/impression-documents.xml`,
+  "Text and character encoding". Full-corpus validation confirmed 0
+  raw C1 bytes remaining in any converter's output afterwards.
 
 ### Stage 6 — Full document assembly
 * `io/reader.py` / `ImpressionDocument.load()`: wire header, colours,

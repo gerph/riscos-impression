@@ -46,6 +46,19 @@ def test_plain_literal_text():
     assert run == Run(text='Hello "World"', style_slots=())
 
 
+def test_c1_range_bytes_decode_as_riscos_latin1_curly_quotes():
+    # Regression test: bytes 0x94/0x95 are curly double quotes in RISC
+    # OS Latin1 (alphabet 101), not the non-printing C1 control codes
+    # plain ISO-8859-1 would give -- see docs/impression-documents.xml,
+    # "Text and character encoding". Found via a real document
+    # (Fletcher) where a curly-quoted name decoded incorrectly.
+    content = ContentBuilder().literal("\x94Galadriel\x95").bytes()
+    story = _story_from_content(content)
+    (paragraph,) = story.paragraphs
+    (run,) = paragraph.items
+    assert run.text == "“Galadriel”"
+
+
 def test_paragraph_break_splits_paragraphs_at_the_next_line():
     # A pending break (from CTRL_M) is only actually applied at the start
     # of the next line record, not before ordinary text within the same

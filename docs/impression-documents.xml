@@ -94,6 +94,75 @@ output identifiers (see "Frame identifiers and epochs"); a
 </p>
 </subsection>
 
+<subsection title="Text and character encoding">
+<p>
+Every text field in the document -- story content (see "Text-content
+lines" below), colour names, style and font names, merge field names,
+and equivalent text within embedded DrawFile pictures -- is encoded in
+RISC OS's own "Latin1" alphabet (alphabet number 101 in RISC OS's own
+territory/alphabet numbering), not plain ISO-8859-1/Latin-1 and not
+Windows-1252, though it is closely related to both.
+</p>
+<p>
+Bytes 0x00-0x7F match ASCII, and bytes 0xA0-0xFF match ISO-8859-1/
+Latin-1 exactly (byte value equals Unicode code point). Only the C1
+control range, bytes 0x80-0x9F -- which plain ISO-8859-1 leaves as
+non-printing control codes -- is remapped to a set of visible
+characters: accented capitals, typographic quotes and dashes, the
+ellipsis, ligatures, and a handful of RISC OS UI glyphs (arrows, the
+window resize/close icons) that have no exact Unicode equivalent and
+fall back to the replacement character (U+FFFD). This remapping is
+why, for example, a document's curly double quotation marks are stored
+as bytes 0x94/0x95 rather than any of Unicode's own quote characters
+directly.
+</p>
+<p>
+<value-table head-number="Byte" head-value="Character">
+<value number="0x80">€ (euro sign)</value>
+<value number="0x81">Ŵ (W circumflex)</value>
+<value number="0x82">ŵ (w circumflex)</value>
+<value number="0x83">◰ (resize icon; approximated -- no exact Unicode equivalent)</value>
+<value number="0x84">(close icon; no Unicode equivalent, decodes as U+FFFD)</value>
+<value number="0x85">Ŷ (Y circumflex)</value>
+<value number="0x86">ŷ (y circumflex)</value>
+<value number="0x87">(unassigned; no Unicode equivalent, decodes as U+FFFD)</value>
+<value number="0x88">⇦ (left arrow)</value>
+<value number="0x89">⇨ (right arrow)</value>
+<value number="0x8A">⇩ (down arrow)</value>
+<value number="0x8B">⇧ (up arrow)</value>
+<value number="0x8C">… (ellipsis)</value>
+<value number="0x8D">™ (trademark sign)</value>
+<value number="0x8E">‰ (per mille sign)</value>
+<value number="0x8F">• (bullet)</value>
+<value number="0x90">' (left single quotation mark)</value>
+<value number="0x91">' (right single quotation mark)</value>
+<value number="0x92">‹ (left single guillemet)</value>
+<value number="0x93">› (right single guillemet)</value>
+<value number="0x94">" (left double quotation mark)</value>
+<value number="0x95">" (right double quotation mark)</value>
+<value number="0x96">„ (double low quotation mark)</value>
+<value number="0x97">– (en dash)</value>
+<value number="0x98">— (em dash)</value>
+<value number="0x99">− (minus sign)</value>
+<value number="0x9A">Œ (OE ligature)</value>
+<value number="0x9B">œ (oe ligature)</value>
+<value number="0x9C">† (dagger)</value>
+<value number="0x9D">‡ (double dagger)</value>
+<value number="0x9E">ﬁ (fi ligature)</value>
+<value number="0x9F">ﬂ (fl ligature)</value>
+</value-table>
+</p>
+<p>
+This table is not derived from the TransIMP conversion source (which,
+being RISC OS software itself, never needed to translate out of its
+own native alphabet); it is reproduced from the independent
+<reference type="link" href="https://github.com/gerph/python-codecs-riscos">python-codecs-riscos</reference>
+project's own definition of RISC OS alphabet 101, cross-checked against
+a real document (a curly-quoted word decoded incorrectly until this
+mapping was applied).
+</p>
+</subsection>
+
 <subsection title="Document storage: single file versus directory mode">
 <p>
 An Impression document can be stored in either of two ways, both
