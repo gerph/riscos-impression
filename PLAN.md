@@ -945,6 +945,46 @@ riscos-impression/
   confirmed against ForSimon3 itself -- both the body paragraph and
   the heading now render with correctly separated lines.
 
+* **Post-Stage-14 fix (8)**: while re-checking ForSimon3 after fix (7),
+  the user noticed the PDF's page order was still wrong: the real
+  document is a page of body text, a blank page, a blank page, then
+  the heading on the final page, but the PDF had the heading on page 2
+  and both blank pages trailing at the end -- "I suspect the 'force
+  new page' hasn't worked". Confirmed: ForSimon3's story has TWO
+  consecutive `PageBreakMark` items (CTRL_N) right after its body text,
+  across a three-frame chain. `model/story.py` already decodes CTRL_N
+  correctly (its own docstring calls it "a forced page break"), and the
+  conversion source (`c/styles`, `txwritedata`'s `CTRL_N` case) labels
+  it "force to next" and emits a DDL `{newpage}` for it -- but
+  `pdfdoc.py`'s line-wrapping (`_wrap_one_line`) was treating a "break"
+  token as nothing more than an early line terminator, consumed in
+  place, leaving the flow in the *same* container. Two consecutive
+  breaks with no content between them therefore just produced one
+  blank line, not two skipped frames -- landing the heading a full
+  frame too early and leaving the chain's real last frame empty. Fixed
+  by having `_wrap_one_line` leave a "break" token for the caller
+  instead of consuming it (mirroring how it already handles "embed"),
+  and having `_flow_paragraphs_into_containers` force a genuine
+  `advance_container()` on it -- jumping to the next chain member
+  regardless of how much room is left in the current one, the same as
+  a genuine overflow does. `html_paged.py`, `html_scrolling.py`,
+  `markdown.py` and `ovprodll.py` were all checked too: each already
+  either doesn't flow text across a multi-frame chain at all (and says
+  so, once, via a best_effort log) or already emits the equivalent
+  `{newpage}` DDL directive, so none needed a matching change. One new
+  regression test drives `_flow_paragraphs_into_containers` directly
+  with a three-container chain and two consecutive `PageBreakMark`s,
+  asserting the middle container gets no text at all. Full suite (311
+  tests) green; re-validated across all 111 real documents with 0
+  crashes; visually confirmed against ForSimon3 -- the PDF is now body
+  text, a blank page, then the heading on the third (last) page,
+  matching the real document's own three-frame chain. This still
+  doesn't reproduce the user's fourth ("blank, blank") page from
+  memory of the original -- the document's own frame_chain genuinely
+  only has three members (matching this document's three physical
+  pages), so a fourth page isn't something this fix can manufacture;
+  flagged back to the user rather than guessed at further.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

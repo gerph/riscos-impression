@@ -4,7 +4,7 @@ from riscos_impression.model.colours import Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import EmbedMark, Paragraph, Run, Story, TabMark
+from riscos_impression.model.story import EmbedMark, PageBreakMark, Paragraph, Run, Story, TabMark
 from riscos_impression.model.styles import TabStop
 from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
@@ -1038,6 +1038,45 @@ def test_multi_page_chain_flows_text_across_frames(tmp_path):
     assert b"(Para0) Tj" in data
     assert b"(Para4) Tj" in data  # only reachable if flow continued into frame2
     assert not any("overflow" in e.message for e in converter.log.entries)
+
+
+def test_forced_page_break_advances_to_the_next_container_leaving_the_skipped_one_empty():
+    """Regression test: a real document (ForSimon3 from the local
+    moreexamples/ corpus) has its body paragraph followed by TWO
+    consecutive PageBreakMarks (CTRL_N -- "force to next" in the
+    conversion source, c/styles' txwritedata, which emits a DDL
+    {newpage} for it, not a plain newline) before its final heading
+    paragraph, across a three-frame chain -- meant to leave the middle
+    frame blank and land the heading on the third. Treating
+    PageBreakMark as merely an in-line blank line (the previous
+    behaviour, via _wrap_one_line consuming it like an ordinary line
+    terminator) left the heading on the SECOND frame instead, with the
+    real third frame sitting entirely empty."""
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    body = _style(0, is_body_text=True, font_size=160)
+    document = _document(styles=[body])
+    converter = PDFConverter(document)
+
+    containers = [
+        (1, 1, 0.0, 0.0, 200.0, 100.0),
+        (2, 2, 0.0, 0.0, 200.0, 100.0),
+        (3, 3, 0.0, 0.0, 200.0, 100.0),
+    ]
+    paragraphs = (
+        Paragraph(items=(Run(text="First", style_slots=()), PageBreakMark(), PageBreakMark())),
+        Paragraph(items=(Run(text="Third", style_slots=()),)),
+    )
+    assignments = converter._flow_paragraphs_into_containers(paragraphs, 0, containers, None)
+
+    def text_in(key):
+        return "".join(
+            tok.text for entry in assignments[key] for tok in entry[0] if tok.kind in ("word", "space")
+        )
+
+    assert "First" in text_in(1)
+    assert text_in(2) == ""
+    assert "Third" in text_in(3)
 
 
 def test_master_anchored_story_renders_independently_without_erroring(tmp_path):

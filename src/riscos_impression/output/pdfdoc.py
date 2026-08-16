@@ -40,7 +40,12 @@ ConversionLog rather than guessed at silently:
   fill/border (which would paint over already-placed text) and never
   starts its own content higher up than the earlier member's bottom
   edge. Only running out of frames in the chain entirely -- text that
-  still doesn't fit anywhere -- is logged and clipped.
+  still doesn't fit anywhere -- is logged and clipped. A forced page
+  break within a story (CTRL_N/PageBreakMark -- "force to next" in the
+  conversion source) jumps straight to the START of the next chain
+  member regardless of how much room is left in the current one, the
+  same as running out of room does; it doesn't just insert a blank
+  line in place.
 * DrawFile pictures are rendered as real PDF vector content (paths --
   fill/stroke colour, width, winding rule -- and single-line text, via
   formats/drawfile.py's object decoder), at the picture's own true
@@ -668,30 +673,21 @@ def _wrap_one_line(
     for: a tab whose target would land past *right_edge* forces a line
     break first, rather than being allowed to carry the rest of the line
     off past the frame's (and possibly the page's) edge. Also stops
-    early at a forced "break" token (a PageBreakMark), consuming it (an
-    empty line is a complete, correct response to a forced page
-    break). Also stops early at an "embed" token (an inline picture),
-    but WITHOUT consuming it -- the caller has its own, separate
-    picture-placement logic for that (see
-    _flow_paragraphs_into_containers) and needs to see the token itself
-    to run it. Returns (line_tokens, remaining_tokens); at least one
-    token is always consumed when *tokens* is non-empty and doesn't
-    start with a break or an embed (an over-wide single word or tab
-    still gets its own line rather than being dropped)."""
+    early at a forced "break" token (a PageBreakMark -- CTRL_N in the
+    story data, "force to next" in the conversion source, which emits
+    a DDL {newpage} for it) and at an "embed" token (an inline
+    picture), WITHOUT consuming either -- the caller has its own,
+    separate handling for both (forcing an actual container/frame
+    advance for "break"; placing the picture as its own block for
+    "embed"; see _flow_paragraphs_into_containers) and needs to see
+    the token itself to run it. Returns (line_tokens, remaining_tokens);
+    at least one token is always consumed when *tokens* is non-empty
+    and doesn't start with a break or an embed (an over-wide single
+    word or tab still gets its own line rather than being dropped)."""
     line: list[_Token] = []
     x = line_start
     for i, tok in enumerate(tokens):
-        if tok.kind == "break":
-            _strip_trailing_space(line)
-            return line, tokens[i + 1 :]
-        if tok.kind == "embed":
-            # Unlike "break" (fully consumed here -- an empty line is
-            # a complete, correct response to a forced page break), an
-            # embed token is left in place for the caller to see and
-            # handle itself (placing the picture as its own block,
-            # with its own container-overflow logic; see
-            # _flow_paragraphs_into_containers) -- this function has no
-            # picture-geometry concerns of its own.
+        if tok.kind in ("break", "embed"):
             _strip_trailing_space(line)
             return line, tokens[i:]
         if tok.kind == "tab":
@@ -1791,6 +1787,32 @@ class PDFConverter(Converter):
             placed_any_line = False
 
             while tokens or not placed_any_line:
+                if tokens and tokens[0].kind == "break":
+                    # CTRL_N ("force to next") forces the flow to jump
+                    # to the START of the next frame in the chain, not
+                    # just to a new line in the same one -- confirmed
+                    # against the conversion source (c/styles,
+                    # txwritedata's CTRL_N case: "force to next",
+                    # emitting a DDL {newpage}). A real document
+                    # (ForSimon3 from the local moreexamples/ corpus)
+                    # has two consecutive PageBreakMarks after its body
+                    # text, meant to skip a page and land its final
+                    # heading on the third frame of a three-frame
+                    # chain; treating them as plain blank lines instead
+                    # left the heading one frame too early, with the
+                    # actual final frame sitting empty.
+                    tokens = tokens[1:]
+                    placed_any_line = True
+                    first_line_pending = False
+                    is_first_line = False
+                    if not advance_container():
+                        self.log.best_effort(
+                            "story",
+                            "text overflowed the available frame(s) and was clipped",
+                            location=f"dictionary entry {dictionary_index}",
+                        )
+                        return assignments
+                    continue
                 if tokens and tokens[0].kind == "embed":
                     pict = tokens[0].embed_frame
                     # The frame's own box is the picture's real,
