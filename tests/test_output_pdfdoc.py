@@ -6,6 +6,7 @@ from riscos_impression.model.story import Paragraph, Run, Story
 from riscos_impression.model.styles import TabStop
 from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
+    _AVERAGE_WIDTH_FACTOR,
     _approx_width,
     _fill_colour_op,
     _narrow_for_obstacles,
@@ -98,6 +99,42 @@ def test_approx_width_courier_is_exact_afm_value():
     # per Adobe's own AFM data, so this is not an approximation.
     style = _style(1, font_style_name="Corpus.Medium", font_size=160)  # 10pt
     assert _approx_width("hello", style) == 5 * 10.0 * 0.6
+
+
+def test_approx_width_helvetica_uses_real_per_character_metrics():
+    # "MI" (a wide glyph next to a narrow one) would be identical under
+    # the old flat per-family average; real metrics must tell them apart.
+    style = _style(1, font_style_name="Homerton.Medium", font_size=1000)  # 62.5pt, easy arithmetic
+    size_pt = 1000 / 16.0
+    assert _approx_width("M", style) == 833 / 1000.0 * size_pt
+    assert _approx_width("I", style) == 278 / 1000.0 * size_pt
+    assert _approx_width("MI", style) == _approx_width("M", style) + _approx_width("I", style)
+
+
+def test_approx_width_times_uses_real_per_character_metrics():
+    style = _style(1, font_style_name="Trinity.Medium", font_size=1000)
+    size_pt = 1000 / 16.0
+    assert _approx_width("M", style) == 889 / 1000.0 * size_pt
+
+
+def test_approx_width_bold_italic_selects_the_right_metrics_table():
+    style = _style(1, font_style_name="Homerton.Medium", font_size=1000, bold=1, italic=1)
+    size_pt = 1000 / 16.0
+    # Homerton.Bold.Oblique's own 'A' width (722), not Homerton.Medium's (667).
+    assert _approx_width("A", style) == 722 / 1000.0 * size_pt
+
+
+def test_approx_width_symbol_font_has_no_metrics_table_falls_back_to_average():
+    style = _style(1, font_style_name="Symbol", font_size=160)
+    size_pt = 160 / 16.0
+    assert _approx_width("hello", style) == 5 * size_pt * _AVERAGE_WIDTH_FACTOR["Symbol"]
+
+
+def test_approx_width_character_outside_riscos_latin1_falls_back_to_average_for_whole_string():
+    style = _style(1, font_style_name="Homerton.Medium", font_size=160)
+    size_pt = 160 / 16.0
+    text = "hi中"  # the CJK character has no RISC OS Latin1 byte at all
+    assert _approx_width(text, style) == len(text) * size_pt * _AVERAGE_WIDTH_FACTOR["Helvetica"]
 
 
 # ---------------------------------------------------------------------------

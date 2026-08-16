@@ -19,6 +19,8 @@ alphabet).
 
 from __future__ import annotations
 
+from typing import Optional
+
 #: RISC OS's own remapping of the C1 control-code range to visible
 #: characters: accented capitals, typographic quotes and dashes, the
 #: ellipsis, ligatures, and a handful of RISC OS UI glyphs that have no
@@ -84,16 +86,27 @@ _C1_REVERSE: dict[str, int] = {ch: byte for byte, ch in _C1_CHANGES.items()}
 _NO_REPRESENTATION = ord("?")
 
 
-def encode_byte(ch: str) -> int:
+def encode_byte_or_none(ch: str) -> Optional[int]:
     """The RISC OS Latin1 (alphabet 101) byte value for a single
-    Unicode character, or '?' if it has none at all."""
+    Unicode character, or None if it has no representation at all
+    (unlike encode_byte, this doesn't paper over that with '?' --
+    needed by callers, such as font_metrics.py's width lookup, that
+    must tell "no such character" apart from "this character happens
+    to be byte 0x3F, '?'")."""
     byte = _C1_REVERSE.get(ch)
     if byte is not None:
         return byte
     code = ord(ch)
     if code <= 0xFF and not (0x80 <= code <= 0x9F):
         return code
-    return _NO_REPRESENTATION
+    return None
+
+
+def encode_byte(ch: str) -> int:
+    """The RISC OS Latin1 (alphabet 101) byte value for a single
+    Unicode character, or '?' if it has none at all."""
+    byte = encode_byte_or_none(ch)
+    return byte if byte is not None else _NO_REPRESENTATION
 
 
 def encode(text: str) -> bytes:

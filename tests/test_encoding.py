@@ -46,3 +46,8 @@ def test_encode_smart_quotes_back_to_their_original_c1_bytes():
 
 def test_encode_unrepresentable_character_falls_back_to_question_mark():
     assert encoding.encode("中") == b"?"
+
+
+def test_encode_byte_or_none_distinguishes_unrepresentable_from_a_real_question_mark():
+    assert encoding.encode_byte_or_none("?") == ord("?")
+    assert encoding.encode_byte_or_none("中") is None

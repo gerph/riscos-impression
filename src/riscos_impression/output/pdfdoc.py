@@ -14,14 +14,18 @@ OvationPro's own top-down box convention).
 Several things here are necessarily best-effort, logged via
 ConversionLog rather than guessed at silently:
 
-* Text layout uses an approximate (non-AFM) average character width
-  per standard font, not real per-glyph metrics -- Courier's width is
-  exact (it's genuinely fixed-pitch, 0.6em per Adobe's own metrics),
-  but Helvetica/Times line-wrapping and justification are
-  approximations. Actual glyph rendering is exact regardless (it uses
-  the PDF viewer's own built-in standard-14 font program), so this
-  only affects where lines break and how justified spacing lands, not
-  what any individual glyph looks like.
+* Text layout uses real per-character advance-width metrics
+  (font_metrics.py, reproduced from real RISC OS Trinity/Homerton font
+  data -- see that module's own docstring) for Helvetica/Times-mapped
+  text, and an exact flat 0.6em for Courier (genuinely fixed-pitch,
+  confirmed against the same source data). Only a font this converter
+  can't map to either of those two families at all (Symbol,
+  ZapfDingbats) or a character with no RISC OS Latin1 representation
+  falls back to a flat per-family average width instead. Actual glyph
+  rendering is exact regardless (it uses the PDF viewer's own built-in
+  standard-14 font program), so any residual approximation only
+  affects where lines break and how justified/aligned spacing lands,
+  not what any individual glyph looks like.
 * A story's text flows across its whole frame chain (resolved via
   Converter.resolve_frame_chain), moving on to the next chain member
   whenever the current one fills up and re-wrapping the remainder for
@@ -98,6 +102,7 @@ from riscos_impression.formats.drawfile import (
 from riscos_impression.formats.eps import EPSObject
 from riscos_impression.formats.sprite import SpriteArea
 from riscos_impression.log import ConversionLog
+from riscos_impression.output import font_metrics
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntryType, EmbeddedObjectType
 from riscos_impression.model.document_tree import Chapter, PageGroup
@@ -290,8 +295,54 @@ def choose_standard_font(style: Style) -> str:
     return _standard_font_for(style.font_style_name, bool(style.bold), bool(style.italic))
 
 
+#: family -> the four Homerton/Trinity weight/slant table names in
+#: font_metrics.WIDTHS_256PT, indexed by (is_bold, is_italic). Courier
+#: isn't here (see _approx_width -- it's genuinely fixed-pitch, exact
+#: via _AVERAGE_WIDTH_FACTOR already) and neither are Symbol/
+#: ZapfDingbats (no real metrics table available for them at all).
+_RISCOS_METRICS_FONT = {
+    "Helvetica": {
+        (False, False): "Homerton.Medium",
+        (True, False): "Homerton.Bold",
+        (False, True): "Homerton.Medium.Oblique",
+        (True, True): "Homerton.Bold.Oblique",
+    },
+    "Times": {
+        (False, False): "Trinity.Medium",
+        (True, False): "Trinity.Bold",
+        (False, True): "Trinity.Medium.Italic",
+        (True, True): "Trinity.Bold.Italic",
+    },
+}
+
+
+def _riscos_metrics_font_name(style: Style) -> Optional[str]:
+    family = _base_family(style.font_style_name)
+    variants = _RISCOS_METRICS_FONT.get(family)
+    if variants is None:
+        return None
+    name = (style.font_style_name or "").lower()
+    is_bold = bool(style.bold) or "bold" in name
+    is_italic = bool(style.italic) or "italic" in name or "oblique" in name
+    return variants[(is_bold, is_italic)]
+
+
 def _approx_width(text: str, style: Style) -> float:
     size = (style.font_size or _DEFAULT_FONT_SIZE_16THS) / 16.0
+    metrics_font = _riscos_metrics_font_name(style)
+    if metrics_font is not None:
+        total_per_mille = 0.0
+        for ch in text:
+            per_mille = font_metrics.char_width_per_mille(metrics_font, ch)
+            if per_mille is None:
+                break
+            total_per_mille += per_mille
+        else:
+            return total_per_mille / 1000.0 * size
+        # A character fell outside the metrics table (rare -- anything
+        # not representable in RISC OS Latin1 at all); fall through to
+        # the flat per-family average below for the *whole* string,
+        # same as when there's no metrics table for this font at all.
     family = choose_standard_font(style).split("-")[0]
     return len(text) * size * _AVERAGE_WIDTH_FACTOR.get(family, 0.5)
 

@@ -401,6 +401,27 @@ riscos-impression/
   is considered) already leave no usable room. Re-validated against
   all 48 real documents: 0 crashes, and no longer any document with
   zero extractable text on any page.
+* **Post-Stage-14 fix (2)**: the user reported that right-aligned text
+  (Fletcher's letterhead address block) didn't actually come out flush
+  on the right in the PDF, and pointed out this converter's flat
+  per-family average character width (0.52em for every Helvetica-
+  mapped glyph, 0.46em for Times) was the likely cause. Fixed by
+  adding `output/font_metrics.py`: real per-character advance widths
+  for the eight Homerton/Trinity weight/slant combinations, reproduced
+  from the independent `garethmccaughan-mkdrawf` project's own
+  `Font_ScanString` emulation table (real RISC OS font metrics, not
+  guessed) -- cross-checked against Adobe's own published Helvetica/
+  Times AFM widths, which match exactly (Homerton/Trinity are RISC
+  OS's alikes for those). `_approx_width` now sums real per-character
+  widths when the resolved font maps to one of those eight, falling
+  back to the flat average only for a font with no metrics table at
+  all (Symbol, ZapfDingbats) or an individual character with no RISC
+  OS Latin1 representation. Courier is untouched -- it was already
+  exact, being genuinely fixed-pitch (confirmed against this same
+  source data: every Corpus entry is uniformly 0.6em). Re-validated
+  against all 48 real documents: 0 crashes, 0 new errors; visually
+  confirmed against Fletcher itself that the address block's right
+  edge is now flush.
 
 ### Stage 10 — Scrolling HTML output
 * `output/html_base.py`: `HTML5Converter(Converter)` — shared colour→CSS
