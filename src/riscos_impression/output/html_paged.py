@@ -710,6 +710,7 @@ class PagedHTMLConverter(HTML5Converter):
         tab_stops = sorted(para_style.tab_stops, key=lambda ts: ts.position) if para_style.tab_stops else []
         tab_index = 0
         tab_span_open = False
+        prev_boundary_pt = 0.0
 
         def flush() -> None:
             if not buffer:
@@ -738,21 +739,32 @@ class PagedHTMLConverter(HTML5Converter):
                 # tab character (the previous approach here) renders as
                 # nothing more than a single space -- not a jump to the
                 # style's own declared tab stop. The Nth tab in a
-                # paragraph is positioned at the Nth entry of the
-                # style's own tab ruler (sorted by position; falling
-                # back to a fixed default pitch, matching pdfdoc.py's
-                # own fallback, for a tab beyond the ruler's last
-                # entry), each segment absolutely positioned within the
-                # paragraph's own box (position: relative, set above)
-                # so it doesn't need to know any other segment's own
-                # rendered width -- a centre/right/decimal tab (kind
-                # 1/2/3; decimal simplified to right, matching
-                # pdfdoc.py's own convention) is centred/right-aligned
-                # on its stop via a CSS transform, which needs no
-                # width measurement of its own either.
+                # paragraph maps to the Nth entry of the style's own
+                # tab ruler (sorted by position; falling back to a
+                # fixed default pitch, matching pdfdoc.py's own
+                # fallback, for a tab beyond the ruler's last entry).
+                #
+                # A LEFT stop (kind 0) is rendered as an inline-block
+                # spacer of the right width, jumping the cursor forward
+                # while staying in NORMAL document flow -- confirmed
+                # against a real document (PCI_Spec): an earlier version
+                # made every tab kind position:absolute, which
+                # contributes nothing to its own paragraph's height, so
+                # a left-tabbed row whose own (often multi-line)
+                # description wrapped past one line visually overlaid
+                # every row that followed it. A centre/right/decimal
+                # stop (kind 1/2/3; decimal simplified to right,
+                # matching pdfdoc.py's own convention) still needs
+                # position: absolute plus a CSS transform, since
+                # centring/right-aligning on a point needs to know its
+                # own eventual rendered width, which isn't available
+                # without taking it out of flow -- assumed short enough
+                # in practice not to wrap (true of the right-aligned
+                # footer text this was confirmed against).
                 flush()
                 if tab_span_open:
                     spans.append("</span>")
+                    tab_span_open = False
                 if tab_index < len(tab_stops):
                     stop = tab_stops[tab_index]
                     stop_pt = stop.position / UNIT
@@ -761,13 +773,19 @@ class PagedHTMLConverter(HTML5Converter):
                     stop_pt = 36.0 * (tab_index + 1)  # half-inch default pitch
                     kind = 0
                 tab_index += 1
-                tab_style = [f"position:absolute", f"left:{stop_pt:.2f}pt", "white-space:nowrap"]
-                if kind == 1:
-                    tab_style.append("transform:translateX(-50%)")
-                elif kind in (2, 3):
-                    tab_style.append("transform:translateX(-100%)")
-                spans.append(f'<span style="{";".join(tab_style)}">')
-                tab_span_open = True
+                if kind == 0:
+                    spacer_width = max(0.0, stop_pt - prev_boundary_pt)
+                    if spacer_width:
+                        spans.append(f'<span style="display:inline-block;width:{spacer_width:.2f}pt"></span>')
+                    prev_boundary_pt = stop_pt
+                else:
+                    transform = "translateX(-50%)" if kind == 1 else "translateX(-100%)"
+                    spans.append(
+                        f'<span style="position:absolute;left:{stop_pt:.2f}pt;white-space:nowrap;'
+                        f'transform:{transform}">'
+                    )
+                    tab_span_open = True
+                    prev_boundary_pt = stop_pt
             elif isinstance(item, PageBreakMark):
                 pass  # a real chain's forced breaks are handled by _flow_chained_story; elsewhere, no page concept to act on
             elif isinstance(item, MergeMark):

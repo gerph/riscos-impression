@@ -1371,6 +1371,30 @@ riscos-impression/
   both HTML formats; PCI_Spec's footer now appears on all 8 pages with
   "Issue F ****LIVE****" correctly right-aligned.
 
+* **Post-Stage-14 fix (18)**: immediately after fix (17), the user
+  supplied a reference image (PCISpec-HTMLPagedOverwrite.png) showing
+  PCI_Spec's "On Entry:"/"On Exit:" SWI-parameter rows (register name,
+  a LEFT tab, then an often multi-line description) rendering with
+  heavy overlapping, garbled text on page 5. Fix (17) made *every* tab
+  kind `position: absolute`, including left -- correct for
+  centre/right/decimal (which need to know their own eventual
+  rendered width to align against a point, impossible without taking
+  them out of flow), but wrong for left: `position: absolute` content
+  contributes nothing to its own paragraph's height, so a left-tabbed
+  row whose own description wrapped onto more than one line left its
+  `<p>`'s own box far too short, and the next row started immediately
+  underneath, overlapping the wrapped-but-layout-invisible text above
+  it. A left stop is now rendered as an inline-block spacer of the
+  right width instead, staying in normal document flow (wrapping and
+  contributing height correctly), while centre/right/decimal keep the
+  `position: absolute` + CSS-transform approach from fix (17)
+  unchanged. One new regression test (a left-tabbed row with a long,
+  wrapping description must contain no `position:absolute` and use an
+  inline-block spacer instead). Full suite (333 tests) green;
+  re-validated across all 111 real documents with 0 crashes; PCI_Spec's
+  own "On Entry:"/"On Exit:" rows now use inline-block spacers, staying
+  in normal flow.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

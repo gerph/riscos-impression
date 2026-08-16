@@ -271,6 +271,39 @@ def test_tab_positions_text_at_the_styles_own_tab_stop_not_a_literal_tab_charact
     assert ">Issue F<" in html
 
 
+def test_left_tab_stays_in_normal_flow_and_does_not_overlap_later_rows(tmp_path):
+    # Regression test: the user supplied a reference image (PCISpec-
+    # HTMLPagedOverwrite.png) showing PCI_Spec's "On Entry:"/"On Exit:"
+    # SWI-parameter rows (each starting with a register name, then a
+    # LEFT tab, then a description) rendering with heavy overlapping,
+    # garbled text on page 5. Every tab kind, including left, had been
+    # made position: absolute (fix for the earlier right-alignment
+    # bug), which removes a segment from normal document flow
+    # entirely -- contributing nothing to its own paragraph's height.
+    # A left-tabbed row whose own description is long enough to wrap
+    # onto more than one line therefore left its paragraph's own box
+    # far too short, and the next row started immediately underneath,
+    # visually overlapping the wrapped (but layout-invisible) text
+    # above it. A left tab must stay in normal flow -- an inline-block
+    # spacer of the right width, not a position: absolute segment --
+    # so wrapping and height both work correctly, and two such rows
+    # rendered as separate <p> elements must not visually collide.
+    document = _document(styles=[_style(0, is_body_text=True, font_size=160)])
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    style = _style(1, font_size=160, tab_stops=(TabStop(kind=0, position=144000),))
+    items = (Run(text="R0", style_slots=()), TabMark(), Run(text="A long wrapping description", style_slots=()))
+
+    html = converter._render_items(items, 0, None, style, 300.0)
+
+    assert "position:absolute" not in html
+    assert '<span style="display:inline-block;width:144.00pt"></span>' in html
+    assert ">A long wrapping description<" in html
+    # The description stays in normal flow (able to wrap and
+    # contribute height), not removed from it as a position: absolute
+    # segment would be.
+    assert "position: relative" in html  # still set on the <p> itself, harmless without any absolute children
+
+
 def test_real_multi_frame_chain_flows_text_across_frames(tmp_path):
     # Regression test: a real document (PCI_Spec from the local
     # examples/ corpus) has many stories chained across 2+ frames;
