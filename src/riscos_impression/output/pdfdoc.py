@@ -1355,25 +1355,37 @@ class PDFConverter(Converter):
         pict.xshift/yshift, when *apply_shift* (only true for a
         page-positioned picture -- see _draw_embedded_picture), anchor
         the drawfile's own native (0, 0) origin point -- not either
-        corner of its own declared bounding box -- at (anchor_x -
-        xshift, frame_y0 - yshift), where anchor_x is the frame's own
-        LEFT edge for an ungrouped picture but its RIGHT edge for a
-        grouped one; the content's own bottom-left corner then follows
-        from wherever it actually sits relative to that origin
-        (bounds.x0, bounds.y0), via `bounds.x0 * sx` / `bounds.y0 * sy`
-        below.
+        corner of its own declared bounding box -- at (frame's own
+        LEFT edge - xshift, frame's own bottom edge - yshift); the
+        content's own bottom-left corner then follows from wherever it
+        actually sits relative to that origin (bounds.x0, bounds.y0),
+        via `bounds.x0 * sx` / `bounds.y0 * sy` below. This is the same
+        formula for a grouped picture as an ungrouped one -- "grouped"
+        (i.e. this picture is visually grouped with sibling frames;
+        see the "grouped" flag bit, "Frame flags word") turned out to
+        have no bearing on the anchor at all, despite once appearing
+        to (see below).
 
         This was derived and validated against two purpose-built
         calibration documents, each a grid of pictures at known
         xshift/yshift/scale values compared directly, pixel-for-pixel,
-        against Impression's own rendering. A first version (anchored
-        at the content's own bounding-box corner, offset by half its
-        own displayed size) matched the first calibration document
-        closely, but a second, cleaner one -- plain shapes drawn
-        starting exactly at the drawfile's own (0, 0), at round-number
-        millimetre offsets -- showed that formula was itself a
-        coincidence: the first document's own content happened to have
-        its own bounds.x0/bounds.y0 sitting almost exactly half its own
+        against Impression's own rendering, and confirmed further
+        against two grouped pictures in a real document (previously
+        rendered using an x1-anchored special case for grouped
+        pictures -- see below -- which had left one showing the wrong
+        region of its own content entirely, missing its own compass
+        marker and every other landmark, and cropping the other's own
+        caption text): both resolved correctly, pixel-for-pixel against
+        their own real reference screenshots, using this same
+        left-edge-anchored formula, no grouped-specific handling at
+        all. A first version of the formula (anchored at the content's
+        own bounding-box corner, offset by half its own displayed size)
+        matched the first calibration document closely, but a second,
+        cleaner one -- plain shapes drawn starting exactly at the
+        drawfile's own (0, 0), at round-number millimetre offsets --
+        showed that formula was itself a coincidence: the first
+        document's own content happened to have its own
+        bounds.x0/bounds.y0 sitting almost exactly half its own
         width/height away from (0, 0), which is what made a half-size
         correction appear to fit. Re-deriving from the drawfile's own
         native origin instead of its bounding-box corner matches both
@@ -1387,27 +1399,26 @@ class PDFConverter(Converter):
 
         An even earlier formula (bottom-left corner anchored directly
         at an edge minus xshift/yshift, no origin/bounds distinction at
-        all) had appeared to match a real document's own dialog-
-        reported x/y/scale values for a page-positioned, grouped
-        picture exactly (x=-93.15mm, y=-54.82mm, scale=150% against raw
-        xshift=264060, yshift=155383, xscale=43690, all matching to
-        within 0.005mm) -- but that agreement turned out to be a false
-        positive specific to that picture being much bigger than its
-        own frame: matching xshift/yshift's own *conversion* to mm
-        (confirmed correct throughout every version of this formula) is
-        not the same as confirming the *anchor point* itself, and an
-        oversized picture's own "content fully covers the frame"
-        self-check passes regardless of which anchor is used -- exactly
-        when getting the anchor wrong is hardest to notice from the
-        numbers alone. The grouped-vs-ungrouped x anchor split, and the
-        y sign, were both established against that same picture's own
-        data (re-confirmed by cross-checking against an already-working
-        ungrouped picture the same way: the right-edge x anchor that
-        fixes a grouped picture makes an ungrouped one *worse*, 100%
-        down to 31% overlap, confirming the split is real) and were
-        carried forward unchanged into the current formula, since
-        neither calibration document above included a grouped picture
-        to re-confirm them independently.
+        all, and a grouped picture anchored from the frame's own RIGHT
+        edge rather than its left) had appeared to match a real
+        document's own dialog-reported x/y/scale values for a
+        page-positioned, grouped picture exactly (x=-93.15mm,
+        y=-54.82mm, scale=150% against raw xshift=264060, yshift=155383,
+        xscale=43690, all matching to within 0.005mm) -- but that
+        agreement turned out to be a false positive specific to that
+        picture being much bigger than its own frame: matching
+        xshift/yshift's own *conversion* to mm (confirmed correct
+        throughout every version of this formula) is not the same as
+        confirming the *anchor point* itself, and an oversized
+        picture's own "content fully covers the frame" self-check
+        passes regardless of which anchor is used -- exactly when
+        getting the anchor wrong is hardest to notice from the numbers
+        alone. That same "grouped" picture, re-rendered with the
+        current origin-anchored formula and a left-edge (not
+        right-edge) x anchor, now matches its own real reference
+        screenshot exactly, confirming the right-edge special case was
+        entirely an artifact of the superseded bounding-box-corner
+        formula, not a real distinction Impression itself makes.
 
         An earlier attempt at applying any shift at all (see PLAN.md)
         was rejected after it clipped away real content on every inline
@@ -1421,11 +1432,12 @@ class PDFConverter(Converter):
         Since a real picture frame is never deliberately left almost
         entirely empty, an implausible-result check catches cases like
         this automatically regardless of the underlying cause: if the
-        shifted content's own overlap with the frame covers under half
-        the frame's area, that's treated as a sign the shift isn't
-        trustworthy for this picture and centring (shrunk to fit first
-        if the content doesn't fit natively -- see below) is used
-        instead.
+        shifted content's own overlap covers under 5% of whichever of
+        the frame or the content is smaller (see the reference_area
+        note below for why "smaller", and why 5%, not the 50% first
+        tried), that's treated as a sign the shift isn't trustworthy
+        for this picture and centring (shrunk to fit first if the
+        content doesn't fit natively -- see below) is used instead.
 
         Rotation (pict.angle) remains unimplemented regardless; a
         non-zero angle is logged once rather than silently ignored.
@@ -1454,7 +1466,7 @@ class PDFConverter(Converter):
             # See this method's own docstring for the full derivation
             # and calibration history of this formula, including why
             # bounds.x0/bounds.y0 (not just xshift/yshift) matter here.
-            x_anchor = (x1 - pict.hinset / UNIT) if pict.grouped else (x0 + pict.hinset / UNIT)
+            x_anchor = x0 + pict.hinset / UNIT
             shifted_x = x_anchor - pict.xshift / UNIT + bounds.x0 * sx
             shifted_y = y0 - pict.yshift / UNIT + bounds.y0 * sy
             overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))

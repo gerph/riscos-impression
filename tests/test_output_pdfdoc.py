@@ -1949,66 +1949,44 @@ def test_picture_xshift_anchor_moves_inward_by_the_frames_own_hinset(tmp_path):
     assert round(xb - xa, 3) == 2.0
 
 
-def test_grouped_picture_xshift_anchors_from_the_frames_right_edge_not_left(tmp_path):
-    # Regression test: the user reported a real document's own
-    # location-marker map (a *grouped* picture, nested in a
-    # GroupFrame) still pointing at the wrong place -- "just south of
-    # Birmingham" -- after the sibling test's own sign fix. Supplying
-    # the picture's own dialog-reported drawfile size (101.65mm x
-    # 126.58mm) confirmed the scale/size formula was already exactly
-    # right (matches this project's own bounds x display-scale
-    # calculation to the hundredth of a millimetre), narrowing the
-    # remaining bug to x positioning specifically -- y already matched
-    # the frame's own height exactly, but x covered under a fifth of
-    # the frame's own width, as if x were anchored somewhere else
-    # entirely. It was: a grouped picture's own x is anchored from the
-    # frame's own *right* edge, not its left, unlike every ungrouped
-    # picture confirmed so far (see _draw_drawfile_picture's own
-    # docstring for the full numeric confirmation, including a
-    # geometric cross-check against the ungrouped picture that
-    # confirmed the sign fix -- anchoring *it* from the right edge
-    # instead makes its own overlap markedly worse, confirming the
-    # split is real, not a coincidence specific to one picture). This
-    # grouped/ungrouped split is unconfirmed against the newer,
-    # origin-anchored formula (see _draw_drawfile_picture's own
-    # docstring) -- no grouped picture was in either calibration
-    # document -- and is kept here only as the closest prior evidence.
+def test_grouped_picture_uses_the_same_left_edge_anchor_as_ungrouped(tmp_path):
+    # Regression test: an earlier formula (superseded -- see
+    # _draw_drawfile_picture's own docstring) anchored a grouped
+    # picture's own x from the frame's own *right* edge instead of its
+    # left, based on a real document's own dialog-reported x/y/scale
+    # values appearing to match that anchor exactly. That agreement
+    # turned out to be a false positive specific to that picture being
+    # much bigger than its own frame (an oversized picture's own
+    # "content fully covers the frame" self-check passes regardless of
+    # which anchor is used). Once the anchor/bounds formula itself was
+    # corrected (see the sibling test above), re-rendering that same
+    # real document's own *two* grouped pictures against their own
+    # real reference screenshots showed both need the ordinary
+    # left-edge anchor, no grouped-specific handling at all: one had
+    # been showing the wrong region of its own content entirely
+    # (missing its own compass marker and every other landmark), the
+    # other cropping its own caption text -- both matched their own
+    # reference exactly once rendered with a plain left-edge anchor.
+    # This test confirms a grouped and an ungrouped picture, given the
+    # identical frame/xshift/yshift, now render identically.
     from riscos_impression.output.pdfdoc import PDFConverter
 
     ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
     path = build_path(ops=ops, bounds=(0, 0, 25600, 25600), fill_colour=0x0000FF00)
     picture_bytes = build_drawfile(path, bounds=(0, 0, 25600, 25600))
 
-    # Frame wider than the (40pt) content, so a reasonable xshift can
-    # still land the right-anchored content within it -- unlike the
-    # sibling test's own 40x40pt frame, sized to exactly match a
-    # left-anchored picture's own content instead. xshift=80000 puts
-    # the content's own left edge exactly at the frame's own x1 - 40pt
-    # (x1 - xshift = 80000-80000 = 0, and this drawfile's own bounds
-    # start at (0, 0), so no further offset applies).
-    grouped_a = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=80000, yshift=0, grouped=True)
-    out_a = tmp_path / "a.pdf"
-    PDFConverter(grouped_a).convert(out_a)
-    xa, _ = _first_moveto_point(out_a.read_bytes())
-
-    grouped_b = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=79000, yshift=0, grouped=True)
-    out_b = tmp_path / "b.pdf"
-    PDFConverter(grouped_b).convert(out_b)
-    xb, _ = _first_moveto_point(out_b.read_bytes())
-
-    # xshift 1pt smaller -> content moves 1pt to the RIGHT (still
-    # anchored from the frame's own right edge, x1=80pt).
-    assert round(xb - xa, 3) == 1.0
-    assert round(xa, 3) == 0.0  # x1(80) - xshift(80), anchored at x1 not x0
-
-    # The same-shaped picture, ungrouped, anchors from x0 instead: at
-    # xshift=0 its own left edge lands exactly at the frame's own x0,
-    # not anywhere near x1.
     ungrouped = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=0, yshift=0, grouped=False)
-    out_c = tmp_path / "c.pdf"
-    PDFConverter(ungrouped).convert(out_c)
-    xc, _ = _first_moveto_point(out_c.read_bytes())
-    assert round(xc, 3) == 0.0
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(ungrouped).convert(out_a)
+    xa, ya = _first_moveto_point(out_a.read_bytes())
+    assert round(xa, 3) == 0.0  # left edge exactly at the frame's own x0
+
+    grouped = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=0, yshift=0, grouped=True)
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(grouped).convert(out_b)
+    xb, yb = _first_moveto_point(out_b.read_bytes())
+
+    assert (xb, yb) == (xa, ya)
 
 
 def test_page_positioned_picture_falls_back_to_centring_when_the_shift_would_leave_the_frame_mostly_empty(tmp_path):

@@ -1852,6 +1852,28 @@ riscos-impression/
   to fail against the pre-fix code. Full suite green; re-validated
   across all 117 real documents with 0 crashes.
 
+* **Post-Stage-14 fix (32)**: fix (31) carried forward, unconfirmed,
+  an older special case: a grouped picture's own x anchored from the
+  frame's own *right* edge rather than its left. The user reported a
+  real document's own map still rendering wrong after fix (31) --
+  missing its own compass marker and every other landmark entirely,
+  clearly showing the wrong region of its own content -- despite the
+  picture being grouped, the exact case that special case was meant
+  for. Re-checking against the real document's own reference
+  screenshot confirmed a plain left-edge anchor (the same formula as
+  every ungrouped picture) was correct instead; a second grouped
+  picture in the same document, previously cropping its own caption
+  text, matched its own reference too once switched to the same
+  left-edge anchor. The right-edge special case is now removed
+  entirely -- "grouped" turned out to have no bearing on the anchor
+  at all, and its earlier appearance of mattering was itself an
+  artifact of the bounding-box-corner formula fix (31) already
+  superseded (see `_draw_drawfile_picture`'s own docstring for the
+  full history). Regression test updated to confirm a grouped and an
+  ungrouped picture, given the identical frame/xshift/yshift, now
+  render identically. Full suite green; re-validated across all 117
+  real documents with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run
