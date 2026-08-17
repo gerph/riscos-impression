@@ -126,7 +126,7 @@ def test_bordered_frame_grid_is_recognised_as_a_table(tmp_path):
         for col, x in enumerate((0, 50000)):
             frame = _frame(
                 x0=x, y0=y - 50000, x1=x + 50000, y1=y,
-                border0=0, dictionary_index=offset,  # any non-negative value; used as a unique key below
+                border0=1, dictionary_index=offset,  # any non-negative value; used as a unique key below
             )
             records.append(_frame_record(offset, frame))
             cells[offset] = f"R{row}C{col}"
@@ -164,7 +164,7 @@ def test_irregular_bordered_frames_are_not_treated_as_a_table(tmp_path):
     # x=60000 -- the second column doesn't line up between rows.
     for y, xs in ((100000, (0, 50000)), (50000, (0, 60000))):
         for x in xs:
-            frame = _frame(x0=x, y0=y - 50000, x1=x + 10000, y1=y, border0=0, dictionary_index=offset)
+            frame = _frame(x0=x, y0=y - 50000, x1=x + 10000, y1=y, border0=1, dictionary_index=offset)
             records.append(_frame_record(offset, frame))
             offset += 100
 

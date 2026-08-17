@@ -132,6 +132,7 @@ from typing import Optional, Union
 
 from riscos_impression.formats.drawfile import (
     CAP_TRIANGULAR,
+    BoundingBox,
     DrawFile,
     DrawGroup,
     DrawPath,
@@ -1280,6 +1281,41 @@ class PDFConverter(Converter):
 
     # -- DrawFile pictures -----------------------------------------------------
 
+    @staticmethod
+    def _drawfile_effective_bounds(draw: DrawFile) -> BoundingBox:
+        """The true extent of *draw*'s own content: draw.bounds (the
+        file header's own declared bounding box) unioned with every
+        object's own individually-declared bounds, recursing into
+        groups and tagged objects. Confirmed necessary against a real
+        document: a DrawText object's own baseline+ascent extended
+        beyond the file header's own declared bounds, while that same
+        text object's own per-object bounds (decoded separately, in
+        its own object header) correctly included it -- a real, if
+        unusual, discrepancy in the source file itself, not something
+        this project's own decoder introduces. Using the header bounds
+        alone for positioning/scaling under-estimated how much room
+        the content actually needs, silently clipping the text at the
+        picture's own edge nearest the shortfall (its own frame's own
+        clip rectangle -- see _draw_drawfile_picture -- is sized from
+        this same bounds figure)."""
+        x0, y0, x1, y1 = draw.bounds.x0, draw.bounds.y0, draw.bounds.x1, draw.bounds.y1
+
+        def visit(obj) -> None:
+            nonlocal x0, y0, x1, y1
+            b = getattr(obj, "bounds", None)
+            if b is not None:
+                x0, y0 = min(x0, b.x0), min(y0, b.y0)
+                x1, y1 = max(x1, b.x1), max(y1, b.y1)
+            for child in getattr(obj, "objects", None) or ():
+                visit(child)
+            inner = getattr(obj, "inner", None)
+            if inner is not None:
+                visit(inner)
+
+        for obj in draw.objects:
+            visit(obj)
+        return BoundingBox(x0, y0, x1, y1)
+
     def _draw_drawfile_picture(
         self, draw: DrawFile, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame, apply_shift: bool
     ) -> None:
@@ -1356,11 +1392,13 @@ class PDFConverter(Converter):
         frame. Both share something the two resolved pictures don't:
         the user confirmed Impression's own "Lock Values" dialog
         option is unticked for both (ticked for both resolved
-        pictures) -- suggestively consistent with a stale/inapplicable
-        stored offset (this project has already found one other real,
-        confirmed case elsewhere of a style's own leftover value from
-        before an edit that never got cleared -- see _line_height_pt's
-        own docstring), though unconfirmed as the actual mechanism.
+        pictures) -- an observed correlation only, on a sample of four
+        pictures; the user considers "Lock Values" itself unlikely to
+        be the actual mechanism (it is understood to be no more than a
+        controls lock in Impression's own UI), so this is noted here
+        only as a pattern to check against if more pictures of either
+        kind turn up, not as an explanation.
+
         Since a real picture frame is never deliberately left almost
         entirely empty, an implausible-result check catches cases like
         this automatically regardless of the underlying cause: if the
@@ -1368,9 +1406,7 @@ class PDFConverter(Converter):
         the frame's area, that's treated as a sign the shift isn't
         trustworthy for this picture and centring (shrunk to fit first
         if the content doesn't fit natively -- see below) is used
-        instead -- which, if the Lock-Values theory holds, is likely
-        already the *correct* rendering for these two pictures, not
-        merely a fallback for an unsolved case.
+        instead.
 
         Rotation (pict.angle) remains unimplemented regardless; a
         non-zero angle is logged once rather than silently ignored.
@@ -1378,7 +1414,7 @@ class PDFConverter(Converter):
         patterns, caps/joins) versus what's a genuine placeholder
         (Sprite objects embedded within the file, and any other
         undecoded object type)."""
-        bounds = draw.bounds
+        bounds = self._drawfile_effective_bounds(draw)
         display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
         display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
         sx = _DRAW_UNIT_TO_PT * display_scale_x

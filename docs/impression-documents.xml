@@ -405,7 +405,7 @@ exactly A4's PDF-point dimensions (595.276 x 841.890 pt) scaled by
 <offset number="48" name="backcolour" data-size="4">Inline colour value word for the frame's fill colour; see "Inline colour value words". Meaningful only when the "filled" flag bit is set.</offset>
 <offset number="52" name="hinset" data-size="4">Horizontal inset margin between the frame's outer box and its text/content area.</offset>
 <offset number="56" name="vinset" data-size="4">Vertical inset margin.</offset>
-<offset number="60" name="border0" data-size="1">Border style for the frame's top edge; 0xFF means no border is drawn on that edge, any other value indicates a border is present. See the note below.</offset>
+<offset number="60" name="border0" data-size="1">Border style for the frame's top edge; 0xFF means no border is drawn on that edge. A style value of 0 is also treated as "no border", distinct from a genuinely chosen style (1, 2, 3, and presumably higher): a real document's picture frames with all four border bytes 0 rendered without a border in Impression itself, and a corpus-wide survey of real documents' border bytes found 0 to be far more common than any of the small number of genuine style values in use and never itself co-occurring with the visual appearance of a border, consistent with an unset/default value left over from frame creation rather than a selectable style. See the note below.</offset>
 <offset number="61" name="border1" data-size="1">Border style for the frame's left edge; see border0.</offset>
 <offset number="62" name="border2" data-size="1">Border style for the frame's right edge; see border0.</offset>
 <offset number="63" name="border3" data-size="1">Border style for the frame's bottom edge; see border0.</offset>
@@ -531,12 +531,43 @@ as follows:
 <offset-table head-number="Offset" head-name="Name" head-data-size="Size" head-value="Contents">
 <offset number="104" name="xscale" data-size="4">Horizontal scale factor for the picture. Stored as the reciprocal of the displayed horizontal scale; 0x10000 represents unity scale.</offset>
 <offset number="108" name="yscale" data-size="4">Vertical scale factor, using the same reciprocal convention as xscale.</offset>
-<offset number="112" name="xshift" data-size="4">Horizontal origin shift for the picture within its frame. The on-disk field name and the conversion source's own DDL emission suggest a millipoint offset of the content's own bottom-left corner from the frame's bottom-left, but this interpretation has been found to clip away genuinely visible picture content when checked against real documents. The true anchor/sign convention remains unconfirmed; it needs OvationPro's own DDL "picturedata bottomleft" semantics to pin down properly.</offset>
-<offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame; see xshift.</offset>
+<offset number="112" name="xshift" data-size="4">Horizontal origin shift, in millipoints, anchoring the picture's own content within its frame; see the note below for the anchor point and sign convention, which differ from the conversion source's own DDL emission.</offset>
+<offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame; see xshift and the note below.</offset>
 <offset number="120" name="angle" data-size="4">Rotation angle, in degrees multiplied by 0x10000 (16.16 fixed-point degrees).</offset>
 <offset number="124-127" data-size="4">Packed word: lpi (halftone screen ruling, in lines per inch), psscreen (halftone screen angle or identifier), and psx0 (remaining bits, unknown). All three are meaningful only when the usepsscreen flag bit is set. The exact byte order of this word could not be confirmed: the source's own inline comments for lpi and psscreen give offsets in the opposite order to their declaration, suggesting the original author was themselves unsure of the precise layout. No picture frame with usepsscreen set was found in an empirical 46-document survey, so this remains untested against real data either way.</offset>
 <offset number="128-159" name="y" data-size="32" state="undefined">Unknown; reserved block of eight 32-bit words.</offset>
 </offset-table>
+</p>
+<p>
+A picture frame is a clip window onto its own content, sized
+independently of that content's own true size at its declared scale --
+not a box the content is stretched to fill. xshift/yshift anchor the
+content's own bottom-left corner at a point derived from the frame's
+own outer box, confirmed to sub-0.01mm precision against several real
+pictures' own readings in Impression's picture information dialog:
+the anchor point is <userinput>(anchor_x - xshift/1000,
+frame_y0 - yshift/1000)</userinput> in points, where
+<userinput>frame_y0</userinput> is the frame's own bottom edge and
+<userinput>anchor_x</userinput> is the frame's own left edge (offset
+inward by hinset) for a picture that is not grouped, or its own right
+edge (offset inward by hinset instead) for a picture that is grouped
+(see the "grouped" flag bit, "Frame flags word"); vinset applies no
+equivalent adjustment to the y anchor. This anchor/sign convention
+differs from the conversion source's own DDL emission, whose
+"picturedata bottomleft" block writes <userinput>-xshift</userinput>
+and <userinput>yshift</userinput> unmodified, always anchored at the
+frame's own left edge regardless of grouping -- a convention that only
+matches Impression's own real rendering for an ungrouped, embedded
+(not page-positioned) picture; page-positioned pictures, and grouped
+pictures of either kind, need the anchor and y sign described above
+instead. A page-positioned picture whose xshift/yshift, applied this
+way, still leaves most of the frame's own area uncovered by the
+content is better treated as an unreliable stored value than rendered
+literally: real documents are never deliberately left almost entirely
+empty, and at least two real, otherwise ordinary-looking pictures have
+been found with xshift/yshift values that read back correctly from
+Impression's own dialog yet do not correspond to any anchor choice
+against their own declared frame.
 </p>
 <p>
 The two extra bits carried in the frame group flags word (offset 72;

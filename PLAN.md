@@ -1746,7 +1746,43 @@ riscos-impression/
   overlap the next column, since the column's own tab stop was still
   positioned assuming 100%-width text.
 
-  Each of fixes (23)-(27) was verified independently (re-rendering
+* **Post-Stage-14 fix (28)**: two further issues found in the same real
+  document (FieldWork), reported with exact millimetre readings from
+  Impression's own picture info dialog for the affected pictures:
+
+  * A picture's own caption text ("Groyne") was cropped at the top of
+    its frame. Root cause: `_draw_drawfile_picture` sized and
+    positioned a DrawFile's content using only the file header's own
+    declared bounding box (`draw.bounds`), but a real DrawFile's
+    header bounds can be smaller than its own content's true extent --
+    here, a `DrawText` object's own baseline+ascent extended above the
+    file header's own declared top edge, even though that same text
+    object's own individually-decoded bounds (from its own object
+    header) correctly included it. Sizing from the header bounds alone
+    under-measured the content's real height, letting its true top
+    edge run past the picture frame's own clip rectangle. A new
+    `_drawfile_effective_bounds` unions the file header's own bounds
+    with every object's own bounds (recursing into groups and tagged
+    objects) and is now used in place of the raw header bounds.
+  * Two pictures rendered with a visible grey border/shadow box that
+    Impression itself does not show for them (confirmed directly: the
+    user reported both as bordered on the PDF but borderless in
+    Impression). Both had `border0`..`border3` all `0`, which
+    `Frame.has_border` treated as "a border is present" (only `0xFF`
+    meant absent), matching the original TransIMP C converter's own
+    `!= 0xFF` check verbatim. A corpus-wide scan of real documents'
+    border byte values found only three genuinely distinct non-`0xFF`
+    values in use: `1`, `2`, `3` (real, selectable border styles -- one
+    of which, style `2`, borders an unrelated caption frame sitting
+    immediately below one of the two affected pictures on the same
+    page, which is what made the bug easy to mistake at a glance for a
+    single box drawn around picture-plus-caption together) -- and `0`
+    on its own, far more common than any real style value and never
+    otherwise produced by a genuine style choice, consistent with an
+    unset/default sentinel rather than a chosen style. `has_border` now
+    treats `0` as a second "no border" sentinel alongside `0xFF`.
+
+  Each of fixes (23)-(28) was verified independently (re-rendering
   the real document and comparing against its own reference
   screenshot where one was supplied) and has its own regression test,
   each confirmed to fail against the pre-fix code before being fixed.

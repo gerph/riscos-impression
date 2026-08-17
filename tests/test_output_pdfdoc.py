@@ -1744,6 +1744,46 @@ def test_picture_frame_with_an_empty_drawfile_renders_cleanly(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_drawfile_effective_bounds_unions_object_bounds_beyond_the_file_header(tmp_path):
+    # Regression test: the user reported a real document (FieldWork)
+    # rendering a picture's own caption text ("Groyne") cropped at the
+    # top of its frame. Root cause: the DrawFile's own file-header-
+    # declared bounding box did not include one of its own objects'
+    # full extent, even though that object's own individually-decoded
+    # bounds (in its own object header) correctly did -- sizing the
+    # picture's content from the header bounds alone under-measured how
+    # much room the content actually needs. _drawfile_effective_bounds
+    # unions every object's own bounds with the file header's own bounds
+    # to fix this. Reproduced here with a DrawPath (not DrawText) purely
+    # so the test can assert on exact geometry via the established
+    # move-to-point helper, without depending on font-size arithmetic:
+    # the path's own declared bounds (0,0,1000,5000) are 5x taller than
+    # the file header's own declared bounds (0,0,1000,1000) -- the same
+    # shape of discrepancy as the real document's (header too short; an
+    # object's own bounds correctly taller). A huge xshift forces the
+    # centring fallback (see the sibling "falls back to centring" test
+    # above), whose own origin position is directly sensitive to the
+    # bounds height used, isolating the effect cleanly.
+    from riscos_impression.output.pdfdoc import PDFConverter, _DRAW_UNIT_TO_PT
+
+    ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + line(0, 1000) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 5000), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    document = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=2000000, yshift=1000000)
+    out = tmp_path / "out.pdf"
+    PDFConverter(document).convert(out)
+    x, y = _first_moveto_point(out.read_bytes())
+
+    frame_w = frame_h = 40000 / 1000.0
+    displayed_w = 1000 * _DRAW_UNIT_TO_PT
+    displayed_h = 5000 * _DRAW_UNIT_TO_PT  # only correct if the object's own taller bounds were used
+    expected_x = (frame_w - displayed_w) / 2.0
+    expected_y = (frame_h - displayed_h) / 2.0
+    assert round(x, 3) == round(expected_x, 3)
+    assert round(y, 3) == round(expected_y, 3)
+
+
 def test_drawfile_path_renders_as_real_vector_fill_content(tmp_path):
     from riscos_impression.output.pdfdoc import PDFConverter
 

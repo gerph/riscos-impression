@@ -135,6 +135,25 @@ def test_no_border_and_no_story():
     assert rec.value.has_story is False
 
 
+def test_zero_border_style_is_also_no_border():
+    """border0..border3 == 0 is a second "no border" sentinel alongside
+    0xFF, distinct from a genuine border style (1, 2, 3, ...). Confirmed
+    against a real document: a picture frame with all four border bytes
+    0 rendered with a visible border/shadow box that Impression itself
+    does not show for that picture."""
+    body = build_frame_common_body(border0=0, border1=0, border2=0, border3=0)
+    record = build_object_record(type=0x4, body=body)  # XBLANK
+    (rec,) = parse_object_stream(record, 0, len(record))
+    assert rec.value.has_border is False
+
+
+def test_nonzero_border_style_is_still_a_border():
+    body = build_frame_common_body(border0=1, border1=0xFF, border2=0xFF, border3=0xFF)
+    record = build_object_record(type=0x4, body=body)  # XBLANK
+    (rec,) = parse_object_stream(record, 0, len(record))
+    assert rec.value.has_border is True
+
+
 def test_fill_and_border_colour_helpers():
     from riscos_impression.model.colours import ColourModel
 
