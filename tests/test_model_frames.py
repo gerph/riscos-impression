@@ -135,16 +135,16 @@ def test_no_border_and_no_story():
     assert rec.value.has_story is False
 
 
-def test_zero_border_style_is_also_no_border():
-    """border0..border3 == 0 is a second "no border" sentinel alongside
-    0xFF, distinct from a genuine border style (1, 2, 3, ...). Confirmed
-    against a real document: a picture frame with all four border bytes
-    0 rendered with a visible border/shadow box that Impression itself
-    does not show for that picture."""
+def test_zero_border_style_is_a_real_border_not_a_sentinel():
+    """border0..border3 == 0 is Impression's own "Border 1" style (the
+    UI's 1-based numbering maps directly onto the stored byte 0-based:
+    "Border 1" -> 0, "Border 2" -> 1, ... "Border 10" -> 9, confirmed
+    against a controlled test document with frames explicitly set to
+    each style), not a second "no border" sentinel alongside 0xFF."""
     body = build_frame_common_body(border0=0, border1=0, border2=0, border3=0)
     record = build_object_record(type=0x4, body=body)  # XBLANK
     (rec,) = parse_object_stream(record, 0, len(record))
-    assert rec.value.has_border is False
+    assert rec.value.has_border is True
 
 
 def test_nonzero_border_style_is_still_a_border():

@@ -1285,32 +1285,46 @@ class PDFConverter(Converter):
     def _drawfile_effective_bounds(draw: DrawFile) -> BoundingBox:
         """The true extent of *draw*'s own content: draw.bounds (the
         file header's own declared bounding box) unioned with every
-        object's own individually-declared bounds, recursing into
-        groups and tagged objects. Confirmed necessary against a real
-        document: a DrawText object's own baseline+ascent extended
-        beyond the file header's own declared bounds, while that same
-        text object's own per-object bounds (decoded separately, in
-        its own object header) correctly included it -- a real, if
-        unusual, discrepancy in the source file itself, not something
-        this project's own decoder introduces. Using the header bounds
-        alone for positioning/scaling under-estimated how much room
-        the content actually needs, silently clipping the text at the
-        picture's own edge nearest the shortfall (its own frame's own
-        clip rectangle -- see _draw_drawfile_picture -- is sized from
-        this same bounds figure)."""
+        DrawPath/DrawText object's own individually-declared bounds,
+        recursing into groups and tagged objects. Confirmed necessary
+        against a real document: a DrawText object's own baseline+
+        ascent extended beyond the file header's own declared bounds,
+        while that same text object's own per-object bounds (decoded
+        separately, in its own object header) correctly included it --
+        a real, if unusual, discrepancy in the source file itself, not
+        something this project's own decoder introduces. Using the
+        header bounds alone for positioning/scaling under-estimated
+        how much room the content actually needs, silently clipping
+        the text at the picture's own edge nearest the shortfall (its
+        own frame's own clip rectangle -- see _draw_drawfile_picture --
+        is sized from this same bounds figure).
+
+        Deliberately excludes DrawSprite/DrawUnknown's own declared
+        bounds from the union (though recursion still passes through
+        a DrawGroup/DrawTagged wrapping one, and its own declared
+        bounds are excluded too, for the same reason): confirmed
+        against the same real document, a run of 5 objects of an
+        unrecognised type all declared an identical, tiny (0,0)-(10,10)
+        bounding box unrelated to the picture's real visible content --
+        not a genuine spatial extent at all, apparently a fixed/dummy
+        value this object kind always carries. Unioning it in pulled a
+        picture's own effective origin all the way to (0,0), inflating
+        its measured size well beyond its real content and corrupting
+        an otherwise-correct, already-confirmed xshift/yshift position
+        for a sibling picture positioned relative to it."""
         x0, y0, x1, y1 = draw.bounds.x0, draw.bounds.y0, draw.bounds.x1, draw.bounds.y1
 
         def visit(obj) -> None:
             nonlocal x0, y0, x1, y1
-            b = getattr(obj, "bounds", None)
-            if b is not None:
+            if isinstance(obj, (DrawPath, DrawText)):
+                b = obj.bounds
                 x0, y0 = min(x0, b.x0), min(y0, b.y0)
                 x1, y1 = max(x1, b.x1), max(y1, b.y1)
-            for child in getattr(obj, "objects", None) or ():
-                visit(child)
-            inner = getattr(obj, "inner", None)
-            if inner is not None:
-                visit(inner)
+            elif isinstance(obj, DrawGroup):
+                for child in obj.objects:
+                    visit(child)
+            elif isinstance(obj, DrawTagged) and obj.inner is not None:
+                visit(obj.inner)
 
         for obj in draw.objects:
             visit(obj)
@@ -1340,35 +1354,60 @@ class PDFConverter(Converter):
 
         pict.xshift/yshift, when *apply_shift* (only true for a
         page-positioned picture -- see _draw_embedded_picture), anchor
-        the content's own bottom-left corner at (anchor_x - xshift,
-        frame_y0 - yshift), where anchor_x is the frame's own LEFT edge
-        for an ungrouped picture but its RIGHT edge for a grouped one.
+        the drawfile's own native (0, 0) origin point -- not either
+        corner of its own declared bounding box -- at (anchor_x -
+        xshift, frame_y0 - yshift), where anchor_x is the frame's own
+        LEFT edge for an ungrouped picture but its RIGHT edge for a
+        grouped one; the content's own bottom-left corner then follows
+        from wherever it actually sits relative to that origin
+        (bounds.x0, bounds.y0), via `bounds.x0 * sx` / `bounds.y0 * sy`
+        below.
 
-        The *original* C DDL emitter's own "picturedata" block
-        (`c/frames`' ixpictdata(): `{bottomleft 1}{x %d}` with
-        `-pictp->xshift`, `{y %d}` with `pictp->yshift` verbatim, i.e.
-        y NOT negated, x anchored at the frame's own left edge always)
-        matched a real embedded picture's own dialog reading exactly
-        when this was first confirmed -- but that picture was embedded
-        (apply_shift=False; see below), and a second real picture
-        (page-positioned, grouped) later gave readings that only
-        matched with y NEGATED and x anchored at the frame's own RIGHT
-        edge instead of its left: dialog x=-93.15mm, y=-54.82mm,
-        scale=150%, drawfile size 101.65mm x 126.58mm against raw
-        xshift=264060, yshift=155383, xscale=43690 -- x, y, and scale
-        all match to within 0.005mm with that anchor and sign, and the
-        drawfile's own displayed size (bounds x display scale) matches
-        the dialog's reported size exactly too, confirming the scale
-        formula independently of the anchor question. Both the sign
-        and the anchor were re-checked against the earlier,
-        already-working ungrouped picture (confirmed pixel-for-pixel
-        against a real document's own reference image) for consistency
-        rather than trusting one data point in isolation: y-negation
-        improves its own overlap from 95% to a perfect 100% either way,
-        but the right-edge x anchor that fixes the grouped picture
-        makes this ungrouped one *worse* (100% down to 31%) -- so
-        "grouped" genuinely is the discriminator for which edge x
-        anchors from, not a coincidence specific to one picture.
+        This was derived and validated against two purpose-built
+        calibration documents, each a grid of pictures at known
+        xshift/yshift/scale values compared directly, pixel-for-pixel,
+        against Impression's own rendering. A first version (anchored
+        at the content's own bounding-box corner, offset by half its
+        own displayed size) matched the first calibration document
+        closely, but a second, cleaner one -- plain shapes drawn
+        starting exactly at the drawfile's own (0, 0), at round-number
+        millimetre offsets -- showed that formula was itself a
+        coincidence: the first document's own content happened to have
+        its own bounds.x0/bounds.y0 sitting almost exactly half its own
+        width/height away from (0, 0), which is what made a half-size
+        correction appear to fit. Re-deriving from the drawfile's own
+        native origin instead of its bounding-box corner matches both
+        calibration documents, and also resolved two real pictures in a
+        real document that an earlier, less complete version of this
+        formula could never anchor correctly despite an exhaustive
+        search (over 300 combinations of edge/sign/reference-frame
+        tried against their own tiny frames, none within 30% of full
+        coverage) -- both turned out to need only the origin/bounds
+        distinction above, nothing document-specific.
+
+        An even earlier formula (bottom-left corner anchored directly
+        at an edge minus xshift/yshift, no origin/bounds distinction at
+        all) had appeared to match a real document's own dialog-
+        reported x/y/scale values for a page-positioned, grouped
+        picture exactly (x=-93.15mm, y=-54.82mm, scale=150% against raw
+        xshift=264060, yshift=155383, xscale=43690, all matching to
+        within 0.005mm) -- but that agreement turned out to be a false
+        positive specific to that picture being much bigger than its
+        own frame: matching xshift/yshift's own *conversion* to mm
+        (confirmed correct throughout every version of this formula) is
+        not the same as confirming the *anchor point* itself, and an
+        oversized picture's own "content fully covers the frame"
+        self-check passes regardless of which anchor is used -- exactly
+        when getting the anchor wrong is hardest to notice from the
+        numbers alone. The grouped-vs-ungrouped x anchor split, and the
+        y sign, were both established against that same picture's own
+        data (re-confirmed by cross-checking against an already-working
+        ungrouped picture the same way: the right-edge x anchor that
+        fixes a grouped picture makes an ungrouped one *worse*, 100%
+        down to 31% overlap, confirming the split is real) and were
+        carried forward unchanged into the current formula, since
+        neither calibration document above included a grouped picture
+        to re-confirm them independently.
 
         An earlier attempt at applying any shift at all (see PLAN.md)
         was rejected after it clipped away real content on every inline
@@ -1378,26 +1417,6 @@ class PDFConverter(Converter):
         the shift is declared relative to, so anchoring against it was
         never going to land right regardless of the formula's own
         correctness.
-
-        Two further real pictures on the same page never reach a
-        trustworthy overlap despite an exhaustive search (both signs,
-        every combination of x0/x1/centre and y0/y1/centre, against
-        this picture's own frame, its group's own frame, and a
-        visually-related sibling picture's own frame -- over 300
-        combinations tried, none within 30% of full coverage) -- their
-        own raw xshift/yshift, converted the same way, still matches
-        Impression's own dialog reading for each exactly (confirmed
-        directly, not merely inferred), so the *numbers* are right;
-        no *anchor* reconciles them with either picture's own tiny
-        frame. Both share something the two resolved pictures don't:
-        the user confirmed Impression's own "Lock Values" dialog
-        option is unticked for both (ticked for both resolved
-        pictures) -- an observed correlation only, on a sample of four
-        pictures; the user considers "Lock Values" itself unlikely to
-        be the actual mechanism (it is understood to be no more than a
-        controls lock in Impression's own UI), so this is noted here
-        only as a pattern to check against if more pictures of either
-        kind turn up, not as an explanation.
 
         Since a real picture frame is never deliberately left almost
         entirely empty, an implausible-result check catches cases like
@@ -1424,34 +1443,47 @@ class PDFConverter(Converter):
 
         shifted = None
         if apply_shift:
-            # A *grouped* picture's own x anchor is the frame's right
-            # edge, not its left -- confirmed against a real document:
-            # a grouped picture's own dialog-confirmed x/y/scale gave
-            # only ~18% overlap anchored at x0 (y alone matched the
-            # frame exactly; x left ~80% of the frame's own width
-            # uncovered), but a perfect 100% anchored at x1 instead --
-            # and re-checking the already-validated ungrouped picture
-            # the same way confirms the split: x1 gives it only 31%,
-            # versus x0's already-confirmed 100%. y stays anchored at
-            # the frame's own bottom edge either way.
-            #
-            # x's own anchor also moves inward by the frame's own
-            # hinset -- confirmed against a second real (ungrouped)
-            # picture whose x was otherwise off by exactly hinset/UNIT
-            # in mm (5669 raw = 2.00mm, matching the discrepancy to
-            # 0.001mm): x0+hinset for an ungrouped picture, x1-hinset
-            # for a grouped one (inward from whichever edge x anchors
-            # from). y needs no equivalent vinset correction -- checked
-            # against the same picture (adding or subtracting vinset,
-            # itself equal to hinset here, moved y's own dialog-
-            # equivalent value well away from the confirmed reading).
+            # Derived and validated against two purpose-built calibration
+            # documents. xshift/yshift anchor the drawfile's own native
+            # (0, 0) origin point -- not either corner of its own
+            # declared bounding box -- at (frame's own left edge -
+            # xshift, frame's own bottom edge - yshift); the content's
+            # own bottom-left corner then follows from wherever that
+            # corner actually sits relative to the drawfile's own
+            # origin (bounds.x0, bounds.y0), which is not always (0, 0).
+            # See this method's own docstring for the full derivation
+            # and calibration history of this formula, including why
+            # bounds.x0/bounds.y0 (not just xshift/yshift) matter here.
             x_anchor = (x1 - pict.hinset / UNIT) if pict.grouped else (x0 + pict.hinset / UNIT)
-            shifted_x = x_anchor - pict.xshift / UNIT
-            shifted_y = y0 - pict.yshift / UNIT
+            shifted_x = x_anchor - pict.xshift / UNIT + bounds.x0 * sx
+            shifted_y = y0 - pict.yshift / UNIT + bounds.y0 * sy
             overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))
             overlap_h = max(0.0, min(y1, shifted_y + displayed_h) - max(y0, shifted_y))
             frame_area = (x1 - x0) * (y1 - y0)
-            if frame_area <= 0 or (overlap_w * overlap_h) / frame_area >= 0.5:
+            content_area = displayed_w * displayed_h
+            # Measured against whichever of the frame or the content is
+            # *smaller*, not always the frame: a picture smaller than
+            # its own frame can never cover half the frame's own area
+            # even when perfectly positioned (its own full area is the
+            # most it could ever cover), so measuring against the
+            # frame's area alone falsely condemned otherwise-correct
+            # shifts as "implausible" purely for being smaller than
+            # their frame -- confirmed against a calibration document
+            # whose own known-correct shifts (each pixel-verified
+            # against Impression's own rendering) covered as little as
+            # ~47% of the frame's own area while still covering the
+            # picture's own full area.
+            reference_area = min(frame_area, content_area)
+            # The threshold itself is much lower than the 50% first
+            # tried alongside the fix above: the calibration document's
+            # own known-correct, pixel-verified shifts included a
+            # picture deliberately cropped down to ~41% coverage of its
+            # own area (Impression itself shows only part of it,
+            # cropped by the frame) -- a legitimate shift, not an
+            # implausible one, yet still well under 50%. This remains
+            # only for genuinely degenerate cases (comfortably under
+            # any real observed legitimate crop).
+            if reference_area <= 0 or (overlap_w * overlap_h) / reference_area >= 0.05:
                 shifted = (shifted_x, shifted_y)
 
         if shifted is not None:

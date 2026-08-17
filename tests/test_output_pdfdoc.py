@@ -1813,23 +1813,22 @@ def test_page_positioned_picture_xshift_yshift_anchors_content_to_the_frames_own
     # marker landing nowhere near its real-world location -- confirmed
     # to be xshift/yshift being ignored entirely (the picture's content
     # was simply centred in its frame instead). xshift/yshift anchor
-    # the drawfile content's own bottom-left corner at (-xshift,
-    # -yshift) from the frame's own bottom-left -- x confirmed against
-    # the exact millimetre value read directly from Impression's own
-    # picture info dialog for a real picture; y initially assumed
-    # (wrongly) to be positive, matching the original C DDL emitter's
-    # own "picturedata" block verbatim (`c/frames`' ixpictdata():
-    # `{y %d}` with `pictp->yshift`, no negation) -- but a second real
-    # picture's own dialog reading confirmed negative instead (see
-    # _draw_drawfile_picture's own docstring for the full numeric
-    # confirmation, including a geometric cross-check against the
-    # first picture too: negated y gives that picture perfect overlap
-    # with its own frame, versus merely good with positive y). A
-    # 40x40pt square drawfile in a 40x40pt frame (so the shifted
-    # content still overlaps the frame comfortably, i.e. the fallback
-    # in the sibling test below doesn't kick in here) confirms this:
-    # changing xshift/yshift by a known amount must shift the drawn
-    # content by exactly that amount, in the expected direction.
+    # the drawfile's own native (0, 0) origin point -- not either
+    # corner of its own declared bounding box -- at (frame's own left
+    # edge - xshift, frame's own bottom edge - yshift); the content's
+    # own bottom-left corner then follows from wherever it actually
+    # sits relative to that origin. Derived and pixel-verified against
+    # two purpose-built calibration documents -- see
+    # _draw_drawfile_picture's own docstring for the full history,
+    # including two superseded earlier formulas that each appeared to
+    # fit some real data but turned out to be coincidences. A 40x40pt
+    # square drawfile, itself declared starting exactly at (0, 0) (so
+    # its own bounding-box corner and its own native origin coincide,
+    # keeping this test focused purely on the xshift/yshift part of the
+    # formula -- the origin/bounds distinction has its own dedicated
+    # test below), in a 40x40pt frame confirms this: changing
+    # xshift/yshift by a known amount must shift the drawn content by
+    # exactly that amount, in the expected direction.
     from riscos_impression.output.pdfdoc import PDFConverter
 
     ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
@@ -1840,17 +1839,67 @@ def test_page_positioned_picture_xshift_yshift_anchors_content_to_the_frames_own
     out0 = tmp_path / "baseline.pdf"
     PDFConverter(baseline).convert(out0)
     x0, y0 = _first_moveto_point(out0.read_bytes())
+    assert round(x0, 3) == 0.0  # content's own left edge lands exactly at the frame's own x0
+    assert round(y0, 3) == 0.0  # content's own bottom edge lands exactly at the frame's own y0
 
     shifted = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, yshift=500)
     out1 = tmp_path / "shifted.pdf"
     PDFConverter(shifted).convert(out1)
     x1, y1 = _first_moveto_point(out1.read_bytes())
 
-    # xshift=1000 (1pt) -> content moves LEFT by 1pt (origin_x = x0 -
-    # xshift/UNIT); yshift=500 (0.5pt) -> content moves DOWN by 0.5pt
-    # (origin_y = y0 - yshift/UNIT).
+    # xshift=1000 (1pt) -> content moves LEFT by 1pt; yshift=500 (0.5pt)
+    # -> content moves DOWN by 0.5pt (both are subtracted in the
+    # formula).
     assert round(x1 - x0, 3) == -1.0
     assert round(y1 - y0, 3) == -0.5
+
+
+def test_picture_xshift_anchors_the_drawfiles_own_origin_not_its_bounding_box(tmp_path):
+    # Regression test: a first calibration document (a grid of
+    # identically-sized, distinctly-marked pictures) suggested xshift
+    # anchored the content's own bounding-box corner, offset by half
+    # its own displayed size -- matching that document's own data
+    # closely. A second, cleaner calibration document (a plain shape
+    # drawn starting exactly at the drawfile's own (0, 0), at
+    # round-number millimetre offsets) revealed this was a coincidence:
+    # the first document's own content happened to have its own
+    # bounds.x0 sitting almost exactly half its own width away from
+    # (0, 0), which is what made a half-size correction appear to fit.
+    # The real anchor point is the drawfile's own native (0, 0) origin,
+    # regardless of where the content's own declared bounds happen to
+    # start -- confirmed here with two drawfiles sharing the same
+    # xshift/yshift but declaring their own bounds starting at
+    # different offsets from (0, 0): the one whose own bounds start
+    # further from the origin must be shifted by exactly that same
+    # extra amount (scaled), not stay in the same place.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(0, 0) + line(6400, 0) + line(6400, 6400) + line(0, 6400) + close_line() + end_path()
+
+    at_origin = build_path(ops=ops, bounds=(0, 0, 6400, 6400), fill_colour=0x0000FF00)
+    picture_at_origin = build_drawfile(at_origin, bounds=(0, 0, 6400, 6400))
+
+    offset_ops = move(12800, 12800) + line(19200, 12800) + line(19200, 19200) + line(12800, 19200) + close_line() + end_path()
+    offset_from_origin = build_path(ops=offset_ops, bounds=(12800, 12800, 19200, 19200), fill_colour=0x0000FF00)
+    picture_offset_from_origin = build_drawfile(offset_from_origin, bounds=(12800, 12800, 19200, 19200))
+
+    document_a = _picture_document(picture_at_origin, x1=40000, y1=40000, xshift=0, yshift=0)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(document_a).convert(out_a)
+    xa, ya = _first_moveto_point(out_a.read_bytes())
+
+    document_b = _picture_document(picture_offset_from_origin, x1=40000, y1=40000, xshift=0, yshift=0)
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(document_b).convert(out_b)
+    xb, yb = _first_moveto_point(out_b.read_bytes())
+
+    # 12800 Draw units at 100% display scale is 20pt (12800 *
+    # _DRAW_UNIT_TO_PT); the second picture's own bounds start that far
+    # from (0, 0) on both axes, so its own drawn corner must land 20pt
+    # further right and up than the first picture's, even though both
+    # share the same xshift/yshift and the same frame.
+    assert round(xb - xa, 3) == 20.0
+    assert round(yb - ya, 3) == 20.0
 
 
 def test_picture_xshift_anchor_moves_inward_by_the_frames_own_hinset(tmp_path):
@@ -1868,19 +1917,28 @@ def test_picture_xshift_anchor_moves_inward_by_the_frames_own_hinset(tmp_path):
     # document's own wind-direction diagram, hinset=0) matched the
     # unmodified formula exactly on its own, confirming this is a
     # correction for hinset specifically, not a change to the base
-    # formula.
+    # formula. (hinset's own place in the newer, half-size-term formula
+    # above is unconfirmed against the newer calibration document,
+    # which had no hinset variation in it, but is kept as the closest
+    # prior evidence -- this test only pins down that it still shifts
+    # content by exactly its own amount, not that its role in the
+    # formula is still correct.)
     from riscos_impression.output.pdfdoc import PDFConverter
 
     ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
     path = build_path(ops=ops, bounds=(0, 0, 25600, 25600), fill_colour=0x0000FF00)
     picture_bytes = build_drawfile(path, bounds=(0, 0, 25600, 25600))
 
-    no_inset = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, hinset=0)
+    # xshift=20000 (half the content's own 40000-unit size) puts the
+    # unshifted content's own left edge exactly at the frame's own x0
+    # (see the sibling test above), keeping it comfortably overlapping
+    # regardless of a small extra hinset.
+    no_inset = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=20000, yshift=20000, hinset=0)
     out_a = tmp_path / "a.pdf"
     PDFConverter(no_inset).convert(out_a)
     xa, _ = _first_moveto_point(out_a.read_bytes())
 
-    with_inset = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, hinset=2000)
+    with_inset = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=20000, yshift=20000, hinset=2000)
     out_b = tmp_path / "b.pdf"
     PDFConverter(with_inset).convert(out_b)
     xb, _ = _first_moveto_point(out_b.read_bytes())
@@ -1910,7 +1968,11 @@ def test_grouped_picture_xshift_anchors_from_the_frames_right_edge_not_left(tmp_
     # geometric cross-check against the ungrouped picture that
     # confirmed the sign fix -- anchoring *it* from the right edge
     # instead makes its own overlap markedly worse, confirming the
-    # split is real, not a coincidence specific to one picture).
+    # split is real, not a coincidence specific to one picture). This
+    # grouped/ungrouped split is unconfirmed against the newer,
+    # origin-anchored formula (see _draw_drawfile_picture's own
+    # docstring) -- no grouped picture was in either calibration
+    # document -- and is kept here only as the closest prior evidence.
     from riscos_impression.output.pdfdoc import PDFConverter
 
     ops = move(0, 0) + line(25600, 0) + line(25600, 25600) + line(0, 25600) + close_line() + end_path()
@@ -1920,13 +1982,16 @@ def test_grouped_picture_xshift_anchors_from_the_frames_right_edge_not_left(tmp_
     # Frame wider than the (40pt) content, so a reasonable xshift can
     # still land the right-anchored content within it -- unlike the
     # sibling test's own 40x40pt frame, sized to exactly match a
-    # left-anchored picture's own content instead.
-    grouped_a = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=48000, yshift=0, grouped=True)
+    # left-anchored picture's own content instead. xshift=80000 puts
+    # the content's own left edge exactly at the frame's own x1 - 40pt
+    # (x1 - xshift = 80000-80000 = 0, and this drawfile's own bounds
+    # start at (0, 0), so no further offset applies).
+    grouped_a = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=80000, yshift=0, grouped=True)
     out_a = tmp_path / "a.pdf"
     PDFConverter(grouped_a).convert(out_a)
     xa, _ = _first_moveto_point(out_a.read_bytes())
 
-    grouped_b = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=47000, yshift=0, grouped=True)
+    grouped_b = _picture_document(picture_bytes, x1=80000, y1=40000, xshift=79000, yshift=0, grouped=True)
     out_b = tmp_path / "b.pdf"
     PDFConverter(grouped_b).convert(out_b)
     xb, _ = _first_moveto_point(out_b.read_bytes())
@@ -1934,17 +1999,16 @@ def test_grouped_picture_xshift_anchors_from_the_frames_right_edge_not_left(tmp_
     # xshift 1pt smaller -> content moves 1pt to the RIGHT (still
     # anchored from the frame's own right edge, x1=80pt).
     assert round(xb - xa, 3) == 1.0
-    assert round(xa, 3) == 80.0 - 48.0  # anchored at x1, not x0
+    assert round(xa, 3) == 0.0  # x1(80) - xshift(80), anchored at x1 not x0
 
-    # The same-shaped picture, ungrouped, anchors from x0 instead --
-    # a small xshift (so the shift stays trustworthy against a frame
-    # sized to match the content, as in the sibling test above) lands
-    # near the frame's own left edge, not its right.
-    ungrouped = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=1000, yshift=0, grouped=False)
+    # The same-shaped picture, ungrouped, anchors from x0 instead: at
+    # xshift=0 its own left edge lands exactly at the frame's own x0,
+    # not anywhere near x1.
+    ungrouped = _picture_document(picture_bytes, x1=40000, y1=40000, xshift=0, yshift=0, grouped=False)
     out_c = tmp_path / "c.pdf"
     PDFConverter(ungrouped).convert(out_c)
     xc, _ = _first_moveto_point(out_c.read_bytes())
-    assert round(xc, 3) == -1.0
+    assert round(xc, 3) == 0.0
 
 
 def test_page_positioned_picture_falls_back_to_centring_when_the_shift_would_leave_the_frame_mostly_empty(tmp_path):

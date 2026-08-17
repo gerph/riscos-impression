@@ -142,18 +142,15 @@ class Frame:
     def has_border(self) -> bool:
         """0xFF is the documented "no border on this edge" sentinel (see
         docs/impression-documents.xml, "Frame object common layout").
-        0x00 is a second, undocumented one: confirmed against a real
-        document where two pictures with all four border bytes 0
-        rendered with a visible border/shadow box that Impression
-        itself does not show for them. A corpus-wide scan of real
-        documents' border byte values found only three genuinely
-        distinct non-0xFF values in use (1, 2, 3 -- real, selectable
-        border styles) plus 0 on its own, far more common than any real
-        style value and never otherwise produced by a genuine style
-        choice -- consistent with an unset/default value rather than a
-        chosen style, not a border style of its own."""
+        0x00 is NOT a second one, despite an earlier, real-document-led
+        attempt to treat it as such: a controlled test document with
+        frames explicitly set to each of Impression's own "Border 1"
+        through "Border 10" UI styles confirmed the UI's own 1-based
+        numbering maps directly onto the stored byte 0-based ("Border
+        1" -> 0, "Border 2" -> 1, ... "Border 10" -> 9) -- 0 is a real,
+        deliberately-chosen style like any other, not a sentinel."""
         return any(
-            border not in (0x00, 0xFF)
+            border != 0xFF
             for border in (self.border0, self.border1, self.border2, self.border3)
         )
 

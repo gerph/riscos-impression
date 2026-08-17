@@ -1767,20 +1767,13 @@ riscos-impression/
   * Two pictures rendered with a visible grey border/shadow box that
     Impression itself does not show for them (confirmed directly: the
     user reported both as bordered on the PDF but borderless in
-    Impression). Both had `border0`..`border3` all `0`, which
-    `Frame.has_border` treated as "a border is present" (only `0xFF`
-    meant absent), matching the original TransIMP C converter's own
-    `!= 0xFF` check verbatim. A corpus-wide scan of real documents'
-    border byte values found only three genuinely distinct non-`0xFF`
-    values in use: `1`, `2`, `3` (real, selectable border styles -- one
-    of which, style `2`, borders an unrelated caption frame sitting
-    immediately below one of the two affected pictures on the same
-    page, which is what made the bug easy to mistake at a glance for a
-    single box drawn around picture-plus-caption together) -- and `0`
-    on its own, far more common than any real style value and never
-    otherwise produced by a genuine style choice, consistent with an
-    unset/default sentinel rather than a chosen style. `has_border` now
-    treats `0` as a second "no border" sentinel alongside `0xFF`.
+    Impression). Both had `border0`..`border3` all `0`. At the time
+    this was diagnosed as `has_border` wrongly treating `0` as present
+    (matching the original TransIMP C converter's own `!= 0xFF` check
+    verbatim) rather than as a second "no border" sentinel alongside
+    `0xFF` -- **retracted by fix (30) below**, which found real
+    evidence `0` is a genuine, deliberately-chosen border style, not a
+    sentinel; the two pictures' own real explanation is still open.
 
   Each of fixes (23)-(28) was verified independently (re-rendering
   the real document and comparing against its own reference
@@ -1789,6 +1782,75 @@ riscos-impression/
   Full suite green; re-validated across all 117 real documents
   (`examples/` + `moreexamples/` + `corpus/`) with 0 crashes
   throughout.
+
+* **Post-Stage-14 fix (29)**: a regression introduced by fix (28)'s
+  own `_drawfile_effective_bounds`. Unioning bounds from *every*
+  object (not just the ones actually rendered) pulled in a real
+  document's own run of 5 objects of an unrecognised type, all
+  declaring an identical, tiny `(0, 0)`-`(10, 10)` bounding box
+  unrelated to the picture's real visible content -- not a genuine
+  spatial extent, apparently a fixed/dummy value that object kind
+  always carries. This inflated an otherwise-correctly-positioned
+  sibling picture's own measured size, corrupting its display scale
+  and, via that, its own already-confirmed crop position. Fixed by
+  restricting the union to `DrawPath`/`DrawText` objects only (still
+  recursing into `DrawGroup`/`DrawTagged` wrappers, but not trusting
+  their own declared bounds directly either). Regression test added;
+  confirmed to fail against the pre-fix code.
+
+* **Post-Stage-14 fix (30)**: retracts fix (28)'s border0-3 change.
+  The user built a controlled test document (`corpus/TestDoc,bc5`)
+  with frames explicitly set to each of Impression's own "Border 1"
+  through "Border 10" styles, plus one with no border: the raw bytes
+  confirmed the UI's 1-based numbering maps directly onto the stored
+  byte 0-based ("Border 1" -> `0`, "Border 2" -> `1`, ... "Border 10"
+  -> `9`), and only `0xFF` means no border. `0` is a real,
+  deliberately-chosen style like any other, not a sentinel --
+  `has_border` now goes back to the original `!= 0xFF` check (fix
+  (28)'s own two pictures' real explanation is still open). Every
+  non-`0xFF` style currently renders identically (a thick grey
+  shadow box); matching each style's own real appearance (thin line,
+  grey fill band, asymmetric drop-shadow, double-line, rounded
+  corners -- confirmed visually distinct via the same test document)
+  is tracked as further work, not yet started.
+
+* **Post-Stage-14 fix (31)**: the picture xshift/yshift/hinset/
+  grouped anchor formula (fixes (23)-(26)) positioned pictures using
+  the *content's own declared bounding-box corner* as the anchored
+  point. Two further purpose-built calibration documents (added to
+  `corpus/TestDoc,bc5` as further pages: a grid of pictures at known
+  xshift/yshift/scale values compared pixel-for-pixel against
+  Impression's own rendering, and a second, cleaner one using plain
+  shapes drawn starting exactly at a drawfile's own `(0, 0)`, at
+  round-number millimetre offsets) showed this was wrong: the anchor
+  point is actually the drawfile's own *native `(0, 0)` origin*, not
+  either corner of its own declared bounds -- the two only coincide
+  when a picture's own content happens to start exactly at `(0, 0)`,
+  which is not guaranteed. `_draw_drawfile_picture`'s own docstring
+  has the full derivation, including two superseded intermediate
+  formulas that each matched some real data before being shown wrong
+  by further calibration data -- notably, fixes (23)-(26)'s own
+  formula had been confirmed against a real document's exact
+  dialog-reported x/y/scale values, which is not by itself sufficient
+  confirmation of the anchor point on a picture bigger than its own
+  frame (the frame ends up fully covered regardless of which anchor
+  is used). This also fixed two real pictures in the same document
+  that an exhaustive search (300+ combinations) could never
+  previously anchor correctly. The "implausible result" overlap
+  safety net was also fixed alongside this: it compared the shifted
+  content's own overlap against the *frame's* area alone, which is
+  mathematically unreliable whenever the picture is smaller than its
+  own frame (its own full area is the most it could ever cover, often
+  under 50%) -- now measured against whichever of the frame or the
+  content is smaller, with a much lower threshold (5%, down from
+  50%), since the calibration data included legitimate crops covering
+  as little as ~41% of a picture's own area. `corpus/TestDoc,bc5`
+  (the calibration document itself, containing only synthetic
+  geometric shapes, no personal content) was committed alongside this
+  fix and is now exercised automatically by
+  `tests/test_corpus_documents.py`. Regression tests added; confirmed
+  to fail against the pre-fix code. Full suite green; re-validated
+  across all 117 real documents with 0 crashes.
 
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
