@@ -2221,7 +2221,7 @@ def test_drawfile_group_and_unknown_object_types_are_handled(tmp_path):
 
     ops = move(0, 0) + line(500, 0) + line(500, 500) + close_line() + end_path()
     path = build_path(ops=ops, bounds=(0, 0, 500, 500), fill_colour=0x00FF0000)
-    group = build_group("G", path + build_unknown(11, bounds=(0, 0, 500, 500)), bounds=(0, 0, 500, 500))
+    group = build_group("G", path + build_unknown(99, bounds=(0, 0, 500, 500)), bounds=(0, 0, 500, 500))
     document = _picture_document(build_drawfile(group, bounds=(0, 0, 500, 500)))
 
     converter = PDFConverter(document)
@@ -2231,3 +2231,68 @@ def test_drawfile_group_and_unknown_object_types_are_handled(tmp_path):
 
     assert b"\nf\n" in data
     assert any("were not decoded and are omitted" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_options_object_is_omitted_without_logging(tmp_path):
+    # Options objects (DrawFile type 11) carry no rendering component of
+    # their own and are present in nearly every real DrawFile -- the
+    # user confirmed this against several real documents -- so, unlike a
+    # genuinely undecoded object type, they must not be logged as
+    # best-effort.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    from tests.fixtures.drawfile_builders import build_unknown
+
+    ops = move(0, 0) + line(500, 0) + line(500, 500) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 500, 500), fill_colour=0x00FF0000)
+    group = build_group("G", path + build_unknown(11, bounds=(0, 0, 500, 500)), bounds=(0, 0, 500, 500))
+    document = _picture_document(build_drawfile(group, bounds=(0, 0, 500, 500)))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"\nf\n" in data
+    assert not converter.log.has_errors()
+    assert not any("were not decoded" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_picture_angle_rotates_about_the_drawfiles_own_origin(tmp_path):
+    # Regression test: the user built a purpose-built calibration
+    # document -- three otherwise-identical, unshifted pictures at 15,
+    # 30, and 45 degrees -- and confirmed (via the point where two
+    # adjacent shapes meet, pixel-for-pixel against Impression's own
+    # rendering) that pict.angle is a standard mathematical
+    # (counter-clockwise) rotation about the drawfile's own native
+    # (0, 0) origin -- the same point xshift/yshift anchor -- applied
+    # before that anchor's own scale/translate. 90 degrees gives exact,
+    # not merely approximate, expected coordinates: a point at
+    # (1000, 0) rotates to (0, 1000).
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    ops = move(1000, 0) + line(1000, 0) + close_line() + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
+    picture_bytes = build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    unrotated = _picture_document(picture_bytes, x1=100000, y1=100000, xshift=0, yshift=0, angle=0)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(unrotated).convert(out_a)
+    xa, ya = _first_moveto_point(out_a.read_bytes())
+
+    ninety_degrees = 90 * 65536
+    rotated = _picture_document(picture_bytes, x1=100000, y1=100000, xshift=0, yshift=0, angle=ninety_degrees)
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(rotated).convert(out_b)
+    xb, yb = _first_moveto_point(out_b.read_bytes())
+
+    # (1000, 0) at 0 degrees draws at (origin_x + 1000*sx, origin_y);
+    # at 90 degrees, the same source point (1000, 0) has rotated to
+    # (0, 1000), so it now draws at (origin_x, origin_y + 1000*sy).
+    # origin_x == origin_y == 0 here (frame's own x0/y0, unshifted), so
+    # this reduces to: the x and y displacements from the origin swap
+    # (sx == sy, both at the picture's own default 100% scale).
+    assert xa > 0.0  # sanity: the unrotated point isn't trivially at the origin too
+    assert round(xb, 3) == 0.0
+    assert round(ya, 3) == 0.0
+    assert round(yb, 3) == round(xa, 3)

@@ -533,7 +533,7 @@ as follows:
 <offset number="108" name="yscale" data-size="4">Vertical scale factor, using the same reciprocal convention as xscale.</offset>
 <offset number="112" name="xshift" data-size="4">Horizontal origin shift, in millipoints, anchoring the picture's own content within its frame; see the note below for the anchor point and sign convention, which differ from the conversion source's own DDL emission.</offset>
 <offset number="116" name="yshift" data-size="4">Vertical origin shift for the picture within its frame; see xshift and the note below.</offset>
-<offset number="120" name="angle" data-size="4">Rotation angle, in degrees multiplied by 0x10000 (16.16 fixed-point degrees).</offset>
+<offset number="120" name="angle" data-size="4">Rotation angle, in degrees multiplied by 0x10000 (16.16 fixed-point degrees). See the note below for the rotation direction and pivot point.</offset>
 <offset number="124-127" data-size="4">Packed word: lpi (halftone screen ruling, in lines per inch), psscreen (halftone screen angle or identifier), and psx0 (remaining bits, unknown). All three are meaningful only when the usepsscreen flag bit is set. The exact byte order of this word could not be confirmed: the source's own inline comments for lpi and psscreen give offsets in the opposite order to their declaration, suggesting the original author was themselves unsure of the precise layout. No picture frame with usepsscreen set was found in an empirical 46-document survey, so this remains untested against real data either way.</offset>
 <offset number="128-159" name="y" data-size="32" state="undefined">Unknown; reserved block of eight 32-bit words.</offset>
 </offset-table>
@@ -549,25 +549,45 @@ sub-0.01mm precision against several real pictures' own readings in
 Impression's picture information dialog and against two purpose-built
 calibration documents (grids of pictures at known xshift/yshift/scale
 values, each compared pixel-for-pixel against Impression's own
-rendering): the origin point is <userinput>(anchor_x - xshift/1000,
-frame_y0 - yshift/1000)</userinput> in points, where
-<userinput>frame_y0</userinput> is the frame's own bottom edge and
-<userinput>anchor_x</userinput> is the frame's own left edge (offset
-inward by hinset) for a picture that is not grouped, or its own right
-edge (offset inward by hinset instead) for a picture that is grouped
-(see the "grouped" flag bit, "Frame flags word"); vinset applies no
-equivalent adjustment to the y anchor. The picture's own bottom-left
-corner (i.e. the point its own declared bounding box's minimum x/y)
-then sits at this origin point plus its own (x0, y0) converted to
-points at the picture's own display scale -- the two coincide only
-when the picture's own content happens to start exactly at (0, 0).
-Getting this distinction wrong is easy to miss on a picture bigger
-than its own frame, where the frame ends up fully covered by the
-picture's own content regardless of which point is used as the
-anchor -- confirmed on real documents, both pixel-for-pixel and
-against Impression's own dialog-reported x/y/scale to sub-0.01mm
-precision, with a formula that anchored the bounding-box corner
-directly instead.
+rendering): the origin point is <userinput>(frame_x0 + hinset/1000
+- xshift/1000, frame_y0 - yshift/1000)</userinput> in points, where
+<userinput>frame_x0</userinput> is the frame's own left edge and
+<userinput>frame_y0</userinput> is its own bottom edge; vinset applies
+no equivalent adjustment to the y anchor. This is the same formula
+for a picture that is grouped (see the "grouped" flag bit, "Frame
+flags word") as one that is not -- confirmed against two grouped
+pictures in a real document, each pixel-for-pixel against Impression's
+own rendering -- despite the grouped flag having once appeared to
+change the anchor to the frame's own right edge instead of its left;
+that appearance turned out to be an artifact of a since-corrected
+formula that anchored the picture's own bounding-box corner directly,
+covered next. The picture's own bottom-left corner (i.e. the point its
+own declared bounding box's minimum x/y) sits at this origin point
+plus its own (x0, y0) converted to points at the picture's own display
+scale -- the two coincide only when the picture's own content happens
+to start exactly at (0, 0). Getting this distinction wrong is easy to
+miss on a picture bigger than its own frame, where the frame ends up
+fully covered by the picture's own content regardless of which point
+is used as the anchor -- confirmed on real documents, both
+pixel-for-pixel and against Impression's own dialog-reported x/y/scale
+to sub-0.01mm precision, with a formula that anchored the bounding-box
+corner directly instead.
+</p>
+<p>
+The angle field is a standard mathematical (counter-clockwise)
+rotation, about the same native (0, 0) origin point xshift/yshift
+anchor, applied before that anchor's own translation -- confirmed
+against a purpose-built calibration document (three otherwise-identical
+pictures at 15, 30, and 45 degrees) by tracking the point where two
+adjacent shapes within the picture meet: it swings around the frame's
+own anchor point exactly as this predicts, at every angle tried. A
+rotated picture's own bounding box (used to decide whether xshift/yshift
+looks trustworthy, and to size a shrink-to-fit fallback) is not itself
+recomputed for the rotated extent -- confirmed to matter in practice
+only when a picture is rotated by close to 45 degrees and already close
+to filling its own frame, where the rotated corners can extend past the
+frame's own edges though the unrotated bounding box alone would not
+have suggested cropping.
 </p>
 <p>
 The two extra bits carried in the frame group flags word (offset 72;

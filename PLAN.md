@@ -1874,6 +1874,47 @@ riscos-impression/
   render identically. Full suite green; re-validated across all 117
   real documents with 0 crashes.
 
+* **Post-Stage-14 fix (33)**: implements DrawFile picture rotation
+  (`pict.angle`), previously unimplemented (logged once per picture,
+  drawn unrotated). The user extended `corpus/TestDoc,bc5` with a
+  third row of otherwise-identical, unshifted pictures at 15, 30, and
+  45 degrees; tracking the point where two adjacent shapes within the
+  picture meet (pixel-for-pixel against Impression's own rendering)
+  confirmed `angle` is a standard mathematical (counter-clockwise)
+  rotation about the drawfile's own native `(0, 0)` origin -- the same
+  point `xshift`/`yshift` anchor -- applied *before* that anchor's own
+  translation. Implemented in both `pdfdoc.py` and `html_base.py`'s
+  SVG output by rotating the raw drawfile-space point before the
+  existing scale/translate in each converter's own `to_pt`/`to_svg`
+  closure; the PDF side is pixel-matched against the calibration
+  document's own reference screenshot exactly (including the 45-degree
+  case, where the rotated square's own corner is cropped by the
+  frame), the SVG side extended analogously but not independently
+  re-verified against a reference image. A rotated picture's own
+  bounding box is not itself recomputed for the rotated extent (still
+  uses the unrotated bounds for the "does this shift look trustworthy"
+  check and the shrink-to-fit fallback) -- a known, currently
+  unexercised gap, not something the calibration document's own
+  otherwise-small pictures needed. Regression test added (a clean
+  90-degree case, chosen for exact rather than approximate expected
+  coordinates); confirmed to fail against the pre-fix code.
+
+  Also stops logging DrawFile "Options" objects (type 11: per-file
+  editor settings such as grid/zoom state, with no rendering component
+  of their own) as best-effort -- the user confirmed nearly every real
+  DrawFile carries one, so logging it as "not decoded and omitted" was
+  reporting nothing was actually lost. `formats/drawfile.py` now names
+  this type (`OPTIONS_TYPE`) so both output converters can skip it
+  specifically, while still logging any other genuinely-undecoded
+  object type as before. Regression test added; confirmed to fail
+  against the pre-fix code (two existing tests' own synthetic "unknown
+  type" fixtures happened to already use type 11 for an unrelated
+  reason and were updated to a genuinely-arbitrary type number
+  instead, to keep testing what they originally intended).
+
+  Full suite green (391 tests); re-validated across all 117 real
+  documents with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

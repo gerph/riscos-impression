@@ -295,7 +295,7 @@ def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
 
 
 def test_drawfile_svg_unknown_object_type_is_omitted_and_logs_best_effort():
-    draw = DrawFile.from_bytes(build_drawfile(build_unknown(11, bounds=(0, 0, 1000, 1000))))
+    draw = DrawFile.from_bytes(build_drawfile(build_unknown(99, bounds=(0, 0, 1000, 1000))))
     converter = _converter()
 
     svg = converter._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
@@ -305,3 +305,20 @@ def test_drawfile_svg_unknown_object_type_is_omitted_and_logs_best_effort():
         'viewBox="0 0 100.0 100.0" style="overflow: hidden;"></svg>'
     )
     assert any("were not decoded and are omitted" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_svg_options_object_is_omitted_without_logging():
+    # Options objects (type 11) carry no rendering component of their
+    # own and are present in nearly every real DrawFile -- confirmed by
+    # the user against several real documents -- so, unlike a genuinely
+    # undecoded object type, they must not be logged as best-effort.
+    draw = DrawFile.from_bytes(build_drawfile(build_unknown(11, bounds=(0, 0, 1000, 1000))))
+    converter = _converter()
+
+    svg = converter._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
+
+    assert svg == (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100.0pt" height="100.0pt" '
+        'viewBox="0 0 100.0 100.0" style="overflow: hidden;"></svg>'
+    )
+    assert not converter.log.entries

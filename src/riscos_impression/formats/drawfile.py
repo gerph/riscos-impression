@@ -3,10 +3,12 @@
 Decodes the file header and walks the object stream: font tables, paths
 (fill/stroke colour, width, winding rule, and their move/line/curve/close
 elements), single-line text, groups, and tagged objects (recursing into
-both). Sprite objects, and any other object type (text area, options,
-transformed text/sprite, or anything unrecognised), are captured only as
-a bounding box -- there is no pixel data or further structure decoded
-for them.
+both). Sprite objects, and any other object type (text area, transformed
+text/sprite, or anything unrecognised), are captured only as a bounding
+box -- there is no pixel data or further structure decoded for them.
+Options objects (see OPTIONS_TYPE) are captured the same way but are
+never worth a caller logging as best-effort: they carry no rendering
+component at all, not just an undecoded one.
 
 This is general RISC OS DrawFile knowledge, not something recovered from
 the Impression conversion source; the on-disk layout here is verified
@@ -35,6 +37,14 @@ SIGNATURE = b"Draw"
 HEADER_SIZE = 40
 _BBOX_OFFSET = 24
 _OBJECT_HEADER_SIZE = 24
+
+#: The "Options" object type: per-file editor settings (grid, zoom,
+#: toolbox state, and similar) with no rendering component of its own.
+#: Confirmed present in nearly every real DrawFile (including ones this
+#: project generated purely to test other things), always with a
+#: degenerate (often zero-sized) bounding box -- a caller can always
+#: skip it silently, unlike a genuinely undecoded object type.
+OPTIONS_TYPE = 11
 
 #: The DrawFile "no colour" sentinel word (used for both fill and
 #: outline colour): -1 as an unsigned 32-bit word.

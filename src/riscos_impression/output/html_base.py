@@ -41,6 +41,7 @@ from typing import Optional
 
 from riscos_impression.formats.drawfile import (
     CAP_TRIANGULAR,
+    OPTIONS_TYPE,
     DrawFile,
     DrawGroup,
     DrawPath,
@@ -459,12 +460,21 @@ class HTML5Converter(Converter):
         origin_x = max(0.0, (width_pt - displayed_w) / 2.0)
         origin_y = max(0.0, (height_pt - displayed_h) / 2.0)
 
+        # See pdfdoc.py's own _draw_drawfile_picture docstring for the
+        # full derivation: a standard mathematical (counter-clockwise)
+        # rotation about the drawfile's own native (0, 0) origin,
+        # applied before the rest of this transform.
+        angle_rad = math.radians(pict.angle / 65536.0) if pict.angle else 0.0
+        cos_a, sin_a = (math.cos(angle_rad), math.sin(angle_rad)) if angle_rad else (1.0, 0.0)
+
         def to_svg(dx: int, dy: int) -> tuple[float, float]:
             # SVG is Y-down from the top-left; Draw is Y-up from the
             # bottom-left, so the Y axis needs flipping (unlike
             # pdfdoc.py, which shares PDF's own Y-up convention) --
             # measured from the top of the CENTRED content, not the
             # picture's own top edge.
+            if angle_rad:
+                dx, dy = dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a
             return origin_x + (dx - bounds.x0) * sx, origin_y + (bounds.y1 - dy) * sy
 
         parts = [
@@ -473,8 +483,6 @@ class HTML5Converter(Converter):
             f'style="overflow: hidden;">'
         ]
         notes: list[str] = []
-        if pict.angle:
-            notes.append("a DrawFile picture's own rotation is not applied; it is drawn unrotated")
         for obj in draw.objects:
             self._drawfile_svg_object(obj, draw.fonts, to_svg, (sx, sy), parts, notes)
         parts.append("</svg>")
@@ -510,11 +518,13 @@ class HTML5Converter(Converter):
                 "a Sprite object embedded within a DrawFile picture is drawn as a "
                 "placeholder box; pixel data is not decoded"
             )
-        else:  # DrawUnknown -- text area, options, transformed text/sprite, or unrecognised
+        elif obj.type != OPTIONS_TYPE:  # DrawUnknown -- text area, transformed text/sprite, or unrecognised
             notes.append(
-                "one or more DrawFile object types (e.g. text area, options, transformed "
+                "one or more DrawFile object types (e.g. text area, transformed "
                 "text/sprite) within a picture were not decoded and are omitted"
             )
+        # else: an Options object -- no rendering component of its own, so
+        # nothing was actually omitted; not worth logging (see OPTIONS_TYPE).
 
     def _drawfile_svg_path(self, path: DrawPath, to_svg, scale, parts: list[str]) -> None:
         has_fill = path.fill_colour is not None

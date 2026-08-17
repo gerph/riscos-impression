@@ -73,9 +73,12 @@ ConversionLog rather than guessed at silently:
   butt/round caps are not distinguished from each other (both render
   as PDF's own default butt cap). A Sprite object embedded *within* a
   DrawFile,
-  and any other undecoded object type (text area, options, transformed
+  and any other undecoded object type (text area, transformed
   text/sprite), still falls back to a labelled placeholder box for just
-  that object, logged once per picture. A picture that isn't a valid
+  that object, logged once per picture -- except an Options object
+  (formats/drawfile.py's OPTIONS_TYPE), which has no rendering
+  component of its own and so isn't logged at all; nearly every real
+  DrawFile carries one. A picture that isn't a valid
   DrawFile at all -- Sprite pictures, and anything else -- still
   renders as a labelled placeholder box (formats/sprite.py is a stub
   bounding-box reader only; there's no pixel data available to
@@ -132,6 +135,7 @@ from typing import Optional, Union
 
 from riscos_impression.formats.drawfile import (
     CAP_TRIANGULAR,
+    OPTIONS_TYPE,
     BoundingBox,
     DrawFile,
     DrawGroup,
@@ -1528,14 +1532,28 @@ class PDFConverter(Converter):
             origin_x = x0 + max(0.0, (frame_w - displayed_w) / 2.0)
             origin_y = y0 + max(0.0, (frame_h - displayed_h) / 2.0)
 
+        # pict.angle is 16.16 fixed-point degrees (see docs/
+        # impression-documents.xml, "Picture frame (XPICT)"), a
+        # standard mathematical (counter-clockwise) rotation about the
+        # drawfile's own native (0, 0) origin -- the same point
+        # xshift/yshift anchor (see this method's own docstring above)
+        # -- applied *before* that anchor's own scale/translate.
+        # Confirmed against a purpose-built calibration document (three
+        # pictures at 15/30/45 degrees, otherwise unshifted): the point
+        # where two adjacent shapes meet swings around the frame's own
+        # origin exactly as this predicts, matching to within the
+        # calibration measurement's own precision at every angle tried.
+        angle_rad = math.radians(pict.angle / 65536.0) if pict.angle else 0.0
+        cos_a, sin_a = (math.cos(angle_rad), math.sin(angle_rad)) if angle_rad else (1.0, 0.0)
+
         def to_pt(dx: int, dy: int) -> tuple[float, float]:
+            if angle_rad:
+                dx, dy = dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a
             return origin_x + (dx - bounds.x0) * sx, origin_y + (dy - bounds.y0) * sy
 
         self._content.append("q\n")
         self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(x1 - x0)} {_fmt(y1 - y0)} re W n\n")
         notes: list[str] = []
-        if pict.angle:
-            notes.append("a DrawFile picture's own rotation is not applied; it is drawn unrotated")
         for obj in draw.objects:
             self._draw_drawfile_object(obj, draw.fonts, to_pt, (sx, sy), notes)
         self._content.append("Q\n")
@@ -1563,11 +1581,13 @@ class PDFConverter(Converter):
                 "a Sprite object embedded within a DrawFile picture is drawn as a "
                 "placeholder box; pixel data is not decoded"
             )
-        else:  # DrawUnknown -- text area, options, transformed text/sprite, or unrecognised
+        elif obj.type != OPTIONS_TYPE:  # DrawUnknown -- text area, transformed text/sprite, or unrecognised
             notes.append(
-                "one or more DrawFile object types (e.g. text area, options, transformed "
+                "one or more DrawFile object types (e.g. text area, transformed "
                 "text/sprite) within a picture were not decoded and are omitted"
             )
+        # else: an Options object -- no rendering component of its own, so
+        # nothing was actually omitted; not worth logging (see OPTIONS_TYPE).
 
     def _draw_drawfile_path(self, path: DrawPath, to_pt, scale: tuple[float, float]) -> None:
         has_fill = path.fill_colour is not None
