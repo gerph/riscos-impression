@@ -19,7 +19,7 @@ index:
 * ``images/NNNN.<ext>`` -- a picture's own raw embedded bytes, as-is
   (EPS is the one exception: its own wrapper header is stripped,
   leaving genuinely standalone PostScript -- see formats/eps.py).
-  *ext* is "draw"/"sprite"/"eps"/"aff" when recognised, "bin"
+  *ext* is "draw"/"sprite"/"eps"/"d94" when recognised, "bin"
   otherwise.
 * ``svg/NNNN.svg``     -- a DrawFile picture's own content re-rendered
   as a standalone SVG file, at its own native size (no picture-frame
@@ -66,14 +66,15 @@ from riscos_impression.output.html_base import (
 
 #: DCPICT EmbeddedObjectType -> file extension for the raw dump, when
 #: not further narrowed by an actual decode attempt (see
-#: _picture_extension_and_svg). ArtWorks' own real-world extension is
-#: "aff" (its native RISC OS filetype 0xD94 has no fixed cross-platform
-#: name of its own); every other, undecoded companion-app type in
-#: model.dictionary's own _DRAW_FAMILY (Tablemate, Equasor, Formulix,
-#: Eureka, DiagramIT, TabCalc, GraphMate) has no known portable
-#: extension either, so falls through to "bin" like plain DATA.
+#: _picture_extension_and_svg). ArtWorks' own RISC OS filetype is
+#: &D94, so its RISC-OS-style comma-suffix extension is "d94" (not
+#: "aff" -- that filetype, &AFF, belongs to DrawFile); every other,
+#: undecoded companion-app type in model.dictionary's own
+#: _DRAW_FAMILY (Tablemate, Equasor, Formulix, Eureka, DiagramIT,
+#: TabCalc, GraphMate) has no known portable extension either, so
+#: falls through to "bin" like plain DATA.
 _EXTENSION_BY_TYPE = {
-    EmbeddedObjectType.ARTWORKS: "aff",
+    EmbeddedObjectType.ARTWORKS: "d94",
 }
 
 
