@@ -66,6 +66,7 @@ from riscos_impression.model.styles import Style
 from riscos_impression.output import font_metrics
 from riscos_impression.output.html_base import (
     HTML5Converter,
+    border_css_declarations,
     css_style_attr,
     escape_html,
     paragraph_css_properties,
@@ -152,7 +153,18 @@ class ScrollingHTMLConverter(HTML5Converter):
     """Renders the decoded document model as one linear, scrolling HTML5
     page. See the module docstring for what's deliberately dropped
     (page furniture, absolute geometry) versus what's still honoured
-    (styled text runs, embedded pictures, merge/numbering marks)."""
+    (styled text runs, embedded pictures, merge/numbering marks,
+    borders)."""
+
+    def __init__(
+        self,
+        document,
+        log=None,
+        strict: bool = False,
+        border_width_pt: float = 0.5,
+    ):
+        super().__init__(document, log=log, strict=strict)
+        self.border_width_pt = border_width_pt
 
     def convert(self, output_path: Path) -> None:
         self._chapter_number = 0
@@ -222,7 +234,17 @@ class ScrollingHTMLConverter(HTML5Converter):
             return ""
         if entry.type is not DictionaryEntryType.PICTURE:
             return ""
-        return f"<p>{self._picture_html(pict, entry)}</p>\n"
+        img_html = self._picture_html(pict, entry)
+        # `display: inline-block` so the border wraps tightly around
+        # the image itself (a plain block div would stretch to the
+        # paragraph's own full width, drawing the border there instead)
+        # -- see html_base.py's own border_css_declarations for the
+        # border CSS itself, shared with html_paged.py.
+        declarations = border_css_declarations(pict, self.document.colours, self.border_width_pt)
+        if not declarations:
+            return f"<p>{img_html}</p>\n"
+        style_attr = "; ".join(["display: inline-block"] + declarations)
+        return f'<div style="{style_attr}">{img_html}</div>\n'
 
     def _render_text_frame(self, frame, chapter: Chapter) -> str:
         if frame.dictionary_index < 0:
@@ -241,7 +263,23 @@ class ScrollingHTMLConverter(HTML5Converter):
             story = self.document.story(entry)
         if story is None:
             return ""
-        return self._render_story(story, entry.index, chapter)
+        story_html = self._render_story(story, entry.index, chapter)
+        # See _render_picture_frame's own comment: border CSS is shared
+        # with html_paged.py via html_base.py's border_css_declarations.
+        # hinset/vinset become padding inside the border, the same as
+        # html_paged.py's own frame div -- this format has no frame
+        # width to inset a border *out* of the way of, but insetting the
+        # text away from the border itself is still meaningful.
+        declarations = border_css_declarations(frame, self.document.colours, self.border_width_pt)
+        if not declarations:
+            return story_html
+        h_inset = max(0.0, frame.hinset / UNIT)
+        v_inset = max(0.0, frame.vinset / UNIT)
+        styles = list(declarations)
+        if h_inset or v_inset:
+            styles.append(f"padding: {v_inset:.2f}pt {h_inset:.2f}pt")
+        style_attr = "; ".join(styles)
+        return f'<div style="{style_attr}">{story_html}</div>\n'
 
     def _render_story(self, story: Story, dictionary_index: int, chapter: Chapter) -> str:
         return "".join(self._render_paragraph(p, dictionary_index, chapter) for p in story.paragraphs)
@@ -391,7 +429,16 @@ class ScrollingHTMLConverter(HTML5Converter):
                         entry = self._dictionary_by_index.get(value.dictionary_index)
                         if entry is None or entry.type is not DictionaryEntryType.PICTURE:
                             return ""
-                        return self._picture_html(value, entry)
+                        img_html = self._picture_html(value, entry)
+                        # A <span>, not a <div>: this sits inline inside
+                        # an already-open <p> (see _render_paragraph),
+                        # where a block-level element would be invalid
+                        # HTML.
+                        declarations = border_css_declarations(value, self.document.colours, self.border_width_pt)
+                        if not declarations:
+                            return img_html
+                        style_attr = "; ".join(["display: inline-block"] + declarations)
+                        return f'<span style="{style_attr}">{img_html}</span>'
                     self.log.best_effort(
                         "story",
                         "embedded text frame not rendered inline; only embedded pictures are reproduced",

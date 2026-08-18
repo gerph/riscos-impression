@@ -168,6 +168,43 @@ def test_border_style_10_on_every_edge_rounds_the_whole_frame(tmp_path):
     assert "outline-offset:" in text
 
 
+def test_border_style_10_with_one_edge_absent_still_rounds_the_other_corners(tmp_path):
+    # Style 9 ("Border 10") on only three of a frame's four edges can't
+    # use the whole-frame `outline` special case above (outline has no
+    # per-edge variant, so a genuinely missing edge can't be expressed
+    # with it) -- but the two corners whose own two adjoining edges are
+    # BOTH still Border 10 should still curve into each other, not fall
+    # back to a square corner just because a third, unrelated edge is
+    # missing. Confirmed against TestDoc-Real2Border10.png's own
+    # "Border 10, no left" reference frame: the top-right and
+    # bottom-right corners (top+right and right+bottom both present)
+    # round in full; only the two corners adjoining the missing left
+    # edge don't.
+    frame = _frame(
+        x0=10000, y0=20000, x1=60000, y1=70000, dictionary_index=0,
+        border0=9, border1=0xFF, border2=9, border3=9,  # no left
+        border_colour_word=0,
+    )
+    document, _, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "outline:" not in text  # not uniform across all four edges
+    assert "border-top:" in text  # falls back to per-edge lines
+    assert "border-left:" not in text  # genuinely absent
+    assert "border-top-right-radius:" in text
+    assert "border-bottom-right-radius:" in text
+    assert "border-top-left-radius:" not in text  # adjoins the missing edge
+    assert "border-bottom-left-radius:" not in text
+
+
 def test_border_style_6_on_every_edge_uses_a_box_shadow(tmp_path):
     # Style byte 5 ("Border 6") applied to all four edges approximates
     # pdfdoc.py's own offset "hard shadow" band with a CSS box-shadow --

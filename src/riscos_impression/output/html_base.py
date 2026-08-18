@@ -175,6 +175,154 @@ def colour_to_css(colour: Optional[Colour]) -> Optional[str]:
     return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
+#: Impression's own "Border 4"/"Border 5" fill-band colours (see
+#: pdfdoc.py's _SHADOW_COLOUR_RGB/_BORDER5_COLOUR_RGB for how these were
+#: measured against a reference image), reused as fixed CSS colours
+#: here since neither HTML converter has a way to draw a separate
+#: filled band outside a div's own box -- see border_css_declarations.
+_BORDER4_GREY_CSS = "#787878"
+_BORDER5_GREY_CSS = "#e2e2e2"
+
+#: Border 6/7's own shadow-band width, matching pdfdoc.py's own
+#: _SHADOW_WIDTH_PT exactly -- see border_css_declarations's own
+#: box-shadow approximation for these two styles.
+_SHADOW_WIDTH_PT = 5669 / UNIT
+
+
+def _border_css_for_style(style: int, border_css: str, border_width_pt: float) -> str:
+    """A CSS `border-<edge>` value for one edge of one of Impression's
+    ten "Border 1".."Border 10" UI styles (style is the 0-based stored
+    byte -- see model.frames.Frame.has_border). Used per-edge by
+    border_css_declarations whenever a frame's border0..3 don't all
+    share one style (a whole rounded-rectangle outline, a shadow's own
+    offset band, and a mitred picture-frame moulding all inherently
+    need to know about more than one edge at once, so none of those
+    can be expressed edge-by-edge at all -- border_css_declarations
+    handles styles 5/6/9 specially when uniform across all four edges,
+    or per shared corner for 9, falling back to this plain per-edge
+    line otherwise). A lower-fidelity approximation than pdfdoc.py's
+    own per-style rendering even there (see that converter's
+    _draw_border_band/_draw_notched_shadow_edge/_draw_border_ring_line/
+    _draw_rounded_border for the pixel measurements this is based on
+    and the full set of styles) -- this converter has no way to draw a
+    separate filled band outside a div's own box at all, so styles 3-4
+    fall back to a plain, correspondingly-coloured line even when
+    uniform; CSS's own `double` border style is used natively for 7-8
+    rather than hand-building two lines (both approximated as meeting
+    cleanly at every corner, matching pdfdoc.py's own current
+    behaviour, since CSS's border corners always mitre this way
+    natively)."""
+    thin = border_width_pt
+    med = thin * 2.0
+    thick = thin * 7.0
+    if style == 1:  # Border 2
+        return f"{med:.1f}pt solid {border_css}"
+    if style == 2:  # Border 3
+        return f"{thick:.1f}pt solid {border_css}"
+    if style == 3:  # Border 4: mid-grey (best-effort: plain line, no separate band)
+        return f"{thick:.1f}pt solid {_BORDER4_GREY_CSS}"
+    if style == 4:  # Border 5: light-grey (best-effort: plain line, no separate band)
+        return f"{thick:.1f}pt solid {_BORDER5_GREY_CSS}"
+    if style in (5, 6):  # Border 6/7: offset shadow (best-effort: plain thick line)
+        return f"{thick:.1f}pt solid {border_css}"
+    if style == 7:  # Border 8: thin + thicker line
+        return f"{med * 2.0:.1f}pt double {border_css}"
+    if style == 8:  # Border 9: two thicker lines, wider gap
+        return f"{med * 3.0:.1f}pt double {border_css}"
+    if style == 9:  # Border 10 mixed with other styles: no whole-outline rounding possible
+        return f"{thick:.1f}pt solid {border_css}"
+    return f"{thin:.1f}pt solid {border_css}"  # Border 1, or an unrecognised style byte
+
+
+def border_css_declarations(frame, colours, border_width_pt: float) -> list[str]:
+    """CSS declarations (`"border-top: ..."`, `"outline: ..."`,
+    `"border-radius: ..."`, and similar) implementing *frame*'s own
+    border0..3 -- shared by both HTML converters (html_paged.py and
+    html_scrolling.py), unlike most of this project's own converter
+    logic, since generating CSS text is presentation-mapping code like
+    colour_to_css/style_css_properties above, not a page-geometry
+    concern the two HTML formats need to solve differently.
+
+    Each edge is independent (0xFF = absent; see
+    docs/impression-documents.xml, "Frame object common layout" --
+    border0=top, border1=left, border2=right, border3=bottom), so a
+    uniform `border` shorthand is wrong whenever fewer than all four
+    are set -- confirmed empirically against a real document (PCI_Spec,
+    top+bottom only) whose footer frame otherwise grew two extra,
+    entirely fictional side borders. Two whole-frame special cases,
+    each needing to know about more than one edge at once so they
+    can't be expressed by _border_css_for_style's own per-edge value:
+
+    * All four edges Border 10 (style 9): drawn with `outline`, not
+      `border` -- unlike `border`, an outline sits outside the div's
+      own layout box without affecting it (no encroachment into the
+      frame's own content area, matching pdfdoc.py's own
+      non-encroaching offset), and `outline-offset` gives Border 10's
+      own visible gap from the frame's boundary directly -- both a
+      closer native match than `border`+`border-radius` (which
+      encroaches and sits flush with no gap). When only *some* edges
+      are Border 10 (or Border 10 mixed with other styles), `outline`
+      can't be used (it has no per-edge variant), so each edge falls
+      back to _border_css_for_style's plain line -- but any *corner*
+      whose own two adjoining edges are BOTH Border 10 still gets its
+      own `border-<corner>-radius`, so two Border-10 edges that
+      actually meet still curve into each other even when a third edge
+      is a different style or missing entirely (confirmed against
+      TestDoc-Real2Border10.png's own "Border 10, no left" reference
+      frame: the two corners where both adjoining edges are present
+      round in full, only the two corners adjoining the missing edge
+      don't).
+    * All four edges Border 6 or Border 7 (style 5/6): approximated
+      with a CSS box-shadow -- not pixel-matched to pdfdoc.py's own
+      _draw_notched_shadow_edge (no mitred/notched geometry, no
+      separate thin outline showing through a gap), but a much closer
+      visual impression than a plain line for the common case of one
+      style applied to a whole frame. A per-edge mix of styles (rare)
+      still falls back to the plain-line approximation, since CSS
+      box-shadow can't be edge-specific either."""
+    if not frame.has_border:
+        return []
+    border_css = colour_to_css(frame.border_colour(colours)) or "#000000"
+    thick = border_width_pt * 7.0
+    edges = (
+        (frame.border0, "top"),
+        (frame.border1, "left"),
+        (frame.border2, "right"),
+        (frame.border3, "bottom"),
+    )
+    present = [(style, edge) for style, edge in edges if style != 0xFF]
+    if not present:
+        return []
+    uniform_style = present[0][0] if len({s for s, _ in present}) == 1 else None
+
+    if uniform_style == 9 and len(present) == 4:
+        return [
+            f"outline: {thick:.1f}pt solid {border_css}",
+            f"outline-offset: {thick * 3.0:.1f}pt",
+            f"border-radius: {thick * 1.8:.1f}pt",
+        ]
+    if uniform_style in (5, 6) and len(present) == 4:
+        sw = _SHADOW_WIDTH_PT
+        dx = sw if uniform_style == 5 else -sw
+        return [
+            f"border: {border_width_pt:.1f}pt solid {border_css}",
+            f"box-shadow: {dx:.1f}pt {-sw:.1f}pt 0 0 {border_css}",
+        ]
+
+    styles = [f"border-{edge}: {_border_css_for_style(style, border_css, border_width_pt)}" for style, edge in present]
+    style_by_edge = {edge: style for style, edge in present}
+    radius = thick * 1.8
+    for corner, (edge_a, edge_b) in (
+        ("top-left", ("top", "left")),
+        ("top-right", ("top", "right")),
+        ("bottom-left", ("bottom", "left")),
+        ("bottom-right", ("bottom", "right")),
+    ):
+        if style_by_edge.get(edge_a) == 9 and style_by_edge.get(edge_b) == 9:
+            styles.append(f"border-{corner}-radius: {radius:.1f}pt")
+    return styles
+
+
 #: Substrings of a RISC OS font name that identify its family for CSS
 #: purposes; matched case-insensitively, first match wins. Homerton
 #: (and anything unrecognised) falls through to the sans-serif stack --

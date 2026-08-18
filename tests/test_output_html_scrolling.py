@@ -53,6 +53,52 @@ def test_convert_produces_well_formed_html_with_text(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_text_frame_border_is_rendered(tmp_path):
+    # This format used to drop borders entirely, along with the rest
+    # of a frame's absolute geometry -- the user asked specifically for
+    # borders to be added back via CSS, even without page positioning,
+    # since border0..3 is independent of geometry. Shares
+    # html_base.py's own border_css_declarations with html_paged.py.
+    frame = _frame(
+        dictionary_index=0,
+        border0=1, border1=1, border2=1, border3=1,  # Border 2, all edges
+        border_colour_word=0,
+    )
+    document, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "border-top: 1.0pt solid" in text
+    assert not converter.log.has_errors()
+
+
+def test_picture_frame_border_is_rendered(tmp_path):
+    picture = _picture(
+        x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1,
+        border0=1, border1=1, border2=1, border3=1,
+        border_colour_word=0,
+    )
+    document, _ = _document_with_frames([_frame_record(1008, picture)])
+    dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.append(dict_entry)
+    document.picture_bytes = lambda entry: b"NOPE" + b"\x00" * 40  # not a DrawFile, not a sprite either
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "display: inline-block" in text
+    assert "border-top: 1.0pt solid" in text
+
+
 def test_repeated_dictionary_index_renders_once(tmp_path):
     frame_a = _frame(x0=0, y0=0, x1=50000, y1=50000, dictionary_index=0)
     frame_b = _frame(x0=0, y0=60000, x1=50000, y1=100000, dictionary_index=0)

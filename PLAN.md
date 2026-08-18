@@ -2169,6 +2169,55 @@ riscos-impression/
   across all 111 real documents, all three formats (`pdf`, `html-paged`,
   `html-scroll`), with 0 crashes.
 
+* **Post-Stage-14 fix (40)**: two further direct corrections/requests
+  from the user after reviewing fix (39)'s own output.
+  - "it would be good to have the bordering on those elements on
+    scrolling": html_scrolling.py drew no frame borders at all --
+    unlike html_paged.py, it has no absolute frame geometry to
+    position a border against, but border0..3 is independent of
+    geometry, so there was no real reason borders couldn't be added
+    via CSS regardless. The border-CSS generation itself (previously
+    html_paged.py's own `_border_css_for_style`/`_render_frame` logic)
+    is moved into html_base.py as a shared `border_css_declarations`
+    function (plus `_border_css_for_style`, `_BORDER4_GREY_CSS`,
+    `_BORDER5_GREY_CSS`, `_SHADOW_WIDTH_PT`) -- generating CSS text is
+    presentation-mapping code like `colour_to_css`/`style_css_properties`
+    already shared there, not a page-geometry concern the two HTML
+    formats need to solve differently, so this is shared rather than
+    duplicated (unlike, say, `_drawfile_svg`'s own positioning formula
+    in fix (39), which mirrors pdfdoc.py's own page-geometry logic and
+    stays a deliberate duplicate). html_paged.py's `_render_frame`
+    now just calls the shared function; html_scrolling.py gains its
+    own `border_width_pt` constructor parameter (matching
+    html_paged.py's) and wraps picture/text frame content in a
+    bordered `<div>` (`<span>` for an inline embedded picture, to stay
+    valid HTML inside an already-open `<p>`), with hinset/vinset
+    becoming CSS padding inside the border the same way html_paged.py's
+    own frame div already does.
+  - "the right [corners], the ones that join together ought to be
+    joined with a curve": fix (39)'s own Border-10-rounding only
+    special-cased all-four-edges-present (an `outline`, which can't
+    vary per edge, rounded via `border-radius`); a frame with Border
+    10 on only some edges (TestDoc-Real2Border10.png's own "Border 10,
+    no left" reference frame) fell all the way back to plain, square
+    -cornered per-edge lines, even at the two corners whose own edges
+    were both still present and both still Border 10. `border_css_de
+    clarations` now additionally sets `border-<corner>-radius`
+    per-corner (independent of the whole-frame `outline` special
+    case) whenever a specific corner's own two adjoining edges are
+    both Border 10, regardless of the other two edges -- so two
+    Border-10 edges that actually meet still curve into each other
+    even when a third edge is a different style or missing outright,
+    matching the reference image (only the two corners adjoining the
+    genuinely-missing edge stay square).
+
+  5 new regression tests (two scrolling-border, one partial-Border-10
+  corner-rounding, matching pre-existing coverage for the other two
+  html_paged.py cases already carried over unchanged); confirmed to
+  fail against the pre-fix code. Full suite green (407 tests);
+  re-validated across all 111 real documents, all three formats, with
+  0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run
