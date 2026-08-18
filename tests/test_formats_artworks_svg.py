@@ -104,7 +104,7 @@ def test_flat_filled_path_renders_as_svg_path_with_resolved_colour():
         colour=_direct(0, 0, 255), gradient_line=None, start_colour=None, end_colour=None,
     )
     path = _record(PathRecord, path=_square_path(filled=True))
-    artwork = _artwork((_list(fill, path),))
+    artwork = _artwork((_list(fill), _list(path)))
 
     svg = artworks_to_svg(artwork)
 
@@ -118,10 +118,11 @@ def test_path_without_the_filled_flag_ignores_the_propagated_fill():
         colour=_direct(0, 0, 255), gradient_line=None, start_colour=None, end_colour=None,
     )
     path = _record(PathRecord, path=_square_path(filled=False))
-    artwork = _artwork((_list(fill, path),))
+    artwork = _artwork((_list(fill), _list(path)))
 
     svg = artworks_to_svg(artwork)
 
+    assert "<path" in svg
     assert 'fill="none"' in svg
     assert 'fill="rgb(0,0,255)"' not in svg
 
@@ -145,10 +146,11 @@ def test_second_fill_before_a_path_overrides_the_first():
         colour=_direct(0, 255, 0), gradient_line=None, start_colour=None, end_colour=None,
     )
     path = _record(PathRecord, path=_square_path(filled=True))
-    artwork = _artwork((_list(fill_a, fill_b, path),))
+    artwork = _artwork((_list(fill_a), _list(fill_b), _list(path)))
 
     svg = artworks_to_svg(artwork)
 
+    assert "<path" in svg
     assert 'fill="rgb(0,255,0)"' in svg
     assert 'fill="rgb(255,0,0)"' not in svg
 
@@ -162,9 +164,10 @@ def test_a_fill_inside_a_group_does_not_leak_out_to_a_later_sibling():
         colour=_direct(255, 0, 0), gradient_line=None, start_colour=None, end_colour=None,
     )
     inner_path = _record(PathRecord, path=_square_path(filled=True))
-    group = _record(GroupRecord, unknown_values=(0, 0, 0), child_lists=(_list(inner_fill, inner_path),))
+    group = _record(GroupRecord, unknown_values=(0, 0, 0),
+                    child_lists=(_list(inner_fill), _list(inner_path)))
     outer_path = _record(PathRecord, path=_square_path(filled=True))
-    artwork = _artwork((_list(group, outer_path),))
+    artwork = _artwork((_list(group), _list(outer_path)))
 
     svg = artworks_to_svg(artwork)
 
@@ -178,10 +181,11 @@ def test_stroke_colour_and_width_are_applied():
     stroke = _record(StrokeColourRecord, colour=_direct(0, 255, 0))
     width = _record(StrokeWidthRecord, width=320)
     path = _record(PathRecord, path=_square_path(filled=True))
-    artwork = _artwork((_list(stroke, width, path),))
+    artwork = _artwork((_list(stroke), _list(width), _list(path)))
 
     svg = artworks_to_svg(artwork)
 
+    assert "<path" in svg
     assert 'stroke="rgb(0,255,0)"' in svg
     assert 'stroke-width="320"' in svg
 
@@ -200,8 +204,9 @@ def test_winding_rule_non_zero_matches_svgs_own_default_and_is_omitted():
 
     non_zero = _record(WindingRuleRecord, winding_rule=0)
     path2 = _record(PathRecord, path=_square_path(filled=True))
-    artwork2 = _artwork((_list(non_zero, path2),))
+    artwork2 = _artwork((_list(non_zero), _list(path2)))
     svg_nonzero = artworks_to_svg(artwork2)
+    assert "<path" in svg_nonzero
     assert "fill-rule" not in svg_nonzero
 
 
@@ -212,10 +217,11 @@ def test_linear_gradient_fill_adds_a_definition_and_references_it():
         start_colour=_direct(255, 0, 0), end_colour=_direct(0, 0, 255),
     )
     path = _record(PathRecord, path=_square_path(filled=True))
-    artwork = _artwork((_list(fill, path),))
+    artwork = _artwork((_list(fill), _list(path)))
 
     svg = artworks_to_svg(artwork)
 
+    assert "<path" in svg
     assert "<linearGradient" in svg
     assert 'stop-color="rgb(255,0,0)"' in svg
     assert 'stop-color="rgb(0,0,255)"' in svg
@@ -275,6 +281,60 @@ def test_a_fill_set_in_one_top_level_list_is_seen_by_a_later_sibling_list():
     assert 'fill="rgb(0,0,255)"' in svg
 
 
+def test_a_trailing_local_fill_override_is_applied_to_the_object_before_it():
+    # Regression test for the actual bug behind the "final black
+    # rectangle" investigation: a shape immediately followed, as a
+    # flat sibling in the *same* list, by its own local attribute
+    # override -- exactly how AWDocs/TestDocs/TestDocs/BlueRect,d94
+    # (a single rectangle plus one local FillColourRecord after it)
+    # stores a shape's own local override. Before artworks_to_svg
+    # called riscos_artworks.denormalise() first, this flat trailing
+    # sibling was read as an inert record affecting nothing (nothing
+    # follows it), and BlueRect rendered solid black -- the ambient
+    # default -- instead of blue.
+    ambient_default = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(0, 0, 0), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    local_fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(0, 0, 255), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    # One flat list -- [path, local_fill] -- exactly as BlueRect,d94
+    # decodes: the object, then its own trailing local override,
+    # never a fresh sibling list of its own.
+    artwork = _artwork((_list(ambient_default), _list(path, local_fill)))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<path" in svg
+    assert 'fill="rgb(0,0,255)"' in svg
+    assert 'fill="rgb(0,0,0)"' not in svg
+
+
+def test_a_trailing_local_override_does_not_leak_to_a_later_sibling_list():
+    # The other half of the same regression: a local override nested
+    # under its own object via denormalise() must stay scoped there,
+    # not leak forward to a later, unrelated object in a separate list
+    # -- otherwise "denormalise fixed BlueRect" could just as easily
+    # have introduced the opposite bug (over-eager propagation).
+    first_path = _record(PathRecord, path=_square_path(filled=True))
+    local_fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(0, 0, 255), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    second_path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(first_path, local_fill), _list(second_path)))
+
+    svg = artworks_to_svg(artwork)
+
+    paths = svg.split("<path")[1:]
+    assert len(paths) == 2
+    assert 'fill="rgb(0,0,255)"' in paths[0]
+    assert 'fill="none"' in paths[1]  # no ambient default was ever set
+
+
 def test_sprite_record_draws_nothing():
     # Sprites are deliberately out of scope: a separate project is
     # expected to provide sprite handling, so a SpriteRecord just
@@ -298,8 +358,9 @@ def test_visible_blend_path_keyframe_is_drawn_like_a_plain_path():
         colour=_direct(255, 128, 0), gradient_line=None, start_colour=None, end_colour=None,
     )
     blend_path = _record(BlendPathRecord, path=_square_path(filled=True))
-    artwork = _artwork((_list(fill, blend_path),))
+    artwork = _artwork((_list(fill), _list(blend_path)))
 
     svg = artworks_to_svg(artwork)
 
+    assert "<path" in svg
     assert 'fill="rgb(255,128,0)"' in svg

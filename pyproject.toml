@@ -20,6 +20,10 @@ dev = ["pytest>=7"]
 # runtime dependencies" rule (see PLAN.md) intact for everyone who
 # doesn't need ArtWorks support. Note riscos-artworks itself requires
 # Python 3.11+, one version newer than this project's own floor.
+# artworks_svg.py needs riscos_artworks.denormalise(), added on that
+# package's own feature/denormalise-record-tree branch -- not yet in
+# any released version, so this pin doesn't actually guarantee it's
+# present. Bump this once that branch lands in a release.
 artworks = ["riscos-artworks>=0.2.0"]
 
 [project.scripts]

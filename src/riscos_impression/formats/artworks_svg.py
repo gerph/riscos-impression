@@ -18,18 +18,32 @@ record coverage is itself kept in step with (see that package's own
 README) -- not derived independently. Notable behaviour carried across
 from that reference implementation, not just guessed at:
 
+* ``artworks_to_svg`` runs ``riscos_artworks.denormalise()`` on
+  *artwork* before walking it (see that function's own docstring).
+  The decoder reads exactly what's on disk: a flat run of sibling
+  records, e.g. a shape immediately followed by its own local fill
+  override. That flat form is not what gets rendered -- ArtWorks (and
+  riscos-artworks-js, whose own SVG mapper always calls
+  ``Artworks.denormalise()`` first) re-nests every such run so each
+  subsequent sibling becomes the sole child of the one before it.
+  Skipping this step was an earlier, real bug here: confirmed via
+  AWDocs/TestDocs/TestDocs/BlueRect,d94 (a single rectangle with one
+  local fill-colour override after it) rendering solid black instead
+  of blue, since the override was read as an inert trailing sibling
+  rather than the rectangle's own child.
 * Style-setting records (stroke colour/width, fill colour, join style,
   start/end line cap, winding rule, dash pattern) are siblings that
   mutate the *current* scope's style state for whichever siblings
-  follow them, not children of the object they style -- confirmed by
-  that project's own "attribute-propagation" example corpus (e.g.
-  "when two fills occur before a path then the second is used", "when
-  a fill occurs after a path then it is not used later"). Descending
+  follow them, not children of the object they style -- true only
+  *after* denormalisation nests any object-local override under the
+  object it styles; before that step every style-setting record is a
+  flat sibling regardless of what it was meant to affect. Descending
   into a record's own child_lists (a group, a layer, or a path's own
-  nested attribute overrides) happens with a *duplicated* copy of the
-  current style scope, popped back to the parent's own state again
-  once that sub-list finishes -- so a style change nested inside a
-  group/path never leaks back out to the group's own later siblings.
+  nested attribute overrides, now correctly populated by
+  denormalise()) happens with a *duplicated* copy of the current style
+  scope, popped back to the parent's own state again once that
+  sub-list finishes -- so a style change nested inside a group/path
+  never leaks back out to the group's own later siblings.
 * A path/rectangle/ellipse/rounded-rectangle's own child_lists (if it
   has any -- typically attribute records overriding just this one
   object) are processed *before* the object itself is drawn, using the
@@ -59,13 +73,19 @@ riscos-artworks-js's own SVG mapper -- no glyph outlines are decoded by
 
 Checking a real file (corpus/TestDoc,bc5's own "Shit Creek" picture,
 in riscos-impression) against its own known appearance -- rather than
-trusting "matches the reference" to mean "looks right" -- found that
-file relies heavily on blends for shading (sky gradient, rounded
-building shadow): with every blend left entirely unrendered
-(riscos-artworks-js's own behaviour: recursed into structurally, never
-drawn), almost nothing but flat *backing* rectangles remained visible
-underneath the missing shading, reading as "the whole picture rendered
-solid black" rather than "shading is missing here". BlendPathRecord (a
+trusting "matches the reference" to mean "looks right" -- surfaced the
+missing-denormalise() bug above: what first looked like "the whole
+picture rendered solid black" turned out to be a large object that
+should have been a layer's own genuine first (backmost) child instead
+rendering as a stray top-level sibling drawn last (i.e. on top of
+everything), inheriting the ambient default fill (black) because its
+own local override was similarly stranded as an inert sibling. Once
+fixed, that file also relies heavily on blends for shading (sky
+gradient, rounded building shadow): with every blend left entirely
+unrendered (riscos-artworks-js's own behaviour: recursed into
+structurally, never drawn), the shading is simply absent rather than
+covered by anything -- a separate, still-open gap from the one above.
+BlendPathRecord (a
 blend's own start/end keyframe shape, carrying an identical `.path`
 field to a plain PathRecord) is now drawn the same way a PathRecord is
 -- a real gap remains even so: ArtWorks marks a blend's own keyframes
@@ -111,6 +131,7 @@ from riscos_artworks import (
     WindingRule,
     WindingRuleRecord,
     DashPatternRecord,
+    denormalise,
 )
 
 #: ArtWorks' own native unit -> "user units" in the emitted SVG's own
@@ -405,4 +426,4 @@ def artworks_to_svg(artwork: ArtWorks) -> str:
     """A standalone SVG document reproducing *artwork*'s own visible
     content -- see the module docstring for the rendering algorithm and
     its known gaps."""
-    return _SvgBuilder(artwork).build()
+    return _SvgBuilder(denormalise(artwork)).build()
