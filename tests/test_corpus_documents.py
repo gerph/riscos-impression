@@ -61,3 +61,21 @@ def test_corpus_document_converts_without_crashing_or_erroring(document, fmt, ex
 
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+@pytest.mark.skipif(not _CORPUS_DOCUMENTS, reason="no documents committed under corpus/ yet")
+@pytest.mark.parametrize("document", _CORPUS_DOCUMENTS, ids=_ids)
+def test_corpus_document_extracts_without_crashing_or_erroring(document, tmp_path, capsys):
+    out_dir = tmp_path / "extracted"
+    exit_code = main(["extract", str(document), str(out_dir), "--json-log"])
+    captured = capsys.readouterr()
+
+    if exit_code != 0:
+        import json
+
+        entries = json.loads(captured.out) if captured.out else []
+        errors = [e for e in entries if e["level"] == LogLevel.ERROR.value]
+        pytest.fail(f"{document.name} (extract) exited {exit_code}: {errors or captured.err}")
+
+    assert out_dir.is_dir()
+    assert any(out_dir.rglob("*"))
