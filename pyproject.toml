@@ -13,6 +13,14 @@ authors = [{ name = "Charles Ferguson (Gerph)", email = "gerph@gerph.org" }]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Experimental (artworks-experiment branch): formats/artworks_svg.py
+# needs the third-party riscos_artworks structural decoder to render
+# embedded ArtWorks pictures at all. Kept optional, not a core
+# dependency, so the rest of the package keeps its own "no required
+# runtime dependencies" rule (see PLAN.md) intact for everyone who
+# doesn't need ArtWorks support. Note riscos-artworks itself requires
+# Python 3.11+, one version newer than this project's own floor.
+artworks = ["riscos-artworks>=0.2.0"]
 
 [project.scripts]
 riscos-impression = "riscos_impression.cli:main"
