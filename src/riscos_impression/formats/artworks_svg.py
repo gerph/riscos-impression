@@ -51,14 +51,39 @@ from that reference implementation, not just guessed at:
   transform="scale(1,-1)">` flips Y (ArtWorks, like Draw, is Y-up;
   SVG is Y-down) without needing every coordinate individually negated.
 
-Not yet handled (best-effort gaps, matching the reference
-implementation's own scope, not a regression from it): text
-(CharacterRecord/TextRecord are structural only here, the same as in
+Not yet handled fully (best-effort gaps): text (CharacterRecord/
+TextRecord are structural only here, the same as in
 riscos-artworks-js's own SVG mapper -- no glyph outlines are decoded by
-`riscos_artworks` itself), blends (BlendGroupRecord/BlendPathRecord are
-recursed into structurally but never drawn, again matching the
-reference), sprites, and distortion/perspective envelopes (recursed
-into structurally, the distortion itself not applied).
+`riscos_artworks` itself), and distortion/perspective envelopes
+(recursed into structurally, the distortion itself not applied).
+
+Checking a real file (corpus/TestDoc,bc5's own "Shit Creek" picture,
+in riscos-impression) against its own known appearance -- rather than
+trusting "matches the reference" to mean "looks right" -- found that
+file relies heavily on blends for shading (sky gradient, rounded
+building shadow): with every blend left entirely unrendered
+(riscos-artworks-js's own behaviour: recursed into structurally, never
+drawn), almost nothing but flat *backing* rectangles remained visible
+underneath the missing shading, reading as "the whole picture rendered
+solid black" rather than "shading is missing here". BlendPathRecord (a
+blend's own start/end keyframe shape, carrying an identical `.path`
+field to a plain PathRecord) is now drawn the same way a PathRecord is
+-- a real gap remains even so: ArtWorks marks a blend's own keyframes
+invisible in the file itself (its control word's own visibility bit is
+clear on both ends, confirmed directly against this same file), since
+a correct renderer is expected to synthesise the *interpolated*
+in-between shapes instead of showing the keyframes -- so this change
+alone doesn't yet recover that file's own missing shading; genuine
+blend interpolation (walking blend_steps, interpolating both
+geometry and colour between the two keyframe paths) remains a real
+follow-up, not attempted here.
+
+A SpriteRecord's own pixel data isn't decoded by `riscos_artworks`
+either (its own name/palette are, not the image), and -- unlike
+blends -- does get an explicit hatched placeholder box here instead
+of being silently skipped, so "there's a picture I can't show here"
+reads differently from "this part of the design is just black" for
+whichever files do use them (this one doesn't).
 """
 
 from __future__ import annotations
@@ -79,6 +104,8 @@ from riscos_artworks import (
     RecordList,
     RectangleRecord,
     RoundedRectangleRecord,
+    BlendPathRecord,
+    SpriteRecord,
     StartCapRecord,
     EndCapRecord,
     StrokeColourRecord,
@@ -126,7 +153,19 @@ _DEFAULT_STYLE = {
     "dash_elements": (),
 }
 
-_GEOMETRY_TYPES = (PathRecord, RectangleRecord, EllipseRecord, RoundedRectangleRecord)
+#: BlendPathRecord (a blend's own start/end keyframe shape) is included
+#: here deliberately, beyond what riscos-artworks-js's own reference
+#: mapper does (it recurses into a blend's own structure but never
+#: draws it at all): a real file (corpus/TestDoc,bc5's own "Shit
+#: Creek" picture, in riscos-impression) uses blends heavily for
+#: shading (sky gradient, rounded building shadows), and with them
+#: entirely unrendered, only the flat backing shapes beneath that
+#: shading were visible -- drawing each blend keyframe path with
+#: whatever fill/stroke is active at that point (the same as a normal
+#: PathRecord; BlendPathRecord carries an identical `.path` field) is
+#: not a real gradient/interpolation between the two keyframes, but is
+#: a much closer approximation than showing nothing at all.
+_GEOMETRY_TYPES = (PathRecord, RectangleRecord, EllipseRecord, RoundedRectangleRecord, BlendPathRecord)
 
 
 def _colour_css(bgr: Optional[int]) -> str:
@@ -188,8 +227,23 @@ class _SvgBuilder:
     # -- Traversal -----------------------------------------------------------
 
     def process_lists(self, lists: tuple[RecordList, ...], style: dict) -> None:
+        # *style* is shared (and mutated in place) across every list in
+        # *lists*, not reset per list: riscos-artworks-js's own
+        # processLists() likewise makes a single call to processList()
+        # per list using its one shared, class-level RenderState stack
+        # -- scoping (a fresh, popped-afterwards copy) happens once per
+        # *caller* of this method (process_record's own default case,
+        # and process_geometry), not once per list within it. Getting
+        # this wrong (an earlier version of this method copied *style*
+        # inside this loop) meant a real multi-list document-defaults
+        # sequence -- individual single-record lists each setting one
+        # attribute, immediately followed by the actual content list --
+        # silently discarded every one of those defaults before the
+        # content list was ever reached, and every object in a real
+        # ArtWorks file (corpus/TestDoc,bc5's own embedded pictures)
+        # rendered with no fill at all.
         for record_list in lists:
-            self.process_list(record_list.records, dict(style))
+            self.process_list(record_list.records, style)
 
     def process_list(self, records: tuple[Record, ...], style: dict) -> None:
         # *style* is mutated in place as sibling attribute records are
@@ -222,6 +276,8 @@ class _SvgBuilder:
         elif isinstance(record, DashPatternRecord):
             style["dash_offset"] = record.offset or 0
             style["dash_elements"] = record.elements
+        elif isinstance(record, SpriteRecord):
+            self._emit_sprite_placeholder(record)
         else:
             # Group/layer/blend/distortion/text and anything else not
             # drawn directly: descend into its own children with a
@@ -252,6 +308,31 @@ class _SvgBuilder:
         d = self._path_d(path)
         attrs = self._style_attrs(style)
         self.objects.append(f'<path d="{d}"{attrs}/>')
+
+    def _emit_sprite_placeholder(self, record: SpriteRecord) -> None:
+        """A hatched placeholder box for an embedded raster sprite --
+        `riscos_artworks` decodes only a SpriteRecord's own name and
+        palette, not its pixel data, so this can't reproduce the actual
+        image. Confirmed worth drawing *something* rather than nothing,
+        against a real ArtWorks file (corpus/TestDoc,bc5's own "Shit
+        Creek" picture, in riscos-impression): its photographic-looking
+        content turned out to be sprite-filled backdrop, sitting over
+        solid-colour vector rectangles meant only as a backing layer --
+        with sprites skipped entirely (drawing nothing, the same as any
+        other not-yet-handled record type), those backing rectangles
+        were the only thing left visible, which read as "everything
+        rendered solid black" rather than "a picture is missing here"."""
+        if not (record.control_word >> 1) & 1:
+            return
+        box = record.bounding_box
+        self._merge_bbox(box)
+        w, h = box.max_x - box.min_x, box.max_y - box.min_y
+        if w <= 0 or h <= 0:
+            return
+        self.objects.append(
+            f'<rect x="{_fmt(box.min_x)}" y="{_fmt(box.min_y)}" width="{_fmt(w)}" height="{_fmt(h)}" '
+            f'fill="#cccccc" fill-opacity="0.5" stroke="#999999" stroke-width="{_fmt(w * 0.002)}"/>'
+        )
 
     @staticmethod
     def _path_d(path) -> str:

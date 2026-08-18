@@ -32,6 +32,8 @@ from riscos_artworks import (
     WindingRuleRecord,
 )
 
+from riscos_artworks import BlendPathRecord, SpriteRecord
+
 from riscos_impression.formats.artworks_svg import artworks_to_svg
 
 FILLED = 0x80000000  # bit 31 set on a path's first element's tag
@@ -243,3 +245,75 @@ def test_bounding_box_drives_the_viewbox_and_unit_scaled_size():
     assert 'viewBox="0 -640 640 640"' in svg
     # 640 artworks units * (1/640) * (4/3) = 4/3 pt.
     assert 'width="1.3333pt"' in svg
+
+
+def test_a_fill_set_in_one_top_level_list_is_seen_by_a_later_sibling_list():
+    # Regression test: a real ArtWorks file typically opens with a run
+    # of single-record top-level lists -- one default attribute per
+    # list (winding rule, dash, caps, join, fill, stroke, ...) -- ahead
+    # of the list holding the actual content. An earlier version of
+    # process_lists took a fresh copy of the style dict for *every*
+    # list it processed, rather than sharing and mutating one dict
+    # across every list a single call covers (matching
+    # riscos-artworks-js's own processLists(), which shares one
+    # class-level RenderState stack across every list it walks) --
+    # so each of those single-record lists discarded the one before
+    # it, and the content list that followed saw none of them: every
+    # object in every real ArtWorks file tried (corpus/TestDoc,bc5's
+    # own embedded pictures) rendered with no fill at all. Two
+    # separate top-level record_lists reproduce the same shape at unit
+    # scale: a fill in the first list, a path in the second.
+    fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(0, 0, 255), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    svg = artworks_to_svg(artwork)
+
+    assert 'fill="rgb(0,0,255)"' in svg
+
+
+def test_sprite_record_draws_a_placeholder_box_not_nothing():
+    # A real file (corpus/TestDoc,bc5's own "Shit Creek" picture, in
+    # riscos-impression) uses sprites for photographic-looking content
+    # layered over flat backing rectangles; riscos_artworks doesn't
+    # decode a sprite's own pixel data, so this can only draw a
+    # placeholder -- but drawing nothing at all left just the backing
+    # rectangles visible, reading as "solid black" rather than "a
+    # picture is missing here".
+    sprite = _record(
+        SpriteRecord, bbox=_bbox(0, 0, 1000, 1000),
+        unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
+    )
+    artwork = _artwork((_list(sprite),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<rect" in svg
+
+
+def test_hidden_sprite_record_draws_nothing():
+    sprite = _record(
+        SpriteRecord, control_word=0, bbox=_bbox(0, 0, 1000, 1000),
+        unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
+    )
+    artwork = _artwork((_list(sprite),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<rect" not in svg
+
+
+def test_visible_blend_path_keyframe_is_drawn_like_a_plain_path():
+    fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(255, 128, 0), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    blend_path = _record(BlendPathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill, blend_path),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert 'fill="rgb(255,128,0)"' in svg
