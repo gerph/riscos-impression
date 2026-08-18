@@ -4,13 +4,16 @@ Decodes the file header and walks the object stream: font tables, paths
 (fill/stroke colour, width, winding rule, and their move/line/curve/close
 elements), single-line text, JPEG images (see JPEG_TYPE -- the JPEG's
 own bytes are decoded standalone and complete, ready to embed directly;
-no pixel decompression is done here), groups, and tagged objects
-(recursing into both). Sprite objects, and any other object type (text
-area, transformed text/sprite, or anything unrecognised), are captured
-only as a bounding box -- there is no pixel data or further structure
-decoded for them. Options objects (see OPTIONS_TYPE) are captured the
-same way but are never worth a caller logging as best-effort: they
-carry no rendering component at all, not just an undecoded one.
+no pixel decompression is done here), Sprite objects (see DrawSprite --
+this module keeps only the object's own raw bytes; pixel decoding is a
+caller's own job via the optional riscos_sprites decoder, same as this
+project's own formats/sprite.py), groups, and tagged objects (recursing
+into both). Any other object type (text area, transformed text/sprite,
+or anything unrecognised) is captured only as a bounding box -- there
+is no pixel data or further structure decoded for it. Options objects
+(see OPTIONS_TYPE) are captured the same way but are never worth a
+caller logging as best-effort: they carry no rendering component at
+all, not just an undecoded one.
 
 This is general RISC OS DrawFile knowledge, not something recovered from
 the Impression conversion source; the on-disk layout here is verified
@@ -163,12 +166,20 @@ class DrawText:
 
 @dataclass(frozen=True)
 class DrawSprite:
-    """A Sprite object's bounding box only; the pixel data itself isn't
-    decoded (matching formats/sprite.py's own stub scope) -- a Sprite
-    embedded *within* a DrawFile is rarer than a document's picture
-    being a Sprite outright, and no more valuable to decode here."""
+    """A Sprite object. `data` is the object's own raw body: a single
+    native RISC OS sprite header+pixel record (SPRITE_HEADER_SIZE=44
+    bytes, then image/mask data) -- confirmed empirically against a
+    real file (corpus/TestDoc,bc5's own updated sprite-bearing
+    picture): the body's own first word is a "next" size field
+    identical to formats/sprite.py's/riscos_sprites' own single-sprite
+    header layout, with none of a full multi-sprite SpriteArea file's
+    own outer 12-byte area header (sprite_count/first_offset/
+    free_offset) wrapped around it. A caller wanting real pixel data
+    needs to synthesise that missing area header first -- see
+    formats/sprite.py's wrap_single_sprite_as_area()."""
 
     bounds: BoundingBox
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -305,7 +316,7 @@ def _parse_object(
         if obj_type == 2:
             return _parse_path(data, bounds, start, end), {}
         if obj_type == 5:
-            return DrawSprite(bounds=bounds), {}
+            return DrawSprite(bounds=bounds, data=data[start:end]), {}
         if obj_type == JPEG_TYPE:
             return _parse_jpeg(data, bounds, start, end), {}
         if obj_type == 6:

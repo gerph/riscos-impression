@@ -93,8 +93,9 @@ def build_text(
     return _obj_header(1, 24 + len(body), bounds) + body
 
 
-def build_sprite(bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000)) -> bytes:
-    return _obj_header(5, 24, bounds)
+def build_sprite(bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000), *, body: bytes = b"") -> bytes:
+    body = _pad4(body)
+    return _obj_header(5, 24 + len(body), bounds) + body
 
 
 def build_jpeg(jpeg_bytes: bytes, *, bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000),

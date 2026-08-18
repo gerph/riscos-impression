@@ -63,7 +63,8 @@ from riscos_impression.formats.drawfile import (
     colour_rgb,
 )
 from riscos_impression.formats.eps import EPSObject
-from riscos_impression.formats.sprite import SpriteArea
+from riscos_impression.formats.sprite import SpriteArea, wrap_single_sprite_as_area
+from riscos_impression.formats.sprite_png import sprite_area_to_png
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
 from riscos_impression.model.dictionary import EmbeddedObjectType
 from riscos_impression.model.styles import Style
@@ -579,10 +580,14 @@ class HTML5Converter(Converter):
                 self.log.error(
                     "picture", "picture classified as a drawable format but decoded as neither DrawFile nor Sprite"
                 )
-            else:
-                self.log.best_effort(
-                    "picture", "Sprite picture rendered as a placeholder box; pixel data is not decoded by this converter"
-                )
+                return self._placeholder_img("Sprite", width_pt, height_pt)
+            png = sprite_area_to_png(data)
+            if png is not None:
+                return self._image_data_uri_img("png", png, width_pt, height_pt)
+            self.log.best_effort(
+                "picture", "Sprite picture rendered as a placeholder box; the optional 'sprites' "
+                "extra (riscos_sprites) is not installed, or the sprite failed to decode"
+            )
             return self._placeholder_img("Sprite", width_pt, height_pt)
 
         if kind is EmbeddedObjectType.ARTWORKS:
@@ -614,6 +619,17 @@ class HTML5Converter(Converter):
         uri = picture_placeholder_data_uri(label, width_pt, height_pt)
         return (
             f'<img src="{uri}" alt="[{escape_html(label)} picture, not rendered]" '
+            f'width="{width_pt:.1f}" height="{height_pt:.1f}" '
+            f'style="width: {width_pt:.1f}pt; height: {height_pt:.1f}pt;">'
+        )
+
+    def _image_data_uri_img(self, image_format: str, image_bytes: bytes, width_pt: float, height_pt: float) -> str:
+        """A decoded raster image (currently only real Sprite pixel
+        data, via formats/sprite_png.py) embedded as a self-contained
+        `<img>` data: URI, sized to the picture frame's own box."""
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return (
+            f'<img src="data:image/{image_format};base64,{encoded}" alt="[picture]" '
             f'width="{width_pt:.1f}" height="{height_pt:.1f}" '
             f'style="width: {width_pt:.1f}pt; height: {height_pt:.1f}pt;">'
         )
@@ -772,20 +788,7 @@ class HTML5Converter(Converter):
         elif isinstance(obj, DrawJPEG):
             self._drawfile_svg_jpeg(obj, to_svg, parts, notes)
         elif isinstance(obj, DrawSprite):
-            px0, py0 = to_svg(obj.bounds.x0, obj.bounds.y0)
-            px1, py1 = to_svg(obj.bounds.x1, obj.bounds.y1)
-            rx0, rx1 = sorted((px0, px1))
-            ry0, ry1 = sorted((py0, py1))
-            parts.append(
-                f'<rect x="{rx0:.1f}" y="{ry0:.1f}" width="{rx1 - rx0:.1f}" height="{ry1 - ry0:.1f}" '
-                f'fill="none" stroke="#999999" stroke-width="1"/>'
-                f'<text x="{(rx0 + rx1) / 2:.1f}" y="{(ry0 + ry1) / 2:.1f}" font-size="9" fill="#666666" '
-                f'text-anchor="middle" dominant-baseline="middle">[Sprite]</text>'
-            )
-            notes.append(
-                "a Sprite object embedded within a DrawFile picture is drawn as a "
-                "placeholder box; pixel data is not decoded"
-            )
+            self._drawfile_svg_sprite(obj, to_svg, parts, notes)
         elif obj.type != OPTIONS_TYPE:  # DrawUnknown -- text area, transformed text/sprite, or unrecognised
             notes.append(
                 "one or more DrawFile object types (e.g. text area, transformed "
@@ -820,6 +823,38 @@ class HTML5Converter(Converter):
                 "a JPEG image with a rotated/sheared transform is rendered axis-aligned "
                 "to its own bounding box; rotation/shear is not reproduced"
             )
+
+    def _drawfile_svg_sprite(self, sprite: DrawSprite, to_svg, parts: list[str], notes: list[str]) -> None:
+        """A Sprite object's own body is a single native sprite record
+        with no area wrapper of its own (see DrawSprite's own
+        docstring) -- wrapped via wrap_single_sprite_as_area before
+        handing it to the same optional riscos_sprites conversion a
+        top-level Sprite picture uses. Falls back to the original
+        placeholder box (with the same label/note) when that isn't
+        installed or the sprite fails to decode."""
+        px0, py0 = to_svg(sprite.bounds.x0, sprite.bounds.y0)
+        px1, py1 = to_svg(sprite.bounds.x1, sprite.bounds.y1)
+        rx0, rx1 = sorted((px0, px1))
+        ry0, ry1 = sorted((py0, py1))
+        png = sprite_area_to_png(wrap_single_sprite_as_area(sprite.data)) if sprite.data else None
+        if png is not None:
+            encoded = base64.b64encode(png).decode("ascii")
+            parts.append(
+                f'<image x="{rx0:.2f}" y="{ry0:.2f}" width="{rx1 - rx0:.2f}" height="{ry1 - ry0:.2f}" '
+                f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/>'
+            )
+            return
+        parts.append(
+            f'<rect x="{rx0:.1f}" y="{ry0:.1f}" width="{rx1 - rx0:.1f}" height="{ry1 - ry0:.1f}" '
+            f'fill="none" stroke="#999999" stroke-width="1"/>'
+            f'<text x="{(rx0 + rx1) / 2:.1f}" y="{(ry0 + ry1) / 2:.1f}" font-size="9" fill="#666666" '
+            f'text-anchor="middle" dominant-baseline="middle">[Sprite]</text>'
+        )
+        notes.append(
+            "a Sprite object embedded within a DrawFile picture is drawn as a "
+            "placeholder box; the optional 'sprites' extra (riscos_sprites) is not "
+            "installed, or the sprite failed to decode"
+        )
 
     def _drawfile_svg_path(self, path: DrawPath, to_svg, scale, parts: list[str]) -> None:
         has_fill = path.fill_colour is not None

@@ -2305,7 +2305,9 @@ def test_untrustworthy_shift_shrinks_oversized_content_to_fit_instead_of_croppin
 def test_drawfile_sprite_sub_object_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
     from riscos_impression.output.pdfdoc import PDFConverter
 
-    document = _picture_document(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000)))
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
 
     converter = PDFConverter(document)
     out = tmp_path / "out.pdf"
@@ -2366,6 +2368,123 @@ def test_drawfile_unparseable_jpeg_falls_back_to_a_placeholder_and_logs_best_eff
     assert b"([JPEG])" in data
     assert b"/DCTDecode" not in data
     assert any("could not be parsed" in e.message for e in converter.log.entries)
+
+
+class _FakePngImage:
+    """A minimal stand-in for riscos_sprites.png.PngImage -- real
+    sprite decoding is riscos_sprites' own, separately-tested concern
+    (see riscos-dumpsprites/tests/test_png.py); these tests exercise
+    only this project's own PDF-object-building logic in
+    _draw_sprite_image, given a decoded image already in hand."""
+
+    def __init__(self, *, width, height, colour_type, bit_depth=8, palette=None,
+                 rows=(), trns_palette=None, trns_colour=None):
+        self.width = width
+        self.height = height
+        self.colour_type = colour_type
+        self.bit_depth = bit_depth
+        self.palette = palette
+        self.rows = rows
+        self.trns_palette = trns_palette
+        self.trns_colour = trns_colour
+
+
+def test_drawfile_sprite_object_embeds_as_an_indexed_image_with_colour_key_mask(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.formats.sprite_png import COLOUR_TYPE_PALETTE
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    image = _FakePngImage(
+        width=2, height=1, colour_type=COLOUR_TYPE_PALETTE, bit_depth=8,
+        palette=[(0, 0, 0), (255, 0, 0)], rows=[[0, 1]], trns_palette=[0, 255],
+    )
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=image):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"/Subtype /Image" in data
+    assert b"/Indexed /DeviceRGB 1 <000000ff0000>" in data
+    assert b"/Mask [0 0]" in data
+    assert b"/Filter /FlateDecode" in data
+    assert b"([Sprite])" not in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_object_embeds_as_plain_rgb_with_colour_key_mask(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.formats.sprite_png import COLOUR_TYPE_RGB
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    image = _FakePngImage(
+        width=1, height=1, colour_type=COLOUR_TYPE_RGB,
+        rows=[[(10, 20, 30)]], trns_colour=(255, 255, 255),
+    )
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=image):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"/ColorSpace /DeviceRGB" in data
+    assert b"/Mask [255 255 255 255 255 255]" in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_object_with_real_alpha_gets_a_real_smask(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.formats.sprite_png import COLOUR_TYPE_RGBA
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    image = _FakePngImage(
+        width=2, height=1, colour_type=COLOUR_TYPE_RGBA,
+        rows=[[(1, 2, 3, 128), (4, 5, 6, 255)]],
+    )
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=image):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"/SMask" in data
+    assert data.count(b"/Subtype /Image") == 2  # the RGB image plus its own SMask
+    assert b"/ColorSpace /DeviceGray" in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_missing_extra_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=None):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"([Sprite])" in data
+    assert any("riscos_sprites" in e.message for e in converter.log.entries)
 
 
 def test_drawfile_text_object_renders_using_the_font_tables_own_name(tmp_path):

@@ -25,6 +25,14 @@ dev = ["pytest>=7"]
 # any released version, so this pin doesn't actually guarantee it's
 # present. Bump this once that branch lands in a release.
 artworks = ["riscos-artworks>=0.2.0"]
+# Experimental: real Sprite pixel decoding (top-level Sprite pictures,
+# Sprite objects embedded within a DrawFile) needs the third-party
+# riscos_sprites decoder to convert to PNG -- kept optional for the
+# same "no required runtime dependencies" reason as the artworks extra
+# above. Not yet published to PyPI; install from
+# https://github.com/gerph/riscos-dumpsprites.git (sprites-png-conversion
+# branch) until it is.
+sprites = ["riscos-dumpsprites>=0.2.0"]
 
 [project.scripts]
 riscos-impression = "riscos_impression.cli:main"

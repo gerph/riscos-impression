@@ -319,6 +319,27 @@ def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
     assert any("Sprite object embedded within a DrawFile" in e.message for e in converter.log.entries)
 
 
+def test_drawfile_svg_sprite_sub_object_decodes_as_a_real_png_image():
+    from unittest.mock import patch
+
+    # Real sprite decoding is riscos_sprites' own, separately-tested
+    # concern (see riscos-dumpsprites/tests/test_png.py) -- this test
+    # only exercises this project's own dispatch/embedding, given a
+    # successful decode already in hand.
+    draw = DrawFile.from_bytes(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44)))
+    converter = _converter()
+    fake_png = b"\x89PNG\r\n\x1a\nfake png bytes"
+
+    with patch("riscos_impression.output.html_base.sprite_area_to_png", return_value=fake_png):
+        svg = converter._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
+
+    import base64
+    encoded = base64.b64encode(fake_png).decode("ascii")
+    assert f'href="data:image/png;base64,{encoded}"' in svg
+    assert ">[Sprite]</text>" not in svg
+    assert not converter.log.has_errors()
+
+
 def test_drawfile_svg_jpeg_object_embeds_as_a_data_uri_image():
     jpeg_bytes = b"\xff\xd8\xff\xe0fake jpeg data\xff\xd9"
     draw = DrawFile.from_bytes(build_drawfile(build_jpeg(jpeg_bytes, bounds=(0, 0, 1000, 1000))))

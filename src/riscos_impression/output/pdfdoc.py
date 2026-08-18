@@ -129,6 +129,7 @@ from __future__ import annotations
 
 import math
 import re
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -148,7 +149,14 @@ from riscos_impression.formats.drawfile import (
     colour_rgb,
 )
 from riscos_impression.formats.eps import EPSObject
-from riscos_impression.formats.sprite import SpriteArea
+from riscos_impression.formats.sprite import SpriteArea, wrap_single_sprite_as_area
+from riscos_impression.formats.sprite_png import (
+    COLOUR_TYPE_PALETTE,
+    COLOUR_TYPE_RGB,
+    COLOUR_TYPE_RGBA,
+    raw_scanline_bytes,
+    sprite_area_to_png_image,
+)
 from riscos_impression.log import ConversionLog
 from riscos_impression.output import font_metrics
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
@@ -1747,16 +1755,20 @@ class PDFConverter(Converter):
             if draw is not None:
                 self._draw_drawfile_picture(draw, x0, y0, x1, y1, pict, apply_shift)
                 return
-            sprite = SpriteArea.from_bytes(data)
-            self._draw_placeholder(x0, y0, x1, y1, "Sprite")
-            if sprite is None:
+            if SpriteArea.from_bytes(data) is None:
+                self._draw_placeholder(x0, y0, x1, y1, "Sprite")
                 self.log.error("picture", "picture classified as a drawable format but decoded as neither DrawFile nor Sprite")
-            else:
-                self.log.best_effort(
-                    "picture",
-                    "Sprite picture rendered as a placeholder box; pixel data is "
-                    "not decoded by this converter",
-                )
+                return
+            image = sprite_area_to_png_image(data)
+            if image is not None:
+                self._draw_sprite_image(image, x0, y0, x1, y1)
+                return
+            self._draw_placeholder(x0, y0, x1, y1, "Sprite")
+            self.log.best_effort(
+                "picture",
+                "Sprite picture rendered as a placeholder box; the optional 'sprites' "
+                "extra (riscos_sprites) is not installed, or the sprite failed to decode",
+            )
             return
 
         if kind is EmbeddedObjectType.ARTWORKS:
@@ -2069,11 +2081,18 @@ class PDFConverter(Converter):
         elif isinstance(obj, DrawSprite):
             sx0, sy0 = to_pt(obj.bounds.x0, obj.bounds.y0)
             sx1, sy1 = to_pt(obj.bounds.x1, obj.bounds.y1)
-            self._draw_placeholder(min(sx0, sx1), min(sy0, sy1), max(sx0, sx1), max(sy0, sy1), "Sprite")
-            notes.append(
-                "a Sprite object embedded within a DrawFile picture is drawn as a "
-                "placeholder box; pixel data is not decoded"
-            )
+            x0, x1 = min(sx0, sx1), max(sx0, sx1)
+            y0, y1 = min(sy0, sy1), max(sy0, sy1)
+            image = sprite_area_to_png_image(wrap_single_sprite_as_area(obj.data)) if obj.data else None
+            if image is not None:
+                self._draw_sprite_image(image, x0, y0, x1, y1)
+            else:
+                self._draw_placeholder(x0, y0, x1, y1, "Sprite")
+                notes.append(
+                    "a Sprite object embedded within a DrawFile picture is drawn as a "
+                    "placeholder box; the optional 'sprites' extra (riscos_sprites) is "
+                    "not installed, or the sprite failed to decode"
+                )
         elif obj.type != OPTIONS_TYPE:  # DrawUnknown -- text area, transformed text/sprite, or unrecognised
             notes.append(
                 "one or more DrawFile object types (e.g. text area, transformed "
@@ -2250,6 +2269,77 @@ class PDFConverter(Converter):
                 "a JPEG image with a rotated/sheared transform is rendered axis-aligned "
                 "to its own bounding box; rotation/shear is not reproduced"
             )
+
+    def _draw_sprite_image(self, image, x0: float, y0: float, x1: float, y1: float) -> None:
+        """Embed a decoded sprite (a riscos_sprites.png.PngImage, from
+        sprite_area_to_png_image) as a PDF Image XObject built
+        directly from its own decoded pixel/palette/colour-key data --
+        not a re-parsed PNG file (see formats/sprite_png.py's own
+        raw_scanline_bytes). Indexed and plain RGB sprites reuse
+        whatever colour-key transparency the PNG encoder already chose
+        (mirroring the SVG converter's own embedded PNG exactly) via
+        PDF's own /Mask colour-key array, when it's expressible as one
+        (a single transparent index/colour -- true for every real
+        classic-masked sprite seen so far, since that's exactly what
+        the encoder searches for before giving up and promoting to a
+        full alpha channel); an already-alpha-masked sprite (RGBA) gets
+        a real /SMask instead, built from that same alpha data."""
+
+        width, height = image.width, image.height
+        if image.colour_type == COLOUR_TYPE_PALETTE:
+            colour_space = (
+                f"[/Indexed /DeviceRGB {len(image.palette) - 1} "
+                f"<{''.join(f'{r:02x}{g:02x}{b:02x}' for r, g, b in image.palette)}>]"
+            )
+            pixel_bytes = raw_scanline_bytes(image)
+            mask = ""
+            if image.trns_palette is not None:
+                transparent = [i for i, alpha in enumerate(image.trns_palette) if alpha == 0]
+                opaque = all(alpha in (0, 255) for alpha in image.trns_palette)
+                if opaque and len(transparent) == 1:
+                    mask = f" /Mask [{transparent[0]} {transparent[0]}]"
+            image_dict = (
+                f"/Type /XObject /Subtype /Image /Width {width} /Height {height} "
+                f"/ColorSpace {colour_space} /BitsPerComponent {image.bit_depth}{mask} "
+                "/Filter /FlateDecode "
+            )
+        elif image.colour_type == COLOUR_TYPE_RGB:
+            pixel_bytes = raw_scanline_bytes(image)
+            mask = ""
+            if image.trns_colour is not None:
+                r, g, b = image.trns_colour
+                mask = f" /Mask [{r} {r} {g} {g} {b} {b}]"
+            image_dict = (
+                f"/Type /XObject /Subtype /Image /Width {width} /Height {height} "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8{mask} /Filter /FlateDecode "
+            )
+        else:  # COLOUR_TYPE_RGBA -- a genuine alpha channel needs a real /SMask
+            rgb_bytes = bytearray()
+            alpha_bytes = bytearray()
+            for row in image.rows:
+                for r, g, b, a in row:
+                    rgb_bytes.extend((r, g, b))
+                    alpha_bytes.append(a)
+            smask_obj = self._writer.add(_stream_obj(
+                zlib.compress(bytes(alpha_bytes), 9),
+                extra=(
+                    f"/Type /XObject /Subtype /Image /Width {width} /Height {height} "
+                    "/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode "
+                ),
+            ))
+            pixel_bytes = bytes(rgb_bytes)
+            image_dict = (
+                f"/Type /XObject /Subtype /Image /Width {width} /Height {height} "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {smask_obj} 0 R "
+                "/Filter /FlateDecode "
+            )
+
+        image_obj = self._writer.add(_stream_obj(zlib.compress(pixel_bytes, 9), extra=image_dict))
+        name = f"Im{len(self._page_xobjects) + 1}"
+        self._page_xobjects[name] = image_obj
+        self._content.append(
+            f"q {_fmt(x1 - x0)} 0 0 {_fmt(y1 - y0)} {_fmt(x0)} {_fmt(y0)} cm /{name} Do Q\n"
+        )
 
     def _draw_placeholder(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:
         w, h = x1 - x0, y1 - y0
