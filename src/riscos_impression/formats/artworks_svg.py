@@ -78,13 +78,11 @@ blend interpolation (walking blend_steps, interpolating both
 geometry and colour between the two keyframe paths) remains a real
 follow-up, not attempted here.
 
-A SpriteRecord's own pixel data isn't decoded by `riscos_artworks`
-either (its own name/palette are, not the image), and -- unlike
-blends -- does get an explicit hatched placeholder box here instead
-of being silently skipped, so "there's a picture I can't show here"
-reads differently from "this part of the design is just black" for
-whichever files do use them (this one doesn't).
-"""
+Sprites are deliberately out of scope here too: a SpriteRecord falls
+through to the generic default case below (recursed into structurally,
+drawing nothing of its own) rather than getting a placeholder -- a
+separate project is expected to provide sprite handling, so this
+module doesn't attempt even a placeholder for one."""
 
 from __future__ import annotations
 
@@ -105,7 +103,6 @@ from riscos_artworks import (
     RectangleRecord,
     RoundedRectangleRecord,
     BlendPathRecord,
-    SpriteRecord,
     StartCapRecord,
     EndCapRecord,
     StrokeColourRecord,
@@ -276,13 +273,14 @@ class _SvgBuilder:
         elif isinstance(record, DashPatternRecord):
             style["dash_offset"] = record.offset or 0
             style["dash_elements"] = record.elements
-        elif isinstance(record, SpriteRecord):
-            self._emit_sprite_placeholder(record)
         else:
-            # Group/layer/blend/distortion/text and anything else not
-            # drawn directly: descend into its own children with a
-            # scoped copy of the current style, matching
-            # riscos-artworks-js's own default case.
+            # Group/layer/blend/distortion/sprite/text and anything
+            # else not drawn directly: descend into its own children
+            # with a scoped copy of the current style, matching
+            # riscos-artworks-js's own default case. Sprites are
+            # deliberately skipped rather than given a placeholder --
+            # see the module docstring: a separate project is expected
+            # to provide sprite handling.
             self.process_lists(record.child_lists, dict(style))
 
     def process_geometry(self, record: Record, style: dict) -> None:
@@ -308,31 +306,6 @@ class _SvgBuilder:
         d = self._path_d(path)
         attrs = self._style_attrs(style)
         self.objects.append(f'<path d="{d}"{attrs}/>')
-
-    def _emit_sprite_placeholder(self, record: SpriteRecord) -> None:
-        """A hatched placeholder box for an embedded raster sprite --
-        `riscos_artworks` decodes only a SpriteRecord's own name and
-        palette, not its pixel data, so this can't reproduce the actual
-        image. Confirmed worth drawing *something* rather than nothing,
-        against a real ArtWorks file (corpus/TestDoc,bc5's own "Shit
-        Creek" picture, in riscos-impression): its photographic-looking
-        content turned out to be sprite-filled backdrop, sitting over
-        solid-colour vector rectangles meant only as a backing layer --
-        with sprites skipped entirely (drawing nothing, the same as any
-        other not-yet-handled record type), those backing rectangles
-        were the only thing left visible, which read as "everything
-        rendered solid black" rather than "a picture is missing here"."""
-        if not (record.control_word >> 1) & 1:
-            return
-        box = record.bounding_box
-        self._merge_bbox(box)
-        w, h = box.max_x - box.min_x, box.max_y - box.min_y
-        if w <= 0 or h <= 0:
-            return
-        self.objects.append(
-            f'<rect x="{_fmt(box.min_x)}" y="{_fmt(box.min_y)}" width="{_fmt(w)}" height="{_fmt(h)}" '
-            f'fill="#cccccc" fill-opacity="0.5" stroke="#999999" stroke-width="{_fmt(w * 0.002)}"/>'
-        )
 
     @staticmethod
     def _path_d(path) -> str:

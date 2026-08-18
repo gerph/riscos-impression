@@ -275,14 +275,11 @@ def test_a_fill_set_in_one_top_level_list_is_seen_by_a_later_sibling_list():
     assert 'fill="rgb(0,0,255)"' in svg
 
 
-def test_sprite_record_draws_a_placeholder_box_not_nothing():
-    # A real file (corpus/TestDoc,bc5's own "Shit Creek" picture, in
-    # riscos-impression) uses sprites for photographic-looking content
-    # layered over flat backing rectangles; riscos_artworks doesn't
-    # decode a sprite's own pixel data, so this can only draw a
-    # placeholder -- but drawing nothing at all left just the backing
-    # rectangles visible, reading as "solid black" rather than "a
-    # picture is missing here".
+def test_sprite_record_draws_nothing():
+    # Sprites are deliberately out of scope: a separate project is
+    # expected to provide sprite handling, so a SpriteRecord just
+    # recurses into its own (typically empty) child_lists like any
+    # other not-yet-handled record type, drawing nothing of its own.
     sprite = _record(
         SpriteRecord, bbox=_bbox(0, 0, 1000, 1000),
         unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
@@ -291,19 +288,8 @@ def test_sprite_record_draws_a_placeholder_box_not_nothing():
 
     svg = artworks_to_svg(artwork)
 
-    assert "<rect" in svg
-
-
-def test_hidden_sprite_record_draws_nothing():
-    sprite = _record(
-        SpriteRecord, control_word=0, bbox=_bbox(0, 0, 1000, 1000),
-        unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
-    )
-    artwork = _artwork((_list(sprite),))
-
-    svg = artworks_to_svg(artwork)
-
     assert "<rect" not in svg
+    assert "<path" not in svg
 
 
 def test_visible_blend_path_keyframe_is_drawn_like_a_plain_path():
