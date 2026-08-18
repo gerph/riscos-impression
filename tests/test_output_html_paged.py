@@ -10,6 +10,9 @@ from riscos_impression.output.html_paged import PagedHTMLConverter, _approx_widt
 from tests.test_output_ovprodll import _picture
 from tests.test_output_base import _document, _frame, _frame_record, _header, _section, _style
 from tests.fixtures.drawfile_builders import build_drawfile, build_path, close_line, end_path, line, move
+from tests.fixtures.artworks_builders import build_single_path_document
+
+import pytest
 
 
 def _document_with_frames(records):
@@ -295,6 +298,25 @@ def test_drawfile_picture_frame_renders_as_real_svg_content(tmp_path):
     ops = move(0, 0) + line(1000, 0) + line(1000, 1000) + close_line() + end_path()
     path = build_path(ops=ops, bounds=(0, 0, 1000, 1000), fill_colour=0x0000FF00)
     document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 1000))
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "<svg " in text
+    assert "<path " in text
+    assert "<img" not in text
+    assert not converter.log.has_errors()
+
+
+def test_artworks_picture_frame_renders_as_real_svg_content(tmp_path):
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
+    document, _, _ = _document_with_frames([_frame_record(1008, picture)])
+    dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xD94)
+    document.dictionary.append(dict_entry)
+    document.picture_bytes = lambda entry: build_single_path_document()
 
     converter = PagedHTMLConverter(document, export_pdf=False)
     out = tmp_path / "out.html"

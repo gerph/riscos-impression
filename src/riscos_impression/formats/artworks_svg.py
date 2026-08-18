@@ -213,10 +213,18 @@ class _SvgBuilder:
     # -- Top level -----------------------------------------------------------
 
     def build(self) -> str:
-        self.process_lists(self.artwork.record_lists, dict(_DEFAULT_STYLE))
-        return self._wrap()
+        viewbox, width_pt, height_pt, inner = self.build_fragment()
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt}pt" '
+            f'height="{height_pt}pt" viewBox="{viewbox}">{inner}</svg>'
+        )
 
-    def _wrap(self) -> str:
+    def build_fragment(self) -> tuple[str, str, str, str]:
+        """Like build(), but returns (viewbox, width_pt, height_pt,
+        inner_markup) separately rather than a single standalone `<svg>`
+        document -- for embedding inside a caller's own differently
+        sized/positioned outer `<svg>` (see artworks_svg_fragment)."""
+        self.process_lists(self.artwork.record_lists, dict(_DEFAULT_STYLE))
         min_x, min_y, max_x, max_y = self._bbox or [0, 0, 0, 0]
         width = max(max_x - min_x, 1)
         height = max(max_y - min_y, 1)
@@ -224,14 +232,9 @@ class _SvgBuilder:
         height_pt = height * ARTWORKS_UNIT_TO_USER_UNITS
         defs = "".join(self.definitions.values())
         objects = "".join(self.objects)
-        return (
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(width_pt)}pt" '
-            f'height="{_fmt(height_pt)}pt" '
-            f'viewBox="{_fmt(min_x)} {_fmt(-max_y)} {_fmt(width)} {_fmt(height)}">'
-            f"<defs>{defs}</defs>"
-            f'<g transform="scale(1,-1)">{objects}</g>'
-            "</svg>"
-        )
+        viewbox = f"{_fmt(min_x)} {_fmt(-max_y)} {_fmt(width)} {_fmt(height)}"
+        inner = f"<defs>{defs}</defs>" f'<g transform="scale(1,-1)">{objects}</g>'
+        return viewbox, _fmt(width_pt), _fmt(height_pt), inner
 
     def _merge_bbox(self, box: BoundingBox) -> None:
         if self._bbox is None:
@@ -427,3 +430,16 @@ def artworks_to_svg(artwork: ArtWorks) -> str:
     content -- see the module docstring for the rendering algorithm and
     its known gaps."""
     return _SvgBuilder(denormalise(artwork)).build()
+
+
+def artworks_svg_fragment(artwork: ArtWorks) -> tuple[str, str, str, str]:
+    """Like artworks_to_svg(), but returns the artwork's own native
+    (viewbox, width_pt, height_pt, inner_markup) separately rather than
+    one standalone `<svg>...</svg>` document -- for a caller (e.g. a
+    picture frame renderer) that wants to embed the artwork's content
+    inside its own differently sized/positioned outer `<svg>` element,
+    the way an inner `<svg viewBox="...">` acts as its own nested
+    viewport. *inner_markup* is `<defs>...</defs><g transform=
+    "scale(1,-1)">...</g>` -- everything artworks_to_svg() would put
+    inside its own outer `<svg>` tag."""
+    return _SvgBuilder(denormalise(artwork)).build_fragment()

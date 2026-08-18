@@ -68,6 +68,17 @@ from riscos_impression.model.dictionary import EmbeddedObjectType
 from riscos_impression.model.styles import Style
 from riscos_impression.output.base import Converter
 
+try:
+    # riscos_artworks is only installed via this project's own optional
+    # "artworks" extra (see pyproject.toml) -- ArtWorks pictures fall
+    # back to the usual labelled placeholder, exactly like any other
+    # undecoded picture kind, when it isn't available.
+    from riscos_artworks import ArtWorks
+    from riscos_impression.formats.artworks_svg import artworks_svg_fragment
+except ImportError:  # pragma: no cover - exercised by CI without the extra
+    ArtWorks = None
+    artworks_svg_fragment = None
+
 #: Millipoints per CSS point; see docs/impression-documents.xml's note
 #: under "Frame object common layout" (the same confirmed unit pdfdoc.py
 #: uses).
@@ -527,10 +538,13 @@ def picture_placeholder_data_uri(label: str, width_pt: float, height_pt: float) 
 class HTML5Converter(Converter):
     """Shared base for the scrolling and paged-media HTML5 converters:
     picture rendering (dispatched by embedded type exactly like the PDF
-    converter -- DrawFile/Sprite get a labelled placeholder, since both
-    decoders are stub bounding-box readers with no pixel/vector data to
-    rasterise; ArtWorks is a full stub and always renders as a
-    placeholder; EPS gets a placeholder too, with a note that its raw
+    converter -- Sprite gets a labelled placeholder, since its decoder
+    is a stub bounding-box reader with no pixel data to rasterise;
+    ArtWorks is rendered as a nested `<svg>` via the optional
+    riscos_artworks decoder and formats/artworks_svg.py -- see
+    _artworks_svg -- falling back to the usual labelled placeholder
+    when that extra isn't installed or the picture fails to decode/
+    render; EPS gets a placeholder too, with a note that its raw
     content isn't embedded in HTML output at all, unlike the PDF
     converter's embedded-file attachment -- HTML has no equivalent
     mechanism)."""
@@ -571,10 +585,25 @@ class HTML5Converter(Converter):
             return self._placeholder_img("Sprite", width_pt, height_pt)
 
         if kind is EmbeddedObjectType.ARTWORKS:
-            self.log.unsupported(
-                "picture", "ArtWorks picture rendered as a placeholder box; this format is not decoded at all by this converter"
-            )
-            return self._placeholder_img("ArtWorks", width_pt, height_pt)
+            if artworks_svg_fragment is None:
+                self.log.unsupported(
+                    "picture", "ArtWorks picture rendered as a placeholder box; the optional "
+                    "'artworks' extra (riscos_artworks) is not installed"
+                )
+                return self._placeholder_img("ArtWorks", width_pt, height_pt)
+            try:
+                artwork = ArtWorks.from_buffer(data)
+            except Exception as e:
+                # A real, current riscos_artworks decoder gap (not this
+                # project's own bug) -- e.g. some real ArtWorks files
+                # embed a SpriteRecord shape its decoder doesn't yet
+                # parse -- so this is a known limitation, not an
+                # unexpected failure.
+                self.log.best_effort(
+                    "picture", f"ArtWorks picture rendered as a placeholder box; failed to decode ({e})"
+                )
+                return self._placeholder_img("ArtWorks", width_pt, height_pt)
+            return self._artworks_svg(artwork, width_pt, height_pt)
 
         label = kind.value if kind is not None else "data"
         self.log.best_effort("picture", f"{label} picture rendered as a placeholder box; not decoded by this converter")
@@ -868,3 +897,28 @@ class HTML5Converter(Converter):
             style_bits.append("font-style:italic")
         style_bits.append(f"fill:{_draw_colour_to_css(text.colour) or '#000000'}")
         parts.append(f'<text x="{x:.2f}" y="{y:.2f}" style="{"; ".join(style_bits)}">{escape_html(text.text)}</text>')
+
+    # -- ArtWorks pictures -------------------------------------------------
+
+    def _artworks_svg(self, artwork: "ArtWorks", width_pt: float, height_pt: float) -> str:
+        """Embed *artwork*'s own content (via formats/artworks_svg.py's
+        artworks_svg_fragment(), the same renderer output/extract.py
+        uses) as a nested `<svg>` sized to the picture frame's own
+        width_pt/height_pt, scaled and centred within it (preserving
+        the artwork's own aspect ratio) via the nested SVG's own
+        viewBox/preserveAspectRatio -- unlike _drawfile_svg, this does
+        not attempt DrawFile's own xshift/yshift/rotation/overlap
+        placement heuristic; the frame's own scale/shift/angle fields
+        are not applied. Any exception during rendering (an unsupported
+        record shape, a malformed file that decoded but doesn't walk
+        cleanly) falls back to the usual labelled placeholder rather
+        than raising, matching every other picture kind's own
+        best-effort behaviour here."""
+        with self.catch("picture", location="ArtWorks rendering"):
+            viewbox, _native_width_pt, _native_height_pt, inner = artworks_svg_fragment(artwork)
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt:.2f}pt" '
+                f'height="{height_pt:.2f}pt" viewBox="{viewbox}" '
+                f'preserveAspectRatio="xMidYMid meet">{inner}</svg>'
+            )
+        return self._placeholder_img("ArtWorks", width_pt, height_pt)

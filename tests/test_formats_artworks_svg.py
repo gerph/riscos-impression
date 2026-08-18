@@ -34,7 +34,7 @@ from riscos_artworks import (
 
 from riscos_artworks import BlendPathRecord, SpriteRecord
 
-from riscos_impression.formats.artworks_svg import artworks_to_svg
+from riscos_impression.formats.artworks_svg import artworks_svg_fragment, artworks_to_svg
 
 FILLED = 0x80000000  # bit 31 set on a path's first element's tag
 
@@ -251,6 +251,30 @@ def test_bounding_box_drives_the_viewbox_and_unit_scaled_size():
     assert 'viewBox="0 -640 640 640"' in svg
     # 640 artworks units * (1/640) * (4/3) = 4/3 pt.
     assert 'width="1.3333pt"' in svg
+
+
+def test_artworks_svg_fragment_matches_artworks_to_svgs_own_viewbox_and_content():
+    fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(0, 0, 255), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    path = _record(PathRecord, bbox=_bbox(0, 0, 640, 640), path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    full = artworks_to_svg(artwork)
+    viewbox, width_pt, height_pt, inner = artworks_svg_fragment(artwork)
+
+    assert viewbox == "0 -640 640 640"
+    assert width_pt == "1.3333"
+    assert height_pt == "1.3333"
+    assert "<defs>" in inner
+    assert '<g transform="scale(1,-1)">' in inner
+    assert 'fill="rgb(0,0,255)"' in inner
+    # the fragment's own inner markup is exactly what artworks_to_svg()
+    # wraps in its own outer <svg ...> tag -- same content, not a
+    # separately-derived rendering.
+    assert inner in full
+    assert f'viewBox="{viewbox}"' in full
 
 
 def test_a_fill_set_in_one_top_level_list_is_seen_by_a_later_sibling_list():
