@@ -106,6 +106,11 @@ _MIN_USABLE_WIDTH = 10.0
 _BORDER4_GREY_CSS = "#787878"
 _BORDER5_GREY_CSS = "#e2e2e2"
 
+#: Border 6/7's own shadow-band width, matching pdfdoc.py's own
+#: _SHADOW_WIDTH_PT exactly -- see _render_frame's own box-shadow
+#: approximation for these two styles.
+_SHADOW_WIDTH_PT = 5669 / UNIT
+
 #: RISC OS font name substring -> font_metrics.WIDTHS_256PT family, for
 #: _approx_width's own estimate of how many lines a chained story's
 #: paragraph will wrap to at a given frame width (see
@@ -349,15 +354,40 @@ class PagedHTMLConverter(HTML5Converter):
                 (appearance.border3, "bottom"),
             )
             present = [(style, edge) for style, edge in edges if style != 0xFF]
-            if present and all(style == 9 for style, _ in present) and len(present) == 4:
-                # Border 10 on every edge: CSS can round every corner
-                # of the div itself, unlike the PDF converter's own
+            uniform_style = present[0][0] if present and len({s for s, _ in present}) == 1 else None
+            if uniform_style == 9 and len(present) == 4:
+                # Border 10 on every edge: CSS can round every corner of
+                # the div itself, unlike the PDF converter's own
                 # hand-drawn stroke -- see pdfdoc.py's own
                 # _draw_rounded_border docstring for why this needs all
-                # four edges to share the style.
+                # four edges to share the style. Drawn with `outline`
+                # rather than `border`: unlike `border`, an outline sits
+                # outside the div's own box without affecting its layout
+                # (no encroachment into the frame's own content area,
+                # matching pdfdoc.py's own non-encroaching offset), and
+                # `outline-offset` gives Border 10's own visible gap from
+                # the frame's boundary directly -- both a closer native
+                # match than the plain `border`+`border-radius` this
+                # replaced, which encroached and sat flush with no gap.
                 thick = self.border_width_pt * 7.0
-                styles.append(f"border: {thick:.1f}pt solid {border_css}")
+                styles.append(f"outline: {thick:.1f}pt solid {border_css}")
+                styles.append(f"outline-offset: {thick * 3.0:.1f}pt")
                 styles.append(f"border-radius: {thick * 1.8:.1f}pt")
+            elif uniform_style in (5, 6) and len(present) == 4:
+                # Border 6/7 on every edge: approximate the offset
+                # "hard shadow" band pdfdoc.py's own _draw_notched_shadow_edge
+                # draws (see that method's docstring) with a hard-edged
+                # CSS box-shadow -- not pixel-matched (no mitred/notched
+                # geometry, no separate thin outline showing through a
+                # gap), but a much closer visual impression than a plain
+                # line for the common case of one style applied to a
+                # whole frame; a per-edge mix of styles (rare) still
+                # falls back to the plain-line approximation below,
+                # since CSS box-shadow can't be edge-specific.
+                sw = _SHADOW_WIDTH_PT
+                dx = sw if uniform_style == 5 else -sw
+                styles.append(f"border: {self.border_width_pt:.1f}pt solid {border_css}")
+                styles.append(f"box-shadow: {dx:.1f}pt {-sw:.1f}pt 0 0 {border_css}")
             else:
                 for style, edge in present:
                     styles.append(f"border-{edge}: {self._border_css_for_style(style, border_css)}")
@@ -377,17 +407,28 @@ class PagedHTMLConverter(HTML5Converter):
         return f'<div class="ro-frame" style="{style_attr}">{content}</div>\n'
 
     def _border_css_for_style(self, style: int, border_css: str) -> str:
-        """A CSS `border-<edge>` value for one of Impression's ten
-        "Border 1".."Border 10" UI styles (style is the 0-based stored
-        byte -- see model.frames.Frame.has_border). A lower-fidelity
-        approximation than pdfdoc.py's own per-style rendering (see
-        that converter's _draw_border_edge for the pixel measurements
-        this is based on and the full set of styles) -- this converter
-        has no way to draw a separate filled band or the Border 6/7
-        "notched shadow" outside a div's own box, so styles 3-6 fall
-        back to a plain, correspondingly-coloured/widened line; CSS's
-        own `double` border style is used natively for 7-8 rather than
-        hand-building two lines."""
+        """A CSS `border-<edge>` value for one edge of one of
+        Impression's ten "Border 1".."Border 10" UI styles (style is
+        the 0-based stored byte -- see model.frames.Frame.has_border).
+        Used per-edge whenever a frame's border0..3 don't all share one
+        style (a whole rounded-rectangle outline, a shadow's own offset
+        band, and a mitred picture-frame moulding all inherently need
+        to know about more than one edge at once, so none of those can
+        be expressed edge-by-edge at all -- see _render_frame's own
+        uniform-style special cases for 5/6/9, used instead whenever
+        all four edges do share one style). A lower-fidelity
+        approximation than pdfdoc.py's own per-style rendering even
+        there (see that converter's _draw_border_band/
+        _draw_notched_shadow_edge/_draw_border_ring_line/
+        _draw_rounded_border for the pixel measurements this is based
+        on and the full set of styles) -- this converter has no way to
+        draw a separate filled band outside a div's own box at all, so
+        styles 3-4 fall back to a plain, correspondingly-coloured line
+        even when uniform; CSS's own `double` border style is used
+        natively for 7-8 rather than hand-building two lines (both
+        approximated as meeting cleanly at every corner, matching
+        pdfdoc.py's own current behaviour, since CSS's border corners
+        always mitre this way natively)."""
         thin = self.border_width_pt
         med = thin * 2.0
         thick = thin * 7.0

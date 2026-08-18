@@ -158,6 +158,38 @@ def test_border_style_10_on_every_edge_rounds_the_whole_frame(tmp_path):
 
     assert "border-radius:" in text
     assert "border-top:" not in text  # drawn as one whole-frame `border`, not four edges
+    # Drawn with `outline`, not `border`: an outline sits outside the
+    # div's own box without affecting its layout (no encroachment into
+    # the frame's own content area), and `outline-offset` gives Border
+    # 10's own visible gap from the frame's boundary -- confirmed
+    # against TestDoc-Real2Border10.png's own dotted frame-bounds
+    # marker, which sits well clear of the rounded line.
+    assert "outline:" in text
+    assert "outline-offset:" in text
+
+
+def test_border_style_6_on_every_edge_uses_a_box_shadow(tmp_path):
+    # Style byte 5 ("Border 6") applied to all four edges approximates
+    # pdfdoc.py's own offset "hard shadow" band with a CSS box-shadow --
+    # not pixel-matched (no mitred/notched geometry), but a much closer
+    # visual impression for a whole-frame style than a plain line.
+    frame = _frame(
+        x0=10000, y0=20000, x1=60000, y1=70000, dictionary_index=0,
+        border0=5, border1=5, border2=5, border3=5, border_colour_word=0,
+    )
+    document, _, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "box-shadow:" in text
+    assert "border-top:" not in text  # drawn as one whole-frame box-shadow, not four edges
 
 
 def test_master_linked_frame_uses_the_master_pages_own_origin(tmp_path):

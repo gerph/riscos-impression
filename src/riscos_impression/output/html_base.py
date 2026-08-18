@@ -10,26 +10,35 @@ equivalent of pdfdoc.py's approximate-metrics wrapping concern here.
 DrawFile pictures are rendered as an inline SVG fragment (paths --
 fill/stroke colour, width, winding rule -- and single-line text, via
 formats/drawfile.py's object decoder), sized from the picture frame's
-own declared display scale (pict.xscale/yscale) and centred within the
-picture's own width/height -- NOT stretched to fill it (see
-_drawfile_svg's own docstring). This mirrors pdfdoc.py's own DrawFile
-rendering closely, with two differences: SVG's
-Y-down coordinate convention needs an explicit flip (PDF's own
-convention already matches Draw's Y-up one directly), and text with a
-non-square x/y font-size ratio is rendered at its plain y-based size
-rather than reproduced (pdfdoc.py can do this cheaply via PDF's `Tz`
-horizontal-scaling operator; SVG has no equally direct equivalent
-without first knowing the glyphs' own natural width). Dash patterns and
-join styles are parsed but not honoured, matching pdfdoc.py. Triangular
-caps (the mechanism real Draw files use for arrowhead/pointer line
-ends) ARE honoured, the same way pdfdoc.py does: SVG has no triangular
-`stroke-linecap` option either, so one is drawn as an explicit,
-separately-filled triangle path at the subpath's own start/end instead
-(see _draw_svg_triangular_caps). A Sprite object embedded *within* a
-DrawFile, and any other undecoded object type, still falls back to a
-placeholder for just that object. A picture that isn't a valid
-DrawFile at all still falls back to the labelled placeholder image
-below.
+own declared display scale (pict.xscale/yscale) and positioned exactly
+the way pdfdoc.py's own _draw_drawfile_picture is: xshift/yshift anchor
+the drawfile's own native (0, 0) origin at the frame's own left/bottom
+edge (adjusted by xshift/yshift and the frame's own hinset), rotated
+about that same origin by pict.angle first if non-zero, falling back to
+centred (shrunk to fit first if it doesn't fit natively) whenever the
+shift would leave under 5% of the smaller of the frame/content
+overlapping -- see _drawfile_svg's own docstring for the differences
+from pdfdoc.py's version (there aren't many; SVG's Y-down coordinate
+convention needs an explicit flip PDF doesn't, applied once at the very
+end rather than threaded through the whole derivation, since PDF's own
+convention already matches Draw's Y-up one directly). This project's
+own convention is duplicated, self-contained logic per converter rather
+than a shared implementation (see pdfdoc.py's own docstring for that
+formula's full derivation and calibration history; not reproduced
+again here). Text with a non-square x/y font-size ratio is rendered at
+its plain y-based size rather than reproduced (pdfdoc.py can do this
+cheaply via PDF's `Tz` horizontal-scaling operator; SVG has no equally
+direct equivalent without first knowing the glyphs' own natural width).
+Dash patterns and join styles are parsed but not honoured, matching
+pdfdoc.py. Triangular caps (the mechanism real Draw files use for
+arrowhead/pointer line ends) ARE honoured, the same way pdfdoc.py does:
+SVG has no triangular `stroke-linecap` option either, so one is drawn
+as an explicit, separately-filled triangle path at the subpath's own
+start/end instead (see _draw_svg_triangular_caps). A Sprite object
+embedded *within* a DrawFile, and any other undecoded object type,
+still falls back to a placeholder for just that object. A picture that
+isn't a valid DrawFile at all still falls back to the labelled
+placeholder image below.
 """
 
 from __future__ import annotations
@@ -42,6 +51,7 @@ from typing import Optional
 from riscos_impression.formats.drawfile import (
     CAP_TRIANGULAR,
     OPTIONS_TYPE,
+    BoundingBox,
     DrawFile,
     DrawGroup,
     DrawPath,
@@ -432,33 +442,108 @@ class HTML5Converter(Converter):
 
     # -- DrawFile pictures -----------------------------------------------------
 
+    @staticmethod
+    def _drawfile_effective_bounds(draw: DrawFile) -> BoundingBox:
+        """A duplicate, self-contained copy of pdfdoc.py's own method of
+        the same name (matching this project's convention of
+        independent converters, not shared code) -- see that copy's own
+        docstring for the full rationale (a real document's own
+        DrawText object extending beyond the file header's own declared
+        bounds, and DrawSprite/DrawUnknown objects carrying meaningless
+        dummy bounds that must NOT be unioned in)."""
+        x0, y0, x1, y1 = draw.bounds.x0, draw.bounds.y0, draw.bounds.x1, draw.bounds.y1
+
+        def visit(obj) -> None:
+            nonlocal x0, y0, x1, y1
+            if isinstance(obj, (DrawPath, DrawText)):
+                b = obj.bounds
+                x0, y0 = min(x0, b.x0), min(y0, b.y0)
+                x1, y1 = max(x1, b.x1), max(y1, b.y1)
+            elif isinstance(obj, DrawGroup):
+                for child in obj.objects:
+                    visit(child)
+            elif isinstance(obj, DrawTagged) and obj.inner is not None:
+                visit(obj.inner)
+
+        for obj in draw.objects:
+            visit(obj)
+        return BoundingBox(x0, y0, x1, y1)
+
     def _drawfile_svg(self, draw: DrawFile, pict, width_pt: float, height_pt: float) -> str:
         """A decoded DrawFile's objects as an inline SVG fragment, using
         the picture frame's own declared display scale (pict.xscale/
-        yscale) to size the DrawFile's own native-size content, then
-        centring it within the picture's own box [width_pt, height_pt]
-        -- NOT stretched to fill it. Mirrors pdfdoc.py's own
-        _draw_drawfile_picture exactly (including its xscale/yscale
-        sign convention and its reasoning for centring rather than
-        applying xshift/yshift; see that method's own docstring for the
-        full explanation). A real document (PCI_Spec from the local
-        examples/ corpus) showed DrawFile pictures at visibly, sometimes
-        drastically, wrong size, with their own text badly misplaced --
-        the same stretch-to-fit failure mode already found and fixed
-        for the PDF converter, just never carried across to this one.
-        The SVG viewport clips anything the centred content overflows,
-        the same as pdfdoc.py's own explicit clip rectangle. See the
-        module docstring and pdfdoc.py's own DrawFile section for what
-        else is approximated versus a genuine placeholder."""
-        bounds = draw.bounds
+        yscale) to size the DrawFile's own native-size content, and
+        positioned within the picture's own box [width_pt, height_pt]
+        exactly the way pdfdoc.py's own _draw_drawfile_picture is --
+        see that method's own docstring for the full derivation and
+        calibration history (xshift/yshift anchor the drawfile's own
+        native (0, 0) origin at the frame's own left/bottom edge, pict
+        .angle rotates about that same origin first, and an implausible
+        -- under 5% overlap of the smaller of the frame/content -- shift
+        falls back to centred, shrunk to fit first if the content
+        doesn't fit natively). This project's own convention is
+        duplicated, self-contained logic per converter (see
+        _drawfile_effective_bounds above) rather than a shared
+        implementation, so this is a deliberate copy of that formula,
+        not a call into it.
+
+        The frame's own box is used as [0, 0]-[width_pt, height_pt] in
+        Y-up pt space here (identical to pdfdoc.py's own page-absolute
+        [x0, y0]-[x1, y1], just frame-relative rather than
+        page-relative, since this fragment is placed within its own
+        `<svg>` sized to exactly that box) -- SVG's Y-down convention
+        only needs flipping once, right at the end, in *to_svg* itself
+        (`height_pt - py`), rather than threading a flipped convention
+        through the whole derivation the way the version this
+        supersedes did (which additionally only ever centred, never
+        applying xshift/yshift at all). *apply_shift* has no
+        pdfdoc.py-style False case here: this module has no equivalent
+        of pdfdoc.py's own _draw_embedded_picture (a *recomputed* inline
+        box that xshift/yshift isn't declared relative to) -- every
+        caller of this method already uses the picture's own real,
+        stored frame box (_picture_html's width_pt/height_pt), matching
+        pdfdoc.py's page-positioned case unconditionally.
+
+        The SVG viewport clips anything the shifted/centred content
+        overflows, the same as pdfdoc.py's own explicit clip rectangle.
+        See the module docstring and pdfdoc.py's own DrawFile section
+        for what else is approximated versus a genuine placeholder."""
+        bounds = self._drawfile_effective_bounds(draw)
         display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
         display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
         sx = _DRAW_UNIT_TO_PT * display_scale_x
         sy = _DRAW_UNIT_TO_PT * display_scale_y
         displayed_w = bounds.width * sx
         displayed_h = bounds.height * sy
-        origin_x = max(0.0, (width_pt - displayed_w) / 2.0)
-        origin_y = max(0.0, (height_pt - displayed_h) / 2.0)
+
+        x0, y0, x1, y1 = 0.0, 0.0, width_pt, height_pt
+        x_anchor = x0 + pict.hinset / UNIT
+        shifted_x = x_anchor - pict.xshift / UNIT + bounds.x0 * sx
+        shifted_y = y0 - pict.yshift / UNIT + bounds.y0 * sy
+        overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))
+        overlap_h = max(0.0, min(y1, shifted_y + displayed_h) - max(y0, shifted_y))
+        frame_area = (x1 - x0) * (y1 - y0)
+        content_area = displayed_w * displayed_h
+        reference_area = min(frame_area, content_area)
+        shifted = None
+        if reference_area <= 0 or (overlap_w * overlap_h) / reference_area >= 0.05:
+            shifted = (shifted_x, shifted_y)
+
+        if shifted is not None:
+            origin_x, origin_y = shifted
+        else:
+            frame_w, frame_h = x1 - x0, y1 - y0
+            if displayed_w > frame_w or displayed_h > frame_h:
+                fit_scale = min(
+                    frame_w / displayed_w if displayed_w else 1.0,
+                    frame_h / displayed_h if displayed_h else 1.0,
+                )
+                sx *= fit_scale
+                sy *= fit_scale
+                displayed_w *= fit_scale
+                displayed_h *= fit_scale
+            origin_x = x0 + max(0.0, (frame_w - displayed_w) / 2.0)
+            origin_y = y0 + max(0.0, (frame_h - displayed_h) / 2.0)
 
         # See pdfdoc.py's own _draw_drawfile_picture docstring for the
         # full derivation: a standard mathematical (counter-clockwise)
@@ -468,14 +553,17 @@ class HTML5Converter(Converter):
         cos_a, sin_a = (math.cos(angle_rad), math.sin(angle_rad)) if angle_rad else (1.0, 0.0)
 
         def to_svg(dx: int, dy: int) -> tuple[float, float]:
-            # SVG is Y-down from the top-left; Draw is Y-up from the
-            # bottom-left, so the Y axis needs flipping (unlike
-            # pdfdoc.py, which shares PDF's own Y-up convention) --
-            # measured from the top of the CENTRED content, not the
-            # picture's own top edge.
+            # SVG is Y-down from the top-left; Draw (and this method's
+            # own Y-up working space above) is Y-up from the bottom-left
+            # -- flipped here, once, against the frame's own height, not
+            # threaded through the derivation above (unlike pdfdoc.py,
+            # which shares PDF's own Y-up convention throughout and
+            # never needs this).
             if angle_rad:
                 dx, dy = dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a
-            return origin_x + (dx - bounds.x0) * sx, origin_y + (bounds.y1 - dy) * sy
+            px = origin_x + (dx - bounds.x0) * sx
+            py = origin_y + (dy - bounds.y0) * sy
+            return px, height_pt - py
 
         parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt:.1f}pt" '

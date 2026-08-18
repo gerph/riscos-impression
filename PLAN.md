@@ -2113,6 +2113,62 @@ riscos-impression/
   against the pre-fix code. Full suite green (402 tests); re-validated
   across all 111 real documents with 0 crashes.
 
+* **Post-Stage-14 fix (39)**: brings `html_base.py`/`html_paged.py` up
+  to date with pdfdoc.py's own, since-corrected picture-positioning and
+  border rendering, at the user's explicit request once the PDF side
+  was considered good enough to commit. Both areas had fallen behind:
+  `html_base.py`'s `_drawfile_svg` still only ever centred DrawFile
+  content (never applying xshift/yshift at all) and used `draw.bounds`
+  directly rather than `_drawfile_effective_bounds`'s own corrected
+  union -- both pre-dating pdfdoc.py's own xshift/yshift formula and
+  bounds fix entirely, simply never carried across; `html_paged.py`'s
+  border styles hadn't been touched since fix (34)'s first pass, so
+  none of fixes (35)-(38)'s corrections (non-encroaching/round-capped
+  lines, mitred bands, the corrected offset-shadow geometry, Border
+  10's own gap, styles 8/9 meeting cleanly at corners) had reached it.
+
+  `_drawfile_svg` now ports pdfdoc.py's own `_draw_drawfile_picture`
+  formula directly (a duplicate, self-contained copy, matching this
+  project's own convention of independent converters rather than
+  shared code): the frame's own box is treated as [0,0]-[width_pt,
+  height_pt] in Y-up pt space, identical to pdfdoc.py's own
+  page-absolute box, with the SVG-specific Y-down flip applied only
+  once, at the very end, in `to_svg` itself, rather than threaded
+  through the whole derivation the old centring-only version needed
+  it for. `_drawfile_effective_bounds` is likewise a duplicated copy
+  of pdfdoc.py's own static method. Every caller already passes the
+  picture's own real, stored frame box (this module never recomputes
+  one the way pdfdoc.py's own embedded-picture path does), so
+  xshift/yshift apply unconditionally, with no pdfdoc.py-style
+  apply_shift=False case needed at all.
+
+  `html_paged.py`'s `_border_css_for_style` (used per-edge whenever a
+  frame's four edges don't all share one style) gets updated
+  thickness/colour constants matching the current pdfdoc.py styles,
+  plus two new whole-frame special cases in `_render_frame` alongside
+  the existing Border-10-on-every-edge one: styles 5/6 uniform across
+  all four edges now use a CSS `box-shadow` (a much closer visual
+  approximation of pdfdoc.py's own offset "hard shadow" band than a
+  plain line, though not pixel-matched -- no mitred/notched geometry
+  or separate thin outline). Border 10's own whole-frame case switches
+  from `border`+`border-radius` to `outline`+`outline-offset`+
+  `border-radius`: unlike `border`, an outline sits outside the div's
+  own layout box without affecting it (no encroachment, matching
+  pdfdoc.py's own non-encroaching offset for every line style) and
+  `outline-offset` gives Border 10's own visible gap from the frame's
+  boundary directly, both closer native matches than the plain
+  border this replaced (which encroached and sat flush with no gap).
+  A per-edge mix of styles (rare) still falls back to the simpler
+  per-edge line approximation, since none of `outline`/`box-shadow`
+  can vary by edge.
+
+  4 new/rewritten regression tests, confirmed to fail against the
+  pre-fix code (two for `_drawfile_svg`'s own xshift/yshift and
+  correct-not-stretched sizing, two for the new box-shadow/outline
+  whole-frame border cases). Full suite green (404 tests); re-validated
+  across all 111 real documents, all three formats (`pdf`, `html-paged`,
+  `html-scroll`), with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

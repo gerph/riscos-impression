@@ -265,7 +265,7 @@ def test_drawfile_svg_triangular_end_cap_draws_an_arrowhead():
     assert 'fill="#0000ff" stroke="none"' in svg  # the arrowhead
 
 
-def test_drawfile_svg_uses_pict_scale_and_centres_rather_than_stretching():
+def test_drawfile_svg_uses_pict_scale_not_stretched_to_fill():
     # Regression test: a real document (PCI_Spec from the local
     # examples/ corpus) showed DrawFile pictures at visibly, sometimes
     # drastically, wrong size with their own text badly misplaced --
@@ -275,13 +275,37 @@ def test_drawfile_svg_uses_pict_scale_and_centres_rather_than_stretching():
     # frame's own declared display scale (pict.xscale/yscale) entirely.
     # Mirrors pdfdoc.py's own _draw_drawfile_picture fix: at the
     # picture's native (100%) scale, a 25600x25600 Draw-unit bounds
-    # (40x40pt) must render at 40x40pt, centred within a much larger
-    # 100x100pt picture box -- not stretched to fill all 100x100pt.
+    # (40x40pt) must render at 40x40pt, not stretched to fill a much
+    # larger 100x100pt picture box. With xshift=yshift=hinset=0 (this
+    # fixture's own defaults), the drawfile's own (0, 0) origin anchors
+    # exactly at the frame's own bottom-left corner -- matching
+    # pdfdoc.py's own xshift/yshift formula exactly, once that was
+    # implemented here too (see _drawfile_svg's own docstring); this
+    # test only needs the *size* (40x40, not stretched), not the
+    # anchor itself, which test_drawfile_svg_xshift_yshift_position_it
+    # covers directly.
     draw = DrawFile.from_bytes(build_drawfile(build_sprite(bounds=(0, 0, 25600, 25600)), bounds=(0, 0, 25600, 25600)))
 
     svg = _converter()._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
 
-    assert '<rect x="30.0" y="30.0" width="40.0" height="40.0"' in svg
+    assert '<rect x="0.0" y="60.0" width="40.0" height="40.0"' in svg
+
+
+def test_drawfile_svg_xshift_yshift_position_it():
+    # xshift/yshift anchor the drawfile's own native (0, 0) origin at
+    # the frame's own left/bottom edge, offset inward by xshift/yshift
+    # -- exactly matching pdfdoc.py's own formula (see that converter's
+    # _draw_drawfile_picture for the full derivation/calibration
+    # history), ported here since this SVG renderer previously always
+    # centred regardless of xshift/yshift, ignoring them entirely.
+    draw = DrawFile.from_bytes(build_drawfile(build_sprite(bounds=(0, 0, 25600, 25600)), bounds=(0, 0, 25600, 25600)))
+    pict = _picture(xshift=-20 * 1000, yshift=-20 * 1000)  # UNIT=1000; 20pt inward from the frame's own edge
+
+    svg = _converter()._drawfile_svg(draw, pict, width_pt=100.0, height_pt=100.0)
+
+    # Origin (frame-local Y-up) is (20, 20); the sprite's own top-right
+    # corner (25600, 25600) -> (60, 60) in that space -> SVG y = 100-60 = 40.
+    assert '<rect x="20.0" y="40.0" width="40.0" height="40.0"' in svg
 
 
 def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
