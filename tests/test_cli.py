@@ -117,3 +117,15 @@ def test_convert_html_paged_export_pdf_flag_reaches_the_converter(empty_doc, tmp
 def test_no_subcommand_prints_help_and_returns_nonzero(capsys):
     assert main([]) == 1
     assert "usage" in capsys.readouterr().out.lower()
+
+
+def test_extract_creates_the_output_directory(empty_doc, tmp_path, capsys):
+    out_dir = tmp_path / "extracted"
+    assert main(["extract", str(empty_doc), str(out_dir)]) == 0
+    assert f"Extracted into {out_dir}" in capsys.readouterr().err
+
+
+def test_extract_missing_input_reports_error(tmp_path, capsys):
+    missing = tmp_path / "does-not-exist"
+    assert main(["extract", str(missing), str(tmp_path / "out")]) == 1
+    assert "error" in capsys.readouterr().err.lower()

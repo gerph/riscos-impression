@@ -70,6 +70,36 @@ Example:
 riscos-impression convert MyDocument --format pdf -o MyDocument.pdf
 ```
 
+### Extracting content
+
+```sh
+riscos-impression extract <input> <output-directory>
+```
+
+Unlike `convert`, which renders the whole document as one file in one
+format, `extract` pulls every story and picture out of the document as
+separate, standalone files -- for reuse in other tools rather than reading
+the document as Impression laid it out. `<output-directory>` is created if
+it doesn't exist, with one subdirectory per kind of output (only created if
+the document actually has anything of that kind):
+
+* `text/NNNN.txt` -- a text story's own plain text, with all styling and
+  page layout stripped.
+* `html/NNNN.html` -- the same story as a standalone HTML file, with inline
+  CSS approximating the source style table (font, colour, alignment,
+  indents) -- not pixel-accurate, but enough to carry the document's general
+  look into another tool.
+* `images/NNNN.<ext>` -- a picture's own raw embedded content
+  (`.draw`/`.sprite`/`.eps`/`.aff`, or `.bin` if not recognised).
+* `svg/NNNN.svg` -- a DrawFile picture re-rendered as a standalone SVG, at
+  its own native size.
+
+`NNNN` is the story/picture's own object-dictionary index (stable within one
+document, not meaningful across different documents). `extract` accepts the
+same `--strict`/`--log-level`/`--json-log` flags as `convert`, and the same
+exit-code convention (`0` clean, `1` couldn't start, `2` completed with at
+least one logged error).
+
 ## Status
 
 Stages 0-12 and 14 of [`PLAN.md`](PLAN.md) are complete: the decoder, all

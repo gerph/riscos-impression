@@ -2218,6 +2218,65 @@ riscos-impression/
   re-validated across all 111 real documents, all three formats, with
   0 crashes.
 
+### Stage 15 (new, at the user's request) — `extract` subcommand
+
+Once the PDF and HTML output was considered good enough to commit, the user
+asked for a way to pull a document's own content out as separate,
+standalone files for reuse in other tools, rather than only ever rendering
+the whole document as one file in one format the way `convert` does.
+
+* `output/extract.py`'s `ExtractConverter` (a new `HTML5Converter`
+  subclass, reusing its shared CSS/SVG-object-emitter helpers rather than
+  duplicating them, unlike this project's usual per-converter-duplication
+  convention -- justified here since extraction genuinely needs no
+  page-geometry logic of its own, only the same presentation mapping
+  html_base.py already centralises) walks `document.dictionary` directly
+  (not the chapter/page tree `convert`'s converters walk), one file per
+  object-dictionary entry, keyed by that entry's own index:
+  - `text/NNNN.txt`: a text story's own plain text, all styling/layout
+    stripped (Run text concatenated with blank lines between paragraphs;
+    tabs/merge-field/embedded-picture marks rendered as simple inline
+    placeholders; page/chapter/heading-number marks and forced page breaks
+    dropped entirely, since they're only meaningful relative to a specific
+    page layout this format has no equivalent of).
+  - `html/NNNN.html`: the same story as a standalone HTML document, with
+    inline CSS from html_base.py's own `style_css_properties`/
+    `paragraph_css_properties` (font family/size/weight/style, colour,
+    paragraph alignment/indent/spacing) -- explicitly not required to be
+    pixel-accurate (no line-wrapping, tab-stop measurement, or frame-chain
+    flow the way html_scrolling.py's fuller machinery does), just a
+    readable approximation of the source document's general look.
+  - `images/NNNN.<ext>`: a picture's own raw embedded bytes. EPS is
+    unwrapped to genuinely standalone PostScript via `EPSObject.data`
+    (stripping Impression's own wrapper header); a "drawable-family"
+    dictionary entry is decoded to tell a real DrawFile (`.draw`) from a
+    Sprite (`.sprite`) apart, the same way html_base.py's own
+    `_picture_html_for_data` already does; anything else falls back to
+    `.aff` (ArtWorks) or `.bin` (unrecognised), dumped verbatim.
+  - `svg/NNNN.svg`: a DrawFile picture re-rendered as a standalone SVG at
+    its own *native* size -- deliberately not html_base.py's own
+    `_drawfile_svg`, which renders one specific frame's own placement
+    (scale/xshift/yshift/rotation) of a picture: a dictionary entry has no
+    single owning frame in general (the same picture can be placed by more
+    than one frame, each with its own scale/shift), so extraction renders
+    the artwork itself rather than picking one placement of it arbitrarily.
+    Reuses `HTML5Converter`'s own per-object SVG emitters
+    (`_drawfile_svg_object` and everything under it) directly with a
+    different, frame-free coordinate mapping, rather than duplicating path/
+    text/group emission logic a third time.
+
+  Each dictionary entry is extracted independently via `catch()`, so one
+  broken entry doesn't stop the rest; subdirectories are only created for
+  kinds of content the document actually has. `cli.py` gains a matching
+  `extract <input> <output-dir>` subcommand alongside `convert`, with the
+  same `--strict`/`--log-level`/`--json-log` flags and exit-code
+  convention. 8 new regression tests (`test_output_extract.py` plus two CLI
+  tests) covering text/HTML extraction, style CSS, DrawFile raw+SVG
+  extraction, EPS unwrapping, the undecodable-drawable-picture fallback, and
+  directories only being created when used. Full suite green (415 tests);
+  smoke-tested (both `pytest` and a direct `extract` run) across all 111
+  real documents in `examples/`/`moreexamples/` with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

@@ -1,7 +1,11 @@
 """Command-line entry point for riscos-impression: the ``convert``
 subcommand drives document loading and whichever output converter
 matches ``--format``, printing the resulting ConversionLog either as
-plain text (default) or JSON (``--json-log``).
+plain text (default) or JSON (``--json-log``); ``extract`` instead
+pulls every story/picture in the document out to its own file under an
+output directory (see output/extract.py's own docstring for the
+layout), for reuse outside Impression entirely rather than a single
+rendered document.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from typing import Optional
 from riscos_impression import __version__
 from riscos_impression.io.reader import load_document
 from riscos_impression.log import ConversionLog, LogLevel
+from riscos_impression.output.extract import ExtractConverter
 from riscos_impression.output.html_paged import PagedHTMLConverter
 from riscos_impression.output.html_scrolling import ScrollingHTMLConverter
 from riscos_impression.output.markdown import MarkdownConverter
@@ -66,16 +71,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     convert.add_argument("--json-log", action="store_true", help="print the conversion log as JSON instead of plain text")
 
+    extract = subparsers.add_parser(
+        "extract", help="Extract every story/picture in the document to its own file under a directory"
+    )
+    extract.add_argument(
+        "input",
+        type=Path,
+        help="path to the Impression document (a single file, or a directory for a directory-mode document)",
+    )
+    extract.add_argument("output", type=Path, help="directory to extract into (created if it doesn't exist)")
+    extract.add_argument(
+        "--strict", action="store_true",
+        help="raise on the first extraction problem instead of logging it and continuing",
+    )
+    extract.add_argument(
+        "--log-level", choices=[level.value for level in LogLevel], default=None,
+        help="only print log entries at or above this level (default: print every entry)",
+    )
+    extract.add_argument("--json-log", action="store_true", help="print the extraction log as JSON instead of plain text")
+
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command != "convert":
-        parser.print_help()
-        return 1
-    return _convert(args)
+    if args.command == "convert":
+        return _convert(args)
+    if args.command == "extract":
+        return _extract(args)
+    parser.print_help()
+    return 1
 
 
 def _convert(args: argparse.Namespace) -> int:
@@ -104,6 +130,27 @@ def _convert(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Wrote {output_path}", file=sys.stderr)
+    _print_log(converter.log, args)
+    return 2 if converter.log.has_errors() else 0
+
+
+def _extract(args: argparse.Namespace) -> int:
+    try:
+        document = load_document(args.input)
+    except Exception as e:  # noqa: BLE001 - reported to the user, not a crash
+        print(f"error: failed to load '{args.input}': {e}", file=sys.stderr)
+        return 1
+
+    converter = ExtractConverter(document, strict=args.strict)
+
+    try:
+        converter.extract(args.output)
+    except Exception as e:  # noqa: BLE001 - reported to the user, not a crash (only reachable with --strict)
+        print(f"error: extraction failed: {e}", file=sys.stderr)
+        _print_log(converter.log, args)
+        return 1
+
+    print(f"Extracted into {args.output}", file=sys.stderr)
     _print_log(converter.log, args)
     return 2 if converter.log.has_errors() else 0
 
