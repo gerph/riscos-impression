@@ -65,10 +65,38 @@ from that reference implementation, not just guessed at:
   transform="scale(1,-1)">` flips Y (ArtWorks, like Draw, is Y-up;
   SVG is Y-down) without needing every coordinate individually negated.
 
-Not yet handled fully (best-effort gaps): text (CharacterRecord/
-TextRecord are structural only here, the same as in
-riscos-artworks-js's own SVG mapper -- no glyph outlines are decoded by
-`riscos_artworks` itself), and distortion/perspective envelopes
+Text (TextRecord/CharacterRecord) is rendered as real SVG `<text>`
+glyphs, one per CharacterRecord -- beyond what riscos-artworks-js's
+own SVG mapper does (structural only there; `riscos_artworks` itself
+decodes no glyph outlines at all, so this is CSS/browser-font text,
+not a trace of ArtWorks' own rendering). Reverse-engineered against a
+real file (corpus/TestDoc,bc5's own "Shit Creek" picture) since
+neither the SDK manual nor riscos-artworks-js documents these fields:
+* TextRecord.unknown_values = (flags, x, y, char_count, insertion_point,
+  angle) -- x/y matched the first CharacterRecord's own position
+  exactly; char_count matched the number of CharacterRecord children
+  exactly; angle (65536ths of a degree) matched a visibly rotated
+  text object's own non-axis-aligned selection rectangle.
+* CharacterRecord.unknown_values = (x, y, x_offset, y_offset) -- each
+  character's own (x, y) already reflects the *cumulative* advance
+  along the text's own baseline (straight or, for rotated text,
+  diagonal) -- x[n+1] == x[n] + x_offset[n] held exactly across every
+  character checked, so characters are placed independently rather
+  than needing this code to accumulate advances itself.
+* CharacterRecord.character_code's low byte is the actual character
+  code (`& 0xFF`); everything above that varies per character in ways
+  not fully understood (control/kerning flags?) and is discarded.
+Font *name* only drives a coarse bold/italic/monospace CSS guess (see
+_font_family_css_for_name) -- RISC OS outline font names obviously
+don't exist as installed fonts in a browser. Only font_size's own y
+component is used (matching html_base.py's own DrawFile text
+simplification, for the same reason: SVG has no direct equivalent of
+PDF's `Tz` horizontal-scaling operator to reproduce an x/y size skew
+cheaply). No word-wrap, justification, or kerning-pair-table lookups
+are attempted -- each glyph is placed exactly where its own
+CharacterRecord says, nothing more.
+
+Not yet handled fully (best-effort gaps): distortion/perspective envelopes
 (recursed into structurally, the distortion itself not applied).
 
 Checking a real file (corpus/TestDoc,bc5's own "Shit Creek" picture,
@@ -131,6 +159,10 @@ from riscos_artworks import (
     WindingRule,
     WindingRuleRecord,
     DashPatternRecord,
+    TextRecord,
+    CharacterRecord,
+    FontNameRecord,
+    FontSizeRecord,
     denormalise,
 )
 
@@ -169,6 +201,9 @@ _DEFAULT_STYLE = {
     "winding": WindingRule.EVEN_ODD,
     "dash_offset": 0,
     "dash_elements": (),
+    "font_name": None,
+    "font_size": 160,
+    "text_angle": 0.0,
 }
 
 #: BlendPathRecord (a blend's own start/end keyframe shape) is included
@@ -200,6 +235,23 @@ def _fmt(value: float) -> str:
     if value == int(value):
         return str(int(value))
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _escape_xml_text(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _font_family_css_for_name(font_name: Optional[str]) -> str:
+    """A coarse CSS font-family guess from a RISC OS outline font's own
+    name (e.g. "Homerton.Bold.Oblique", "Trinity.Medium") -- these
+    fonts don't exist as installed fonts in a browser, so this is only
+    ever a fallback shape/weight/style guess, not a real font match."""
+    lower = (font_name or "").lower()
+    if "mono" in lower or "corpus" in lower or "courier" in lower:
+        return "monospace"
+    if any(name in lower for name in ("homerton", "arial", "helvetica", "swiss", "sans")):
+        return "sans-serif"
+    return "serif"
 
 
 class _SvgBuilder:
@@ -297,15 +349,37 @@ class _SvgBuilder:
         elif isinstance(record, DashPatternRecord):
             style["dash_offset"] = record.offset or 0
             style["dash_elements"] = record.elements
+        elif isinstance(record, FontNameRecord):
+            style["font_name"] = record.font_name.text
+        elif isinstance(record, FontSizeRecord):
+            style["font_size"] = record.y_size
+        elif isinstance(record, TextRecord):
+            self.process_text(record, style)
+        elif isinstance(record, CharacterRecord):
+            self._emit_character(record, style)
         else:
-            # Group/layer/blend/distortion/sprite/text and anything
-            # else not drawn directly: descend into its own children
-            # with a scoped copy of the current style, matching
+            # Group/layer/blend/distortion/sprite and anything else
+            # not drawn directly: descend into its own children with a
+            # scoped copy of the current style, matching
             # riscos-artworks-js's own default case. Sprites are
             # deliberately skipped rather than given a placeholder --
             # see the module docstring: a separate project is expected
             # to provide sprite handling.
             self.process_lists(record.child_lists, dict(style))
+
+    def process_text(self, record: Record, style: dict) -> None:
+        # A TextRecord draws nothing of its own -- its own child_lists
+        # (font name/size, fill/stroke colour, and one CharacterRecord
+        # per glyph, in that order) do all the actual work, each seen
+        # in turn as *this* text object's own scoped style; see the
+        # module docstring for how unknown_values was reverse-engineered.
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        child_style = dict(style)
+        angle_raw = record.unknown_values[5] if len(record.unknown_values) > 5 else 0
+        child_style["text_angle"] = angle_raw / 65536.0
+        self._merge_bbox(record.bounding_box)
+        self.process_lists(record.child_lists, child_style)
 
     def process_geometry(self, record: Record, style: dict) -> None:
         child_style = dict(style)
@@ -330,6 +404,49 @@ class _SvgBuilder:
         d = self._path_d(path)
         attrs = self._style_attrs(style)
         self.objects.append(f'<path d="{d}"{attrs}/>')
+
+    def _emit_character(self, record: Record, style: dict) -> None:
+        # See the module docstring for how unknown_values and
+        # character_code were reverse-engineered -- riscos_artworks
+        # decodes no glyph outlines itself, so this is a plain SVG
+        # `<text>` glyph in a browser font, not a trace of ArtWorks'
+        # own rendering. Unlike every drawn geometry type, control_word
+        # bit 1 is NOT a visibility flag here -- checked against real
+        # data (corpus/TestDoc,bc5's own "Shit Creek" picture): every
+        # letter has it *clear* and every space has it *set*, the
+        # opposite of what "hidden" would mean, so it's ignored here;
+        # only actual C0 control codes are skipped, via character_code
+        # itself.
+        if len(record.unknown_values) < 2:
+            return
+        char = record.character_code & 0xFF
+        if char < 0x20 or char == 0x7F:
+            return  # control character (kerning/ligature marker?), nothing to draw
+        x, y = record.unknown_values[0], record.unknown_values[1]
+        font_family = _font_family_css_for_name(style["font_name"])
+        font_size = style["font_size"]
+        angle = style["text_angle"]
+        fill = self._fill_css(style)
+        stroke_attr = ""
+        if style["stroke_width"]:
+            stroke = self._stroke_css(style)
+            if stroke != "none":
+                stroke_attr = f' stroke="{stroke}" stroke-width="{_fmt(style["stroke_width"])}"'
+        text = _escape_xml_text(chr(char))
+        # The character's own (x, y) is in the same native, Y-up
+        # ArtWorks units as everything else, but a plain <text> glyph
+        # placed inside the outer <g transform="scale(1,-1)"> (see
+        # _wrap) would render upside down -- translate to the native
+        # position, then apply a local scale(1,-1) to cancel the
+        # ambient flip just for this glyph (the standard idiom for
+        # text inside a Y-flipped SVG group), rotating by the text
+        # object's own angle first so it turns the right way once the
+        # flip is cancelled.
+        self.objects.append(
+            f'<g transform="translate({_fmt(x)},{_fmt(y)}) scale(1,-1) rotate({_fmt(-angle)})">'
+            f'<text x="0" y="0" font-family="{font_family}" font-size="{_fmt(font_size)}" '
+            f'fill="{fill}"{stroke_attr}>{text}</text></g>'
+        )
 
     @staticmethod
     def _path_d(path) -> str:

@@ -32,7 +32,7 @@ from riscos_artworks import (
     WindingRuleRecord,
 )
 
-from riscos_artworks import BlendPathRecord, SpriteRecord
+from riscos_artworks import BlendPathRecord, SpriteRecord, TextRecord, CharacterRecord, FontNameRecord, FontSizeRecord
 
 from riscos_impression.formats.artworks_svg import artworks_svg_fragment, artworks_to_svg
 
@@ -388,3 +388,93 @@ def test_visible_blend_path_keyframe_is_drawn_like_a_plain_path():
 
     assert "<path" in svg
     assert 'fill="rgb(255,128,0)"' in svg
+
+
+def _text(*, unknown_values=(0, 0, 0, 1, 1, 0), rectangle=None, child_lists=()):
+    return _record(
+        TextRecord, unknown_values=unknown_values,
+        rectangle=rectangle if rectangle is not None else (Point(0, 0),) * 4,
+        child_lists=child_lists,
+    )
+
+
+def _character(code, x, y, *, x_offset=0, y_offset=0):
+    return _record(CharacterRecord, character_code=code, unknown_values=(x, y, x_offset, y_offset))
+
+
+def test_text_renders_one_svg_text_glyph_per_character_at_its_own_position():
+    # Reverse-engineered against a real file (see the module docstring):
+    # CharacterRecord.character_code's low byte is the actual character,
+    # everything above it something else entirely -- 0x100 | ord('A')
+    # is exactly the pattern seen there.
+    font = _record(FontNameRecord, font_name=DecodedString("Trinity", b"Trinity\0", b""))
+    size = _record(FontSizeRecord, x_size=320, y_size=320)
+    char_a = _character(0x100 | ord("A"), 1000, 2000)
+    char_b = _character(0x100 | ord("B"), 1500, 2000, x_offset=500)
+    text = _text(
+        unknown_values=(0, 1000, 2000, 2, 2, 0),
+        child_lists=(_list(font), _list(size), _list(char_a), _list(char_b)),
+    )
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert svg.count("<text") == 2
+    assert ">A<" in svg
+    assert ">B<" in svg
+    assert 'translate(1000,2000)' in svg
+    assert 'translate(1500,2000)' in svg
+    assert 'font-size="320"' in svg
+
+
+def test_text_uses_the_current_fill_colour():
+    fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0,
+        colour=_direct(0, 200, 0), gradient_line=None, start_colour=None, end_colour=None,
+    )
+    char_a = _character(ord("Z"), 0, 0)
+    text = _text(child_lists=(_list(fill), _list(char_a)))
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert 'fill="rgb(0,200,0)"' in svg
+
+
+def test_text_object_angle_rotates_every_one_of_its_own_characters():
+    char_a = _character(ord("Q"), 0, 0)
+    # unknown_values[5] / 65536.0 == degrees -- confirmed against a
+    # real rotated text object (see the module docstring): 983270
+    # there matched a visibly ~15-degree-slanted selection rectangle.
+    # 90 * 65536 here for a clean, easy-to-check angle.
+    text = _text(unknown_values=(0, 0, 0, 1, 1, 90 * 65536), child_lists=(_list(char_a),))
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "rotate(-90)" in svg
+
+
+def test_text_control_characters_are_skipped_but_printable_ones_still_render():
+    control = _character(0x0A, 0, 0)  # newline -- not drawable
+    letter = _character(ord("X"), 100, 0)
+    text = _text(child_lists=(_list(control), _list(letter)))
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert svg.count("<text") == 1
+    assert ">X<" in svg
+
+
+def test_text_object_not_visible_draws_no_characters():
+    char_a = _character(ord("N"), 0, 0)
+    text = _record(
+        TextRecord, control_word=0, unknown_values=(0, 0, 0, 1, 1, 0),
+        rectangle=(Point(0, 0),) * 4, child_lists=(_list(char_a),),
+    )
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<text" not in svg
