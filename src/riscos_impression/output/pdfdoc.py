@@ -139,6 +139,7 @@ from riscos_impression.formats.drawfile import (
     BoundingBox,
     DrawFile,
     DrawGroup,
+    DrawJPEG,
     DrawPath,
     DrawPathOpCode,
     DrawSprite,
@@ -264,6 +265,47 @@ class _PDFWriter:
 
 def _stream_obj(content: bytes, extra: str = "") -> bytes:
     return f"<< /Length {len(content)} {extra}>>\nstream\n".encode("latin-1") + content + b"\nendstream"
+
+
+#: JPEG Start-Of-Frame marker bytes (0xFFC0-0xFFCF, excluding the
+#: DHT/JPG/DAC markers 0xC4/0xC8/0xCC that share the same range) --
+#: whichever comes first in the file carries the JPEG's own real pixel
+#: width/height/component count, needed for a PDF Image XObject's own
+#: /Width, /Height, /ColorSpace dict entries (DCTDecode embeds the
+#: compressed data as-is with no re-encoding, but the dict describing
+#: it must still match the data exactly for a viewer to decode it).
+_JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                               0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
+
+
+def _jpeg_info(data: bytes) -> Optional[tuple[int, int, int]]:
+    """(width, height, component_count) from *data*'s own first SOF
+    marker segment, or None if it isn't a well-formed JPEG. component
+    count is 1 (greyscale), 3 (YCbCr, treated as RGB -- DCTDecode
+    converts it automatically per the PDF spec), or 4 (CMYK)."""
+    if len(data) < 4 or data[0:2] != b"\xff\xd8":
+        return None
+    pos = 2
+    while pos + 4 <= len(data):
+        if data[pos] != 0xFF:
+            pos += 1
+            continue
+        marker = data[pos + 1]
+        if marker == 0xD9:  # EOI -- no SOF found before the file ended
+            return None
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:  # markers with no length/payload
+            pos += 2
+            continue
+        seg_len = (data[pos + 2] << 8) | data[pos + 3]
+        if marker in _JPEG_SOF_MARKERS:
+            if pos + 4 + 5 > len(data):
+                return None
+            height = (data[pos + 5] << 8) | data[pos + 6]
+            width = (data[pos + 7] << 8) | data[pos + 8]
+            components = data[pos + 9]
+            return width, height, components
+        pos += 2 + seg_len
+    return None
 
 
 def _pdf_escape(text: str) -> str:
@@ -896,6 +938,9 @@ class PDFConverter(Converter):
         self._page_number += 1
         self._content: list[str] = []
         self._page_annots: list[str] = []
+        #: name (e.g. "Im1") -> PDF object number, for this page's own
+        #: /Resources /XObject dict; see _draw_drawfile_jpeg.
+        self._page_xobjects: dict[str, int] = {}
         #: dictionary_index values whose box has already been drawn once
         #: on this page; see _draw_frame's use of it.
         self._dictionary_seen_this_page: set[int] = set()
@@ -926,10 +971,14 @@ class PDFConverter(Converter):
         content_obj = self._writer.add(_stream_obj(content_bytes))
         w_pt, h_pt = self._page_size
         annots = f"/Annots [{' '.join(self._page_annots)}]\n" if self._page_annots else ""
+        xobjects = (
+            " ".join(f"/{name} {obj} 0 R" for name, obj in self._page_xobjects.items())
+        )
+        xobject_resource = f" /XObject << {xobjects} >>" if xobjects else ""
         page_dict = (
             f"<< /Type /Page /Parent {self._pages_obj} 0 R "
             f"/MediaBox [0 0 {_fmt(w_pt)} {_fmt(h_pt)}] "
-            f"/Resources << /Font {self._font_resource_obj} 0 R >> "
+            f"/Resources << /Font {self._font_resource_obj} 0 R{xobject_resource} >> "
             f"/Contents {content_obj} 0 R\n{annots}>>"
         )
         self._page_objs.append(self._writer.add(page_dict.encode("latin-1")))
@@ -2015,6 +2064,8 @@ class PDFConverter(Converter):
         elif isinstance(obj, DrawTagged):
             if obj.inner is not None:
                 self._draw_drawfile_object(obj.inner, fonts, to_pt, scale, notes)
+        elif isinstance(obj, DrawJPEG):
+            self._draw_drawfile_jpeg(obj, to_pt, notes)
         elif isinstance(obj, DrawSprite):
             sx0, sy0 = to_pt(obj.bounds.x0, obj.bounds.y0)
             sx1, sy1 = to_pt(obj.bounds.x1, obj.bounds.y1)
@@ -2150,6 +2201,55 @@ class PDFConverter(Converter):
             f"{colour_op}BT {_fmt(hscale_pct)} Tz /{self._font_resource_name[pdf_font]} {_fmt(size_pt)} Tf "
             f"{_fmt(x)} {_fmt(y)} Td {_pdf_str(text.text)} Tj ET\n"
         )
+
+    def _draw_drawfile_jpeg(self, jpeg: DrawJPEG, to_pt, notes: list[str]) -> None:
+        """Embed the JPEG's own bytes directly as a DCTDecode Image
+        XObject -- no re-encoding, just wrapped in the PDF dict a
+        viewer needs to decode it (see _jpeg_info). Positioned/sized
+        from the object's own bounding box, matching the SVG
+        converter's own equivalent (_drawfile_svg_jpeg in
+        html_base.py) and its own documented simplification: the
+        object's own transform matrix isn't applied beyond the
+        bounding box (every real file seen so far has an identity
+        a/d, zero b/c -- no rotation/shear)."""
+        info = _jpeg_info(jpeg.data)
+        if info is None:
+            notes.append(
+                "a JPEG image within a DrawFile picture could not be parsed and is "
+                "rendered as a placeholder box instead"
+            )
+            sx0, sy0 = to_pt(jpeg.bounds.x0, jpeg.bounds.y0)
+            sx1, sy1 = to_pt(jpeg.bounds.x1, jpeg.bounds.y1)
+            self._draw_placeholder(min(sx0, sx1), min(sy0, sy1), max(sx0, sx1), max(sy0, sy1), "JPEG")
+            return
+        width, height, components = info
+        colour_space = {1: "/DeviceGray", 4: "/DeviceCMYK"}.get(components, "/DeviceRGB")
+        image_obj = self._writer.add(_stream_obj(
+            jpeg.data,
+            extra=(
+                "/Type /XObject /Subtype /Image "
+                f"/Width {width} /Height {height} /ColorSpace {colour_space} "
+                "/BitsPerComponent 8 /Filter /DCTDecode "
+            ),
+        ))
+        name = f"Im{len(self._page_xobjects) + 1}"
+        self._page_xobjects[name] = image_obj
+        sx0, sy0 = to_pt(jpeg.bounds.x0, jpeg.bounds.y0)
+        sx1, sy1 = to_pt(jpeg.bounds.x1, jpeg.bounds.y1)
+        x0, x1 = sorted((sx0, sx1))
+        y0, y1 = sorted((sy0, sy1))
+        # The standard PDF idiom for placing an Image XObject: map its
+        # own natural 1x1 unit square onto the destination box via a
+        # `cm` (current transform matrix), then `Do` paint it.
+        self._content.append(
+            f"q {_fmt(x1 - x0)} 0 0 {_fmt(y1 - y0)} {_fmt(x0)} {_fmt(y0)} cm /{name} Do Q\n"
+        )
+        _a, b, c, _d, _e, _f = jpeg.matrix
+        if b or c:
+            notes.append(
+                "a JPEG image with a rotated/sheared transform is rendered axis-aligned "
+                "to its own bounding box; rotation/shear is not reproduced"
+            )
 
     def _draw_placeholder(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:
         w, h = x1 - x0, y1 - y0

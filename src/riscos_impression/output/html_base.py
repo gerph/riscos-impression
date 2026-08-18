@@ -54,6 +54,7 @@ from riscos_impression.formats.drawfile import (
     BoundingBox,
     DrawFile,
     DrawGroup,
+    DrawJPEG,
     DrawPath,
     DrawPathOpCode,
     DrawSprite,
@@ -768,6 +769,8 @@ class HTML5Converter(Converter):
         elif isinstance(obj, DrawTagged):
             if obj.inner is not None:
                 self._drawfile_svg_object(obj.inner, fonts, to_svg, scale, parts, notes)
+        elif isinstance(obj, DrawJPEG):
+            self._drawfile_svg_jpeg(obj, to_svg, parts, notes)
         elif isinstance(obj, DrawSprite):
             px0, py0 = to_svg(obj.bounds.x0, obj.bounds.y0)
             px1, py1 = to_svg(obj.bounds.x1, obj.bounds.y1)
@@ -790,6 +793,33 @@ class HTML5Converter(Converter):
             )
         # else: an Options object -- no rendering component of its own, so
         # nothing was actually omitted; not worth logging (see OPTIONS_TYPE).
+
+    def _drawfile_svg_jpeg(self, jpeg: DrawJPEG, to_svg, parts: list[str], notes: list[str]) -> None:
+        """A JPEG's own bytes are already a complete, standalone JPEG
+        file (see formats/drawfile.py's DrawJPEG) -- embedded directly
+        as a base64 data: URI, no re-encoding needed. Positioned/sized
+        from the object's own bounding box the same way a DrawSprite
+        placeholder is; the object's own transform matrix (a/b/c/d/e/f)
+        isn't applied beyond that -- every real file seen so far has an
+        identity a/d (1.0) and zero b/c (no rotation/shear), matching
+        the bounding box exactly, so this is only a simplification for
+        the (currently unobserved) rotated/sheared case, not a gap in
+        the common one."""
+        px0, py0 = to_svg(jpeg.bounds.x0, jpeg.bounds.y0)
+        px1, py1 = to_svg(jpeg.bounds.x1, jpeg.bounds.y1)
+        rx0, rx1 = sorted((px0, px1))
+        ry0, ry1 = sorted((py0, py1))
+        encoded = base64.b64encode(jpeg.data).decode("ascii")
+        parts.append(
+            f'<image x="{rx0:.2f}" y="{ry0:.2f}" width="{rx1 - rx0:.2f}" height="{ry1 - ry0:.2f}" '
+            f'preserveAspectRatio="none" href="data:image/jpeg;base64,{encoded}"/>'
+        )
+        _a, b, c, _d, _e, _f = jpeg.matrix
+        if b or c:
+            notes.append(
+                "a JPEG image with a rotated/sheared transform is rendered axis-aligned "
+                "to its own bounding box; rotation/shear is not reproduced"
+            )
 
     def _drawfile_svg_path(self, path: DrawPath, to_svg, scale, parts: list[str]) -> None:
         has_fill = path.fill_colour is not None

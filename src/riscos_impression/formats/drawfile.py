@@ -2,13 +2,15 @@
 
 Decodes the file header and walks the object stream: font tables, paths
 (fill/stroke colour, width, winding rule, and their move/line/curve/close
-elements), single-line text, groups, and tagged objects (recursing into
-both). Sprite objects, and any other object type (text area, transformed
-text/sprite, or anything unrecognised), are captured only as a bounding
-box -- there is no pixel data or further structure decoded for them.
-Options objects (see OPTIONS_TYPE) are captured the same way but are
-never worth a caller logging as best-effort: they carry no rendering
-component at all, not just an undecoded one.
+elements), single-line text, JPEG images (see JPEG_TYPE -- the JPEG's
+own bytes are decoded standalone and complete, ready to embed directly;
+no pixel decompression is done here), groups, and tagged objects
+(recursing into both). Sprite objects, and any other object type (text
+area, transformed text/sprite, or anything unrecognised), are captured
+only as a bounding box -- there is no pixel data or further structure
+decoded for them. Options objects (see OPTIONS_TYPE) are captured the
+same way but are never worth a caller logging as best-effort: they
+carry no rendering component at all, not just an undecoded one.
 
 This is general RISC OS DrawFile knowledge, not something recovered from
 the Impression conversion source; the on-disk layout here is verified
@@ -45,6 +47,21 @@ _OBJECT_HEADER_SIZE = 24
 #: degenerate (often zero-sized) bounding box -- a caller can always
 #: skip it silently, unlike a genuinely undecoded object type.
 OPTIONS_TYPE = 11
+
+#: The "JPEG" object type: an embedded JPEG image with its own
+#: transform matrix. Not documented in the riscos-output skill's own
+#: drawfile-format.md (which lists a different, apparently stale type
+#: number for this) -- confirmed empirically instead, against a real
+#: file (corpus/TestDoc,bc5's own updated JPEG-bearing picture): the
+#: object's own body starts with 11 words (width, height, dpi_x,
+#: dpi_y, then a standard 6-word Draw transform matrix a/b/c/d/e/f --
+#: e/f matched the object's own bounding box x0/y0 exactly, and a/d
+#: were 0x10000 i.e. 1.0 in 16.16 fixed point, an identity scale/
+#: rotation -- then a JPEG byte-length word), followed immediately by
+#: that many bytes of a real, standalone JPEG file (starting `FF D8
+#: FF`, i.e. a normal JPEG SOI marker) -- word-padded to the object's
+#: own declared size.
+JPEG_TYPE = 16
 
 #: The DrawFile "no colour" sentinel word (used for both fill and
 #: outline colour): -1 as an unsigned 32-bit word.
@@ -155,6 +172,26 @@ class DrawSprite:
 
 
 @dataclass(frozen=True)
+class DrawJPEG:
+    """An embedded JPEG image -- see JPEG_TYPE's own comment for the
+    on-disk layout this was reverse-engineered from. `matrix` is the
+    standard Draw a/b/c/d/e/f transform (a/b/c/d in 16.16 fixed point,
+    e/f in Draw units) mapping the JPEG's own natural pixel grid (unit
+    square, y-down like the image itself) onto the page; `data` is the
+    JPEG file's own bytes, standalone and complete, ready to embed
+    directly (as a data: URI in SVG, or a DCTDecode XObject in PDF)
+    with no unwrapping needed."""
+
+    bounds: BoundingBox
+    width: int
+    height: int
+    dpi_x: int
+    dpi_y: int
+    matrix: tuple[int, int, int, int, int, int]
+    data: bytes
+
+
+@dataclass(frozen=True)
 class DrawGroup:
     bounds: BoundingBox
     name: str
@@ -178,7 +215,7 @@ class DrawUnknown:
     type: int
 
 
-DrawObject = Union[DrawPath, DrawText, DrawSprite, DrawGroup, DrawTagged, DrawUnknown]
+DrawObject = Union[DrawPath, DrawText, DrawSprite, DrawJPEG, DrawGroup, DrawTagged, DrawUnknown]
 
 
 def colour_rgb(word: int) -> tuple[int, int, int]:
@@ -269,6 +306,8 @@ def _parse_object(
             return _parse_path(data, bounds, start, end), {}
         if obj_type == 5:
             return DrawSprite(bounds=bounds), {}
+        if obj_type == JPEG_TYPE:
+            return _parse_jpeg(data, bounds, start, end), {}
         if obj_type == 6:
             name = binary.cstring(data, start, 12)
             children, fonts = _parse_objects(data, start + 12, end)
@@ -406,4 +445,19 @@ def _parse_text(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawT
         baseline_x=baseline_x,
         baseline_y=baseline_y,
         text=text,
+    )
+
+
+def _parse_jpeg(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawJPEG:
+    width = binary.s32(data, start)
+    height = binary.s32(data, start + 4)
+    dpi_x = binary.s32(data, start + 8)
+    dpi_y = binary.s32(data, start + 12)
+    matrix = tuple(binary.s32(data, start + 16 + 4 * i) for i in range(6))
+    length = binary.u32(data, start + 40)
+    jpeg_start = start + 44
+    jpeg_data = data[jpeg_start:jpeg_start + length]
+    return DrawJPEG(
+        bounds=bounds, width=width, height=height, dpi_x=dpi_x, dpi_y=dpi_y,
+        matrix=matrix, data=jpeg_data,
     )

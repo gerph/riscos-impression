@@ -97,6 +97,14 @@ def build_sprite(bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000)) -> byte
     return _obj_header(5, 24, bounds)
 
 
+def build_jpeg(jpeg_bytes: bytes, *, bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000),
+                width: int = 1000, height: int = 1000, dpi: tuple[int, int] = (90, 90),
+                matrix: tuple[int, int, int, int, int, int] = (0x10000, 0, 0, 0x10000, 0, 0)) -> bytes:
+    body = struct.pack("<4i", width, height, *dpi) + struct.pack("<6i", *matrix)
+    body += struct.pack("<I", len(jpeg_bytes)) + _pad4(jpeg_bytes)
+    return _obj_header(16, 24 + len(body), bounds) + body
+
+
 def build_group(name: str, children: bytes, bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000)) -> bytes:
     body = name.encode("latin-1").ljust(12)[:12] + children
     return _obj_header(6, 24 + len(body), bounds) + body

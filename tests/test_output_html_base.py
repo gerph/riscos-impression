@@ -15,6 +15,7 @@ from tests.test_output_ovprodll import _picture
 from tests.fixtures.drawfile_builders import (
     build_drawfile,
     build_font_table,
+    build_jpeg,
     build_path,
     build_sprite,
     build_text,
@@ -316,6 +317,20 @@ def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
 
     assert ">[Sprite]</text>" in svg
     assert any("Sprite object embedded within a DrawFile" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_svg_jpeg_object_embeds_as_a_data_uri_image():
+    jpeg_bytes = b"\xff\xd8\xff\xe0fake jpeg data\xff\xd9"
+    draw = DrawFile.from_bytes(build_drawfile(build_jpeg(jpeg_bytes, bounds=(0, 0, 1000, 1000))))
+    converter = _converter()
+
+    svg = converter._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
+
+    import base64
+    encoded = base64.b64encode(jpeg_bytes).decode("ascii")
+    assert f'href="data:image/jpeg;base64,{encoded}"' in svg
+    assert "<image " in svg
+    assert not converter.log.has_errors()
 
 
 def test_drawfile_svg_unknown_object_type_is_omitted_and_logs_best_effort():

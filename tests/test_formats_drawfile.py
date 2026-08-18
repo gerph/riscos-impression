@@ -2,6 +2,7 @@ import struct
 
 from riscos_impression.formats.drawfile import (
     DrawGroup,
+    DrawJPEG,
     DrawPath,
     DrawPathOpCode,
     DrawSprite,
@@ -15,6 +16,7 @@ from tests.fixtures.drawfile_builders import (
     build_drawfile,
     build_font_table,
     build_group,
+    build_jpeg,
     build_path,
     build_sprite,
     build_tagged,
@@ -176,6 +178,34 @@ def test_sprite_object_keeps_only_its_bounding_box():
     sprite = DrawFile.from_bytes(data).objects[0]
     assert isinstance(sprite, DrawSprite)
     assert (sprite.bounds.x0, sprite.bounds.y0, sprite.bounds.x1, sprite.bounds.y1) == (1, 2, 3, 4)
+
+
+def test_jpeg_object_decodes_header_fields_and_keeps_the_raw_jpeg_bytes():
+    jpeg_bytes = b"\xff\xd8\xff\xe0fake jpeg data\xff\xd9"
+    data = build_drawfile(build_jpeg(
+        jpeg_bytes, bounds=(10, 20, 30, 40), width=1000, height=2000,
+        dpi=(90, 180), matrix=(0x10000, 0, 0, 0x10000, 10, 20),
+    ))
+    jpeg = DrawFile.from_bytes(data).objects[0]
+    assert isinstance(jpeg, DrawJPEG)
+    assert (jpeg.bounds.x0, jpeg.bounds.y0, jpeg.bounds.x1, jpeg.bounds.y1) == (10, 20, 30, 40)
+    assert jpeg.width == 1000
+    assert jpeg.height == 2000
+    assert jpeg.dpi_x == 90
+    assert jpeg.dpi_y == 180
+    assert jpeg.matrix == (0x10000, 0, 0, 0x10000, 10, 20)
+    assert jpeg.data == jpeg_bytes
+
+
+def test_jpeg_object_length_word_excludes_any_word_alignment_padding():
+    # jpeg_bytes here is 15 bytes -- odd length, so build_jpeg's own
+    # word-padding adds a byte -- the decoded data must stop exactly at
+    # the real JPEG length, not include that padding byte.
+    jpeg_bytes = b"\xff\xd8\xff\xe0odd-length!\xff\xd9"
+    assert len(jpeg_bytes) % 4 != 0
+    data = build_drawfile(build_jpeg(jpeg_bytes))
+    jpeg = DrawFile.from_bytes(data).objects[0]
+    assert jpeg.data == jpeg_bytes
 
 
 def test_group_object_recurses_into_children():

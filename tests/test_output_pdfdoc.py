@@ -29,6 +29,7 @@ from tests.fixtures.drawfile_builders import (
     build_drawfile,
     build_font_table,
     build_group,
+    build_jpeg,
     build_path,
     build_sprite,
     build_text,
@@ -2313,6 +2314,58 @@ def test_drawfile_sprite_sub_object_falls_back_to_a_placeholder_and_logs_best_ef
 
     assert b"([Sprite])" in data
     assert any("Sprite object embedded within a DrawFile" in e.message for e in converter.log.entries)
+
+
+#: A minimal, structurally valid (but not visually meaningful) JPEG:
+#: SOI, one SOF0 (baseline DCT) marker declaring a 3x2 pixel, 3-
+#: component image, then straight to EOI -- enough for _jpeg_info to
+#: read real width/height/component values, without needing a real
+#: image library dependency just for this test.
+_MINIMAL_JPEG = (
+    b"\xff\xd8"  # SOI
+    b"\xff\xc0\x00\x11\x08\x00\x02\x00\x03\x03"  # SOF0, len=17, 8-bit, h=2, w=3, 3 components
+    b"\x01\x11\x00\x02\x11\x01\x03\x11\x01"  # component 1/2/3 (id, sampling, quant table)
+    b"\xff\xd9"  # EOI
+)
+
+
+def test_drawfile_jpeg_object_embeds_as_a_dctdecode_image_xobject(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(
+        build_jpeg(_MINIMAL_JPEG, bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000),
+    ))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"/Filter /DCTDecode" in data
+    assert b"/Subtype /Image" in data
+    assert b"/Width 3 /Height 2" in data
+    assert b"/ColorSpace /DeviceRGB" in data
+    assert _MINIMAL_JPEG in data
+    assert b"/XObject <<" in data
+    assert b"Do Q" in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_unparseable_jpeg_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(
+        build_jpeg(b"not actually a jpeg", bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000),
+    ))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"([JPEG])" in data
+    assert b"/DCTDecode" not in data
+    assert any("could not be parsed" in e.message for e in converter.log.entries)
 
 
 def test_drawfile_text_object_renders_using_the_font_tables_own_name(tmp_path):
