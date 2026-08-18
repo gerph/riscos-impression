@@ -74,7 +74,7 @@ def test_extract_writes_drawfile_picture_as_raw_and_svg(tmp_path):
     converter = ExtractConverter(document)
     converter.extract(tmp_path)
 
-    assert (tmp_path / "images" / "0005.draw").read_bytes() == raw
+    assert (tmp_path / "images" / "0005,aff").read_bytes() == raw
     svg = (tmp_path / "svg" / "0005.svg").read_text()
     assert svg.startswith("<svg ")
     assert "<path " in svg
@@ -91,7 +91,7 @@ def test_extract_writes_eps_content_stripped_of_its_wrapper(tmp_path):
     converter = ExtractConverter(document)
     converter.extract(tmp_path)
 
-    written = (tmp_path / "images" / "0007.eps").read_bytes()
+    written = (tmp_path / "images" / "0007,ff5").read_bytes()
     assert written == content
     assert written == EPSObject.from_bytes(raw).data
 
