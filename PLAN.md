@@ -1915,6 +1915,204 @@ riscos-impression/
   Full suite green (391 tests); re-validated across all 117 real
   documents with 0 crashes.
 
+* **Post-Stage-14 fix (34)**: implements Impression's own ten "Border
+  1".."Border 10" UI border styles distinctly, replacing the single
+  generic rendering (a plain line plus a fixed grey drop-shadow,
+  applied identically regardless of border0..3's stored style byte)
+  every non-`0xFF` border used before. That generic rendering was
+  itself inherited from the original C DDL emitter (`c/frames`), which
+  never distinguished the ten styles either -- it always paired one
+  hardcoded OvationPro border look ("1_Plain") with a fixed shadow
+  regardless of the source document's own choice. The ten styles'
+  actual appearance isn't recorded anywhere in the format itself, so
+  it was reconstructed by extending `corpus/TestDoc,bc5` with a page 2
+  containing one frame per style (labelled "Border 1".."Border 10")
+  plus two frames each combining several styles across their own four
+  edges, and measuring a screenshot of how Impression itself renders
+  it (`TestDoc-Real2NoDots.png`) pixel-by-pixel -- including a
+  connected-component trace of styles 6/7's own "notched shadow"
+  outline to work out their exact per-edge geometry. See
+  docs/impression-documents.xml's new note under "Frame object common
+  layout" for the full description of all ten styles.
+
+  `pdfdoc.py`'s `_draw_box` now dispatches each present edge to
+  `_draw_border_edge` individually (border0..3 select per-edge, as
+  Impression itself allows): styles 1-3 are progressively wider plain
+  lines; 4-5 are solid grey/light-grey fill bands outside the frame's
+  own box (reusing the old generic shadow's own measured width/colour
+  for style 4 exactly, since that turned out to be a real, if
+  coincidental, match); 6-7 are the same band with two diagonally
+  opposite corners left as clean notches, mirrored between the two
+  (`_draw_notched_shadow_edge`); 8 is a thin line plus a thicker one
+  further out; 9 is two thicker lines with all four corners notched
+  (not just two); 10 is a thick line, rendered as a single
+  whole-frame rounded-rectangle stroke (`_draw_rounded_border`) when
+  every edge shares the style -- a corner radius inherently needs to
+  know about two edges at once, so a style-10 edge mixed with other
+  styles falls back to a plain straight thick line instead. Five new
+  regression tests added (styles 1, 4, 6, and 10-on-every-edge, plus
+  the pre-existing all-four-edges/only-present-edges tests kept);
+  confirmed to fail against the pre-fix code.
+
+  `html_paged.py` (the CSS-based paged-media converter) gets a
+  lower-fidelity approximation of the same ten styles
+  (`_border_css_for_style`): it has no way to draw a separate filled
+  band or a notched outline outside a `<div>`'s own box, so styles 3-7
+  degrade to a plain, correspondingly widened/coloured line (4-5 still
+  use the fixed grey/light-grey rather than the frame's own border
+  colour); CSS's own native `double` border style is used for 8-9
+  (a closer match than hand-building two lines would be); 10 rounds
+  every corner of the whole frame via `border-radius` under the same
+  all-four-edges condition as the PDF converter. `html_base.py`'s
+  scrolling HTML output draws no frame borders at all by design (it
+  drops page furniture entirely for a linear reflow) and needed no
+  change. Three new regression tests added; confirmed to fail against
+  the pre-fix code.
+
+  Full suite green (397 tests); re-validated across all 111 real
+  documents in examples/ and moreexamples/ with 0 crashes.
+
+* **Post-Stage-14 fix (35)**: corrects three of fix (34)'s ten border
+  styles after the user reviewed the rendered output against three
+  further, more targeted reference images -- each showing a single
+  style with one or more edges deliberately turned off, isolating
+  exactly the detail fix (34) got wrong:
+  - Styles 1-3 (plain lines) and 10 (rounded) were centred directly on
+    the frame's own boundary (half in, half out), eating into the
+    frame's own interior; TestDoc-Real2Border2+3.png (left edge off on
+    both reference frames) showed the line sitting entirely outside
+    the boundary instead, and its open (unjoined) end rounded rather
+    than square. Fixed by offsetting every such line outward by half
+    its own width before stroking (_draw_line_with_caps), and adding a
+    filled-circle cap at whichever end has no adjoining edge to butt
+    against (_edge_endpoints/_filled_circle). _draw_rounded_border
+    (style 10 on every edge) gets the same outward expansion.
+  - Styles 4-5 were a plain axis-aligned rectangle band with an
+    equal-weight keyline on all four of its own sides, and style 5 was
+    assumed to be a flat light grey. TestDoc-Real2Border4+5.png (top
+    and bottom edges only, on both reference frames) showed a proper
+    45-degree-mitred picture-frame-moulding band instead -- naturally
+    forming a clean mitred joint wherever two edges share the style,
+    with no special-casing needed -- with a markedly thicker keyline
+    on the band's own *outer* edge only, and style 5 rendering as a
+    transparency checkerboard in the screenshot rather than a filled
+    colour at all (the earlier "light grey" reading had actually
+    sampled that same checkerboard, aliased down to a near-uniform
+    grey, from a different, already-flattened reference image).
+    Rewrote _draw_border_band as a mitred trapezoid per edge, taking
+    an `Optional` fill colour (None for style 5).
+  - Styles 6-7 retracted their own "short" end only as far as the
+    frame's own true corner, and drew no separate outline at all, so
+    the notch corners this produced were plain white gaps rather than
+    showing a thin line through them. TestDoc-Real2Border6+7.png (a
+    single, otherwise-isolated reference frame per style, left edge
+    off) showed the short end actually retracts a *further* band-width
+    inward, past the frame's own corner, and that a thin outline at
+    the frame's own true edge is drawn underneath every band
+    regardless -- invisible wherever the thick band covers it, visible
+    in the resulting gap. Rewrote _draw_notched_shadow_edge with the
+    corrected full/short offsets and the added thin outline; this also
+    reversed which end of the top/bottom edges is "full" vs "short"
+    for both styles, which the single-frame reference image made
+    unambiguous in a way the original multi-frame reference image
+    (fix (34)'s only source for these two styles) hadn't been.
+
+  All three corrections were verified the same way as fix (34)'s
+  original derivation -- connected-run/gap pixel tracing of the new
+  reference images, not eyeballing -- since eyeballing was exactly
+  what missed these details the first time. 7 new/rewritten regression
+  tests; confirmed to fail against the pre-fix code. Full suite green
+  (398 tests); re-validated across all 111 real documents with 0
+  crashes.
+
+* **Post-Stage-14 fix (36)**: two further direct corrections from the
+  user after reviewing fix (35)'s own output. Styles 1-3 (plain lines)
+  were only round-capped at whichever end had no adjoining edge,
+  keeping a flat/butt cap wherever a neighbour was present -- the user
+  confirmed all four of a line's own ends (left, right, top, and
+  bottom) are round-capped regardless, not just the open ones;
+  `_draw_box` now always passes `True, True` to `_draw_line_with_caps`
+  instead of computing per-edge neighbour presence. Style 5 ("Border
+  5") had been changed to unfilled in fix (35), on the reasoning that
+  TestDoc-Real2Border4+5.png's own checkerboard rendering meant no
+  fill at all -- the user confirmed directly that it should be a light
+  grey fill instead (the checkerboard was Impression's own editor
+  showing an unfilled *selection* state, not the style's actual
+  printed appearance); reinstated the original _BORDER5_COLOUR_RGB
+  fill. 2 tests rewritten to match; confirmed to fail against the
+  pre-fix code. Full suite green (398 tests); re-validated across all
+  111 real documents with 0 crashes.
+
+* **Post-Stage-14 fix (37)**: Style 9 ("Border 10") applied to fewer
+  than all four of a frame's edges previously fell back to four
+  independent straight thick lines (no rounding at all), since
+  `_draw_box`'s whole-frame rounded-rectangle path was only attempted
+  when all four edges were present. The user's own
+  TestDoc-Real2Border10.png added a "Border 10, no left" reference
+  frame specifically to show the real behaviour: the rounded path is
+  still used whenever every *present* edge is style 9 (regardless of
+  how many, now down to `present and all(...)` with the `len(...) ==
+  4` requirement dropped), and the two corner arcs adjoining a missing
+  edge are still drawn as complete quarter-circles -- only the
+  straight run between them is omitted, ending each arc in a flat cut
+  rather than either extending further or being replaced by a square
+  corner. `_draw_rounded_border` now takes an `edge_present` map and
+  builds its path from an explicit, always-drawn-arcs/
+  conditionally-drawn-straights segment list, tracking pen-up/pen-down
+  state to start a fresh subpath after each skipped edge and only
+  closing the path (`h`) when every edge is actually present. New
+  regression test (three edges present, left absent): asserts all four
+  corner arcs are still drawn, the path is left open (no `h`), and it
+  splits into two disconnected subpaths either side of the gap;
+  confirmed to fail against the pre-fix code. Full suite green (399
+  tests); re-validated across all 111 real documents with 0 crashes.
+
+  The same reference image batch also included TestDoc-Real2Border8+9.png
+  and its "NoDotted" counterpart (the dotted rectangle in both is
+  Impression's own frame-bounds marker, confirmed by the user to not be
+  part of the border itself, and already correctly never drawn by this
+  converter) -- reviewed against the existing styles 8/9
+  implementation from fix (34) and found consistent with them already
+  (thin line at the frame boundary, a Border-2-weight line further out
+  for style 8; two notched lines for style 9), so no further change was
+  needed there.
+
+* **Post-Stage-14 fix (38)**: two further direct corrections from the
+  user after reviewing fix (37)'s own output.
+  - "10 still looks too close to the frame": Border 10 was drawn
+    touching the frame's own boundary directly, like every other
+    line-family style. TestDoc-Real2Border10.png's own dotted
+    frame-bounds marker (confirmed by the user to be purely a bounds
+    indicator, not part of the border) sits well clear of the rounded
+    line in the reference image -- pixel-measuring the gap against the
+    marker's own known real-world width (from the frame's actual box
+    coordinates, hinset/vinset both 0 in this test document, so the
+    dotted marker and the frame's true edge coincide exactly) gave a
+    gap roughly three times the border's own thickness. Both
+    `_draw_rounded_border` (the whole-frame path) and the style-9
+    branch of `_draw_border_edge` (its single-edge fallback, via
+    `_draw_line_with_caps`'s own `base_offset`) now hold the border
+    that same `thick * 3.0` gap off the frame's boundary before the
+    usual non-encroaching half-width offset.
+  - "8 and 9 don't seem to meet at the corners": fix (34)'s original
+    style 7/8 implementation drew each edge's own line only the length
+    of that edge (x0 to x1, or y0 to y1), so two perpendicular lines
+    sharing the same style and offset fell a small diagonal gap short
+    of actually meeting at the shared corner -- worse for style 8,
+    which fix (34) had additionally (and, per this correction,
+    wrongly) inset deliberately, based on a misreading of an earlier,
+    less clear reference image as showing notched corners. New
+    `_draw_border_ring_line` helper extends each line by its own
+    offset at both ends instead, so it reaches exactly the point a
+    same-offset perpendicular neighbour's own line crosses it -- a
+    plain mitred join wherever both edges share the style, matching
+    TestDoc-Real2Border8+9NoDotted.png's own "Border 8"/"Border 9"
+    reference frames (every corner fully closed, no notches at all).
+
+  3 new regression tests (one per correction); confirmed to fail
+  against the pre-fix code. Full suite green (402 tests); re-validated
+  across all 111 real documents with 0 crashes.
+
 ### Stage 13 (follow-up, not blocking) — Real-document audit
 * Audit `examples/` for documents free of personal information; add a
   sanitised subset as committed automated-test fixtures; extend CI to run

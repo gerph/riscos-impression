@@ -87,6 +87,79 @@ def test_frame_border_only_emits_the_present_edges(tmp_path):
     assert "border:" not in text  # the old uniform shorthand
 
 
+def test_border_style_4_uses_the_fixed_grey_not_the_frames_own_colour(tmp_path):
+    # Style byte 3 ("Border 4" in Impression's own 1-based UI numbering)
+    # is a fixed mid-grey in the PDF converter (see pdfdoc.py's
+    # _SHADOW_COLOUR_RGB, measured against a reference image) -- this
+    # converter has no separate filled band to draw, so it degrades to
+    # a plain line, but should still use that same fixed grey rather
+    # than the frame's own declared border colour (black here).
+    frame = _frame(
+        x0=10000, y0=20000, x1=60000, y1=70000, dictionary_index=0,
+        border0=3, border1=3, border2=3, border3=3, border_colour_word=0,
+    )
+    document, _, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "#787878" in text
+    assert "#000000" not in text
+
+
+def test_border_style_8_uses_css_double(tmp_path):
+    # Style byte 7 ("Border 8") is a double line in Impression's own UI
+    # -- CSS has a native `double` border style, a much closer, direct
+    # match than trying to hand-build two separate lines the way
+    # pdfdoc.py's own _draw_border_edge does.
+    frame = _frame(
+        x0=10000, y0=20000, x1=60000, y1=70000, dictionary_index=0,
+        border0=7, border1=7, border2=7, border3=7, border_colour_word=0,
+    )
+    document, _, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "double" in text
+
+
+def test_border_style_10_on_every_edge_rounds_the_whole_frame(tmp_path):
+    # Style byte 9 ("Border 10") applied to all four edges rounds every
+    # corner of the div itself -- only attempted when every edge shares
+    # the style (see _border_css_for_style's own docstring for why a
+    # mixed-style frame falls back to a plain straight line instead).
+    frame = _frame(
+        x0=10000, y0=20000, x1=60000, y1=70000, dictionary_index=0,
+        border0=9, border1=9, border2=9, border3=9, border_colour_word=0,
+    )
+    document, _, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    story = Story(frame_chain=(), paragraphs=(Paragraph(items=(Run(text="Hello", style_slots=()),)),))
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = PagedHTMLConverter(document, export_pdf=False)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "border-radius:" in text
+    assert "border-top:" not in text  # drawn as one whole-frame `border`, not four edges
+
+
 def test_master_linked_frame_uses_the_master_pages_own_origin(tmp_path):
     """Regression test mirroring the PDF converter's own fix: a
     master-linked frame's substituted appearance comes from the master

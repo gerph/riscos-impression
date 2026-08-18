@@ -441,14 +441,19 @@ def test_draw_box_only_draws_the_present_edges():
     converter._draw_box(frame)
     content = "".join(converter._content)
 
-    # Top edge (y=50) and bottom edge (y=0) as horizontal line segments.
-    assert "0 50 m 100 50 l S" in content
-    assert "0 0 m 100 0 l S" in content
+    # Top edge (y=50.5, offset half the 1pt line width outside the
+    # frame's own box -- see _draw_line_with_caps) and bottom edge
+    # (y=-0.5) as horizontal line segments.
+    assert "0 50.5 m 100 50.5 l S" in content
+    assert "0 -0.5 m 100 -0.5 l S" in content
     # No vertical (left/right) edge segments at all.
-    assert "0 0 m 0 50 l S" not in content
-    assert "100 0 m 100 50 l S" not in content
+    assert "-0.5 0 m -0.5 50 l S" not in content
+    assert "100.5 0 m 100.5 50 l S" not in content
     # And no full-rectangle stroke (the old, wrong behaviour).
     assert " re S" not in content
+    # Both ends of both lines are open (left and right are both
+    # absent), so each gets a round cap.
+    assert content.count("h f\n") == 4
 
 
 def test_draw_box_draws_all_four_edges_when_all_present():
@@ -464,26 +469,55 @@ def test_draw_box_draws_all_four_edges_when_all_present():
     converter._draw_box(frame)
     content = "".join(converter._content)
 
-    assert "0 50 m 100 50 l S" in content
-    assert "0 0 m 100 0 l S" in content
-    assert "0 0 m 0 50 l S" in content
-    assert "100 0 m 100 50 l S" in content
+    # Style 1 ("Border 2") is a 1pt line, offset outward by half its own
+    # width (0.5) so it doesn't encroach into the frame's own box.
+    assert "0 50.5 m 100 50.5 l S" in content
+    assert "0 -0.5 m 100 -0.5 l S" in content
+    assert "-0.5 0 m -0.5 50 l S" in content
+    assert "100.5 0 m 100.5 50 l S" in content
+    # Every one of the four edges' own two ends is round-capped, even
+    # where a neighbouring edge is present -- confirmed against
+    # TestDoc-Real2Border2+3.png: "Border 2"/"Border 3" are rounded at
+    # all four of their own ends, not only the one end that reference
+    # image happens to leave open.
+    assert content.count("h f\n") == 8
 
 
-def test_draw_box_with_a_border_also_draws_a_grey_shadow_ring():
-    # Regression test: the user reported a real document's (FieldWork)
-    # own bordered picture frames missing the grey drop-shadow/mat
-    # effect Impression itself shows around them (confirmed against a
-    # reference screenshot) -- this project's PDF converter drew only
-    # the border line, nothing else. Traced to the original C DDL
-    # emitter (`c/frames`): every frame type's own border emission
-    # unconditionally pairs a "{shadow ...}" alongside the "{border
-    # ...}" whenever any edge is present (see _SHADOW_WIDTH_PT's own
-    # docstring). Drawn as 4 separate bands just outside the frame's
-    # own box (not one rect underneath the whole frame), so an
-    # unfilled frame's own sparse content (e.g. a DrawFile picture
-    # that's mostly bare strokes) doesn't show grey showing through
-    # between them.
+def test_draw_box_border_style_1_draws_only_a_plain_line_no_band():
+    # Regression test for a since-corrected assumption: this project's
+    # PDF converter used to draw a fixed grey shadow band around *every*
+    # bordered frame regardless of which of Impression's own ten border
+    # styles the stored border0..3 byte actually selected -- inherited
+    # from the original C DDL emitter's own hardcoded behaviour (see
+    # _SHADOW_WIDTH_PT's own docstring), which never distinguished them
+    # either. Measuring a controlled test document's own labelled
+    # reference frames (corpus/TestDoc,bc5 page 2) showed the band is
+    # specific to styles 4-7 ("Border 4" onward); style 1 ("Border 1",
+    # stored as byte 0) is a plain line only.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=0, border1=0, border2=0, border3=0, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    # 0.5pt line, offset outward by half its own width (0.25).
+    assert "0 50.25 m 100 50.25 l S" in content
+    assert " re f" not in content  # no filled band
+
+
+def test_draw_box_border_style_4_draws_a_filled_mitred_band():
+    # Style byte 3 ("Border 4" in Impression's own 1-based UI numbering,
+    # see model.frames.Frame.has_border) is a solid mid-grey band
+    # outside the frame's own box, mitred 45 degrees at each end (a
+    # picture-frame moulding, not a plain axis-aligned rectangle) --
+    # confirmed against TestDoc-Real2Border4+5.png, which also showed a
+    # markedly thicker keyline on the band's own outer edge only.
     from riscos_impression.output.pdfdoc import PDFConverter, _SHADOW_WIDTH_PT, _fmt
 
     document, _ = _document_with_one_text_frame()
@@ -492,18 +526,225 @@ def test_draw_box_with_a_border_also_draws_a_grey_shadow_ring():
     converter._origin = (0, 0)
     converter._content = []
 
-    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=1, border1=1, border2=1, border3=1, border_colour_word=0)
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=3, border1=3, border2=3, border3=3, border_colour_word=0)
     converter._draw_box(frame)
     content = "".join(converter._content)
 
     sw = _SHADOW_WIDTH_PT
-    # A grey fill colour set before the shadow bands.
+    # A grey fill colour set before the band.
     assert "0.471 0.471 0.471 rg" in content
-    # Four bands, just outside the frame's own [0,0]-[100,50] box.
-    assert f"{_fmt(-sw)} {_fmt(50)} {_fmt(100 + 2 * sw)} {_fmt(sw)} re f" in content  # top
-    assert f"{_fmt(-sw)} {_fmt(-sw)} {_fmt(100 + 2 * sw)} {_fmt(sw)} re f" in content  # bottom
-    assert f"{_fmt(-sw)} {_fmt(0)} {_fmt(sw)} {_fmt(50)} re f" in content  # left
-    assert f"{_fmt(100)} {_fmt(0)} {_fmt(sw)} {_fmt(50)} re f" in content  # right
+    # Top band's quad: outer corners mitred 45 degrees out from the
+    # frame's own top-left/top-right corners, inner edge exactly on the
+    # frame's own top edge.
+    assert f"{_fmt(-sw)} {_fmt(50 + sw)} m" in content
+    assert f"{_fmt(100 + sw)} {_fmt(50 + sw)} l" in content
+    assert f"{_fmt(100)} {_fmt(50)} l" in content
+    assert f"{_fmt(0)} {_fmt(50)} l" in content
+    # A markedly thicker keyline along the band's own outer edge only.
+    assert f"{_fmt(-sw)} {_fmt(50 + sw)} m {_fmt(100 + sw)} {_fmt(50 + sw)} l S" in content
+    assert "2 w" in content  # border_width_pt(0.5) * 4
+
+
+def test_draw_box_border_style_5_draws_a_light_grey_fill_band():
+    # Style byte 4 ("Border 5") is the same mitred band shape as style 3
+    # ("Border 4"), but light grey rather than mid-grey -- confirmed
+    # directly by the user after TestDoc-Real2Border4+5.png's own
+    # "Border 5" reference frame (rendered as a transparency checkerboard
+    # in that particular screenshot -- Impression's own editor showing
+    # an unfilled selection state, not the style's actual printed
+    # appearance) was briefly, incorrectly taken to mean the style has
+    # no fill at all.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=4, border1=4, border2=4, border3=4, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    assert "0.886 0.886 0.886 rg" in content  # _BORDER5_COLOUR_RGB
+    assert "h\nf\n" in content  # the band is actually filled
+
+
+def test_draw_box_border_style_6_offset_shadow_with_thin_outline():
+    # Style byte 5 ("Border 6") is a thin outline at the frame's own
+    # true edge, plus a solid band outside it that's full-length at one
+    # end (extending sw past the frame's own corner) and stops sw short
+    # of the other -- rotating consistently around the box. Derived by
+    # tracing the exact pixel extent of TestDoc-Real2Border6+7.png's own
+    # single "Border 6" reference frame; supersedes an earlier version
+    # (derived from a different, ambiguous multi-frame reference image)
+    # that retracted the short end by the wrong amount and omitted the
+    # thin outline entirely.
+    from riscos_impression.output.pdfdoc import PDFConverter, _SHADOW_WIDTH_PT, _fmt
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=5, border1=5, border2=5, border3=5, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    sw = _SHADOW_WIDTH_PT
+    # Thin outline at the frame's own true top edge.
+    assert "0 50 m 100 50 l S" in content
+    # Top band: full-left (extends to x0-sw), short-right (retracts to x1-sw).
+    assert f"{_fmt(-sw)} {_fmt(50)} {_fmt(100)} {_fmt(sw)} re f" in content
+    # Right band: short-bottom (retracts to y0+sw), full-top (extends to y1+sw).
+    assert f"{_fmt(100)} {_fmt(sw)} {_fmt(sw)} {_fmt(50)} re f" in content
+    # Bottom band: short-left (retracts to x0+sw), full-right (extends to x1+sw).
+    assert f"{_fmt(sw)} {_fmt(-sw)} {_fmt(100)} {_fmt(sw)} re f" in content
+
+
+def test_draw_box_border_style_10_on_every_edge_draws_one_rounded_stroke():
+    # Style byte 9 ("Border 10") is a thick line with rounded corners --
+    # confirmed against TestDoc-Real2NoDots.png's own "Border 10"
+    # reference frame. Rounding needs to know about two edges at once,
+    # so it's only attempted (as a single whole-frame stroke, not four
+    # independent edges) when every edge shares the style.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=9, border1=9, border2=9, border3=9, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    assert content.count(" c\n") == 4  # four Bezier corner arcs
+    assert "0 50 m 100 50 l S" not in content  # not drawn as four square-cornered edges
+
+
+def test_draw_box_border_style_10_with_one_edge_absent_still_rounds_both_corners():
+    # Style 9 ("Border 10") applied to only three of a frame's four
+    # edges still uses the single rounded-rectangle path, not four
+    # independent straight edges -- confirmed against
+    # TestDoc-Real2Border10.png's own "Border 10, no left" reference
+    # frame: both corner arcs adjoining the missing left edge are still
+    # drawn as complete quarter-circles (all four corner arcs present),
+    # simply with no straight run between them where the left edge
+    # would have been.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(
+        x0=0, y0=0, x1=100000, y1=50000,
+        border0=9, border1=0xFF, border2=9, border3=9,  # no left
+        border_colour_word=0,
+    )
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    assert content.count(" c\n") == 4  # all four corner arcs still drawn
+    assert "h S\n" not in content  # path isn't closed -- the left edge has a real gap
+    assert content.count(" m\n") == 2  # two disconnected subpaths either side of the gap
+
+
+def test_draw_box_border_style_10_sits_a_gap_outside_the_frame():
+    # Unlike every other line-family style, Border 10 doesn't touch the
+    # frame's own boundary directly -- the user confirmed it still
+    # looked too close to the frame after the earlier non-encroaching
+    # fix, and TestDoc-Real2Border10.png's own dotted frame-bounds
+    # marker (confirmed not to be part of the border itself) sits well
+    # clear of the rounded line. Checked here via the single-edge
+    # style-9 fallback (mixed with another style, so the whole-frame
+    # rounded path in _draw_rounded_border doesn't apply), which is
+    # the simpler of the two code paths to assert an exact offset
+    # against.
+    from riscos_impression.output.pdfdoc import PDFConverter, _fmt
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(
+        x0=0, y0=0, x1=100000, y1=50000,
+        border0=9, border1=0xFF, border2=0xFF, border3=1,  # top is Border 10, bottom is Border 2
+        border_colour_word=0,
+    )
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    thick = 0.5 * 7.0  # border_width_pt(0.5) * 7
+    gap = thick * 3.0
+    y = 50 + gap + thick / 2.0
+    assert f"{_fmt(0)} {_fmt(y)} m {_fmt(100)} {_fmt(y)} l S" in content
+
+
+def test_draw_box_border_style_7_lines_meet_cleanly_at_every_corner():
+    # Style byte 7 ("Border 8") is a thin line at the frame's own
+    # boundary plus a thicker one further out -- both extended by their
+    # own offset at each end so they reach exactly the point a
+    # same-offset perpendicular neighbour's own line would cross, and
+    # so meet with a clean mitred corner instead of a small diagonal
+    # gap. An earlier version drew each line only the frame's own edge
+    # length (x0 to x1 / y0 to y1), leaving that gap -- the user
+    # reported this directly ("8 and 9 don't seem to meet at the
+    # corners"), and TestDoc-Real2Border8+9NoDotted.png's own "Border
+    # 8" reference frame confirmed every corner should be fully closed.
+    from riscos_impression.output.pdfdoc import PDFConverter, _fmt
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=7, border1=7, border2=7, border3=7, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    thin, med = 0.5, 1.0
+    gap = thin * 3.0
+    outer_offset = thin + gap + med / 2.0
+    y = 50 + outer_offset
+    # The outer line's top run extends past both x0 and x1 by its own
+    # offset, rather than stopping exactly at the frame's own corners.
+    assert f"{_fmt(-outer_offset)} {_fmt(y)} m {_fmt(100 + outer_offset)} {_fmt(y)} l S" in content
+
+
+def test_draw_box_border_style_8_lines_meet_cleanly_at_every_corner():
+    # Style byte 8 ("Border 9"): same corner-meeting fix as style 7
+    # (_draw_border_ring_line), for its own two thicker, further-apart
+    # lines -- an earlier version instead deliberately inset both lines
+    # from every corner, based on a misreading of an earlier, less
+    # clear reference image; TestDoc-Real2Border8+9NoDotted.png's own
+    # "Border 9" reference frame shows fully closed corners, matching
+    # the user's own direct report.
+    from riscos_impression.output.pdfdoc import PDFConverter, _fmt
+
+    document, _ = _document_with_one_text_frame()
+    converter = PDFConverter(document)
+    converter.begin_document()
+    converter._origin = (0, 0)
+    converter._content = []
+
+    frame = _frame(x0=0, y0=0, x1=100000, y1=50000, border0=8, border1=8, border2=8, border3=8, border_colour_word=0)
+    converter._draw_box(frame)
+    content = "".join(converter._content)
+
+    med = 1.0
+    gap = 0.5 * 4.5
+    outer_offset = med + gap + med / 2.0
+    y = 50 + outer_offset
+    assert f"{_fmt(-outer_offset)} {_fmt(y)} m {_fmt(100 + outer_offset)} {_fmt(y)} l S" in content
 
 
 def test_draw_box_without_a_border_draws_no_shadow():

@@ -185,20 +185,33 @@ _DRAW_UNIT_TO_PT = 72.0 / (180.0 * 256.0)
 
 _DEFAULT_FONT_SIZE_16THS = 160  # 10pt, used when a style carries no font_size at all.
 
-#: A frame with any border edge present always gets a drop-shadow too --
-#: confirmed against the original C DDL emitter (`c/frames`, e.g.
-#: ixpictdata()): every frame type's own "{frameborder ...}" emission
-#: unconditionally pairs a "{border ...}" with a hardcoded
-#: "{shadow 0 0x3 {colourvalue COL_01 0x10000 0} {w 5669}}" whenever any
-#: edge is present, regardless of the frame's own declared border colour.
-#: COL_01 is one of OvationPro's own built-in colour names (used as the
-#: generic default grey elsewhere too, e.g. column guides in c/styles),
-#: not decoded from anything in the document itself; its own RGB value
-#: isn't available to this project, so it's approximated here by
-#: sampling a real document's own rendered screenshot directly (a
-#: consistent ~(120,120,120) grey band around a bordered picture frame).
+#: Width of Border 4/5's own fill band and Border 6/7's own notched
+#: shadow band (see _draw_border_edge) -- historically, this width
+#: (5669 millipoints) is also what the *original* C DDL emitter
+#: (`c/frames`, e.g. ixpictdata()) hardcoded for a generic drop-shadow
+#: it paired with every bordered frame regardless of which of
+#: Impression's own ten border styles the source document actually
+#: used ("{shadow 0 0x3 {colourvalue COL_01 0x10000 0} {w 5669}}",
+#: always alongside a single hardcoded "1_Plain" border line) -- kept
+#: here because it happens to be the same width actually measured for
+#: Border 4/5/6/7 against a real reference image (see below), not
+#: because every border still gets this treatment; that generic
+#: always-on shadow has been replaced by per-style rendering.
 _SHADOW_WIDTH_PT = 5669 / UNIT
+
+#: Border 4's own fill colour. COL_01, the colour the original C DDL
+#: emitter's hardcoded shadow used (see _SHADOW_WIDTH_PT), is one of
+#: OvationPro's own built-in colour names -- not decoded from anything
+#: in the document itself, and its own RGB value isn't available to
+#: this project -- but it turned out to be exactly this: measured
+#: directly from corpus/TestDoc,bc5 page 2's own "Border 4" reference
+#: frame (TestDoc-Real2NoDots.png), a consistent ~(120,120,120) grey.
 _SHADOW_COLOUR_RGB = (120 / 255, 120 / 255, 120 / 255)
+
+#: Border 5's own fill colour, measured the same way against the same
+#: reference image's "Border 5" frame -- a consistent ~(226,226,226)
+#: light grey.
+_BORDER5_COLOUR_RGB = (226 / 255, 226 / 255, 226 / 255)
 
 
 # ---------------------------------------------------------------------------
@@ -1125,24 +1138,23 @@ class PDFConverter(Converter):
         if w <= 0 or h <= 0:
             return
 
+        edges = (
+            (frame.border0, "top"),
+            (frame.border1, "left"),
+            (frame.border2, "right"),
+            (frame.border3, "bottom"),
+        )
+
         if frame.has_border:
-            # Four separate bands forming a ring just outside the
-            # frame's own box, rather than one rect the frame's own
-            # content would need to fully repaint over -- an unfilled
-            # picture frame (real document: FieldWork's own UK map,
-            # filled=False) only paints its own DrawFile content
-            # (mostly bare strokes, not a solid background), so a
-            # single shadow rect *underneath* the frame's whole box
-            # would show through between the drawn lines instead of
-            # staying confined to the visible outer margin the
-            # reference image actually shows.
-            sw = _SHADOW_WIDTH_PT
-            r, g, b = _SHADOW_COLOUR_RGB
-            self._content.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg\n")
-            self._content.append(f"{_fmt(x0 - sw)} {_fmt(y1)} {_fmt(w + 2 * sw)} {_fmt(sw)} re f\n")  # top
-            self._content.append(f"{_fmt(x0 - sw)} {_fmt(y0 - sw)} {_fmt(w + 2 * sw)} {_fmt(sw)} re f\n")  # bottom
-            self._content.append(f"{_fmt(x0 - sw)} {_fmt(y0)} {_fmt(sw)} {_fmt(h)} re f\n")  # left
-            self._content.append(f"{_fmt(x1)} {_fmt(y0)} {_fmt(sw)} {_fmt(h)} re f\n")  # right
+            # Band-style borders (grey fill bands and the notched
+            # "shadow" styles) sit entirely outside the frame's own
+            # box, so they're drawn before the fill/line-style borders
+            # below regardless of ordering -- kept first to mirror this
+            # method's own original single-style ordering.
+            border_colour = frame.border_colour(self.document.colours)
+            for style, edge in edges:
+                if style in (3, 4, 5, 6):
+                    self._draw_border_edge(edge, style, x0, y0, x1, y1, border_colour)
 
         fill = frame.fill_colour(self.document.colours) if frame.filled else None
         if fill is not None:
@@ -1161,18 +1173,448 @@ class PDFConverter(Converter):
             # only) where it drew two extra, entirely fictional side
             # borders.
             border_colour = frame.border_colour(self.document.colours)
-            self._content.append(_stroke_colour_op(border_colour))
-            self._content.append(f"{_fmt(self.border_width_pt)} w\n")
-            edges = []
-            if frame.border0 != 0xFF:  # top
-                edges.append(f"{_fmt(x0)} {_fmt(y1)} m {_fmt(x1)} {_fmt(y1)} l S\n")
-            if frame.border1 != 0xFF:  # left
-                edges.append(f"{_fmt(x0)} {_fmt(y0)} m {_fmt(x0)} {_fmt(y1)} l S\n")
-            if frame.border2 != 0xFF:  # right
-                edges.append(f"{_fmt(x1)} {_fmt(y0)} m {_fmt(x1)} {_fmt(y1)} l S\n")
-            if frame.border3 != 0xFF:  # bottom
-                edges.append(f"{_fmt(x0)} {_fmt(y0)} m {_fmt(x1)} {_fmt(y0)} l S\n")
-            self._content.append("".join(edges))
+            present = [(style, edge) for style, edge in edges if style != 0xFF]
+            if present and all(style == 9 for style, _ in present):
+                # Every *present* edge is Border 10: draw one
+                # rounded-rectangle stroke rather than independent
+                # straight edges, since a rounded corner inherently
+                # needs to know about both of its neighbouring edges,
+                # not just one. Confirmed against
+                # TestDoc-Real2Border10.png's own "Border 10, no left"
+                # reference frame that this still applies even when an
+                # edge is entirely absent: both corner arcs adjoining
+                # the missing edge are still drawn in full, simply with
+                # no straight run between them -- not a flat unrounded
+                # edge, and not skipped down to only the edges that are
+                # actually present.
+                edge_present = {e: s != 0xFF for s, e in edges}
+                self._draw_rounded_border(x0, y0, x1, y1, border_colour, edge_present)
+            else:
+                for style, edge in present:
+                    if style not in (3, 4, 5, 6):  # already drawn above
+                        # Every plain-line style (see _draw_line_with_caps)
+                        # gets a round cap at both of its own ends,
+                        # regardless of whether an adjoining edge is
+                        # present -- confirmed against
+                        # TestDoc-Real2Border2+3.png: "Border 2"/"Border
+                        # 3" are rounded at all four of their own ends
+                        # (left, right, top, and bottom), not only the
+                        # end where the neighbouring edge happens to be
+                        # turned off.
+                        self._draw_border_edge(
+                            edge, style, x0, y0, x1, y1, border_colour, True, True
+                        )
+
+    def _draw_border_edge(
+        self,
+        edge: str,
+        style: int,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        colour,
+        open_start: bool = False,
+        open_end: bool = False,
+    ) -> None:
+        """Render one edge of a frame's border in one of Impression's ten
+        "Border 1".."Border 10" UI styles (style is the 0-based stored
+        byte -- see model.frames.Frame.has_border). Their appearance
+        isn't recorded anywhere in the format itself, nor in the
+        original C DDL converter (c/frames' ixpictdata() and friends),
+        which collapses every one of them down to a single hardcoded
+        OvationPro "1_Plain" line plus a fixed grey drop-shadow,
+        regardless of which style the source document actually used --
+        see _SHADOW_WIDTH_PT's own docstring for that generic
+        fallback's own provenance. This mapping comes from measuring
+        corpus/TestDoc,bc5 page 2's own labelled "Border 1".."Border
+        10" reference frames pixel-by-pixel, refined across several
+        follow-up reference images the user provided once the first
+        pass turned out wrong in specific, checkable ways -- see each
+        helper's own docstring for what each image showed and which
+        earlier guess it corrected: styles 1-3 are progressively wider
+        plain lines, drawn entirely outside the frame's own box with a
+        round cap wherever an adjoining edge is absent
+        (_draw_line_with_caps, TestDoc-Real2Border2+3.png); 4-5 are a
+        mitred picture-frame-moulding band, filled for 4 and unfilled
+        for 5 (_draw_border_band, TestDoc-Real2Border4+5.png); 6-7 are
+        a solid offset "hard shadow" band plus the frame's own thin
+        outline showing through wherever the band doesn't reach
+        (_draw_notched_shadow_edge, TestDoc-Real2Border6+7.png); 8 is a
+        thin line plus a thicker one further out, unnotched; 9 is two
+        equal, thicker lines with a wider gap, each independently inset
+        from both of its own ends by its own width so that all four
+        corners notch (not just two); 10 is a single thick line,
+        normally rounded at the corners -- see the whole-edge special
+        case in _draw_box, which only attempts the rounding when every
+        edge shares this style, since a corner radius inherently needs
+        to know about both of its neighbouring edges, not just one; a
+        single style-10 edge mixed with other styles falls back to a
+        plain straight thick line here."""
+        thin = self.border_width_pt
+        med = thin * 2.0
+        thick = thin * 7.0
+        sw = _SHADOW_WIDTH_PT
+        c = self._content
+        if style == 0:  # Border 1
+            self._draw_line_with_caps(edge, x0, y0, x1, y1, thin, colour, open_start, open_end)
+        elif style == 1:  # Border 2
+            self._draw_line_with_caps(edge, x0, y0, x1, y1, med, colour, open_start, open_end)
+        elif style == 2:  # Border 3
+            self._draw_line_with_caps(edge, x0, y0, x1, y1, thick, colour, open_start, open_end)
+        elif style == 3:  # Border 4: filled mitred band
+            self._draw_border_band(edge, x0, y0, x1, y1, sw, _SHADOW_COLOUR_RGB, colour)
+        elif style == 4:  # Border 5: light-grey mitred band
+            self._draw_border_band(edge, x0, y0, x1, y1, sw, _BORDER5_COLOUR_RGB, colour)
+        elif style == 5:  # Border 6: offset shadow, one rotation
+            self._draw_notched_shadow_edge(edge, x0, y0, x1, y1, sw, colour, mirrored=False)
+        elif style == 6:  # Border 7: offset shadow, mirrored rotation
+            self._draw_notched_shadow_edge(edge, x0, y0, x1, y1, sw, colour, mirrored=True)
+        elif style == 7:  # Border 8: thin line at the boundary, a thicker one further out
+            gap = thin * 3.0
+            self._draw_border_ring_line(edge, x0, y0, x1, y1, thin, colour, thin / 2.0)
+            self._draw_border_ring_line(edge, x0, y0, x1, y1, med, colour, thin + gap + med / 2.0)
+        elif style == 8:  # Border 9: two thicker lines, further apart
+            gap = thin * 4.5
+            self._draw_border_ring_line(edge, x0, y0, x1, y1, med, colour, med / 2.0)
+            self._draw_border_ring_line(edge, x0, y0, x1, y1, med, colour, med + gap + med / 2.0)
+        elif style == 9:  # Border 10: thick line, held off the frame's own edge by a gap
+            self._draw_line_with_caps(
+                edge, x0, y0, x1, y1, thick, colour, open_start, open_end, base_offset=thick * 3.0
+            )
+        else:
+            # Not one of Impression's own ten UI styles (0-9); fall
+            # back to the plain thin line rather than drawing nothing.
+            self._draw_line_with_caps(edge, x0, y0, x1, y1, thin, colour, open_start, open_end)
+
+    def _draw_line_with_caps(
+        self,
+        edge: str,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        width: float,
+        colour,
+        open_start: bool,
+        open_end: bool,
+        base_offset: float = 0.0,
+    ) -> None:
+        """A straight stroke of *width* along *edge*, its near edge
+        touching the frame's own boundary exactly (offset outward from
+        the boundary by half its own width, plus *base_offset* for a
+        second/third line drawn further out again) -- never straddling
+        the boundary the way a stroke centred directly on it would, so
+        it never eats into the frame's own interior. Confirmed against
+        TestDoc-Real2Border2+3.png: both reference frames have their
+        left edge turned off specifically to show this and the cap
+        behaviour below without the line obscuring anything -- the
+        remaining lines' own inner edges sit exactly flush with the
+        frame's own text area, not overlapping it. Superseded an
+        earlier version that centred the stroke directly on the
+        boundary (half in, half out).
+
+        Both of the line's own ends (*open_start*/*open_end*, currently
+        always passed True by every caller -- kept as parameters rather
+        than hardcoded in case a future style needs to draw only one)
+        get a round cap rather than a flat one, regardless of whether
+        an adjoining edge is present there -- confirmed against the
+        same reference image: "Border 2"/"Border 3" are rounded at all
+        four of their own ends (left, right, top, and bottom), not only
+        the one end (left) that reference image happens to leave open.
+        Superseded an earlier version that only rounded the genuinely
+        open end and kept a flat/butt cap wherever a neighbour was
+        present."""
+        offset = base_offset + width / 2.0
+        c = self._content
+        c.append(_stroke_colour_op(colour))
+        c.append(f"{_fmt(width)} w\n")
+        c.append(self._edge_line(edge, x0, y0, x1, y1, offset))
+        if open_start or open_end:
+            start_pt, end_pt = self._edge_endpoints(edge, x0, y0, x1, y1, offset)
+            c.append(_fill_colour_op(colour))
+            if open_start:
+                c.append(self._filled_circle(start_pt[0], start_pt[1], width / 2.0))
+            if open_end:
+                c.append(self._filled_circle(end_pt[0], end_pt[1], width / 2.0))
+
+    def _draw_border_ring_line(
+        self, edge: str, x0: float, y0: float, x1: float, y1: float, width: float, colour, offset: float
+    ) -> None:
+        """One line of a "ring" style (Border 8/9, styles 7-8): drawn
+        at *offset* outward from the frame's own boundary like
+        _draw_line_with_caps, but extended by that same *offset* at
+        each of its own ends rather than capped there, so it reaches
+        exactly the point where the perpendicular neighbouring edge's
+        own same-offset line crosses it. Two edges sharing the same
+        style and offset then meet with a clean mitred corner instead
+        of the small diagonal gap a same-length, non-extended line
+        would leave (each end short of the shared corner by its own
+        offset) -- confirmed against
+        TestDoc-Real2Border8+9NoDotted.png, whose "Border 8"/"Border 9"
+        reference frames both show every corner fully closed."""
+        c = self._content
+        c.append(_stroke_colour_op(colour))
+        c.append(f"{_fmt(width)} w\n")
+        c.append(self._edge_line(edge, x0, y0, x1, y1, offset, inset=-offset))
+
+    @staticmethod
+    def _edge_line(
+        edge: str, x0: float, y0: float, x1: float, y1: float, offset: float, inset: float = 0.0
+    ) -> str:
+        """A straight stroke along *edge*, offset outward from the
+        frame's own boundary by *offset* (0 centres it exactly on the
+        boundary, matching a plain `re S` rectangle stroke's own
+        centring), shortened by *inset* at each end."""
+        if edge == "top":
+            y = y1 + offset
+            return f"{_fmt(x0 + inset)} {_fmt(y)} m {_fmt(x1 - inset)} {_fmt(y)} l S\n"
+        if edge == "bottom":
+            y = y0 - offset
+            return f"{_fmt(x0 + inset)} {_fmt(y)} m {_fmt(x1 - inset)} {_fmt(y)} l S\n"
+        if edge == "left":
+            x = x0 - offset
+            return f"{_fmt(x)} {_fmt(y0 + inset)} m {_fmt(x)} {_fmt(y1 - inset)} l S\n"
+        x = x1 + offset
+        return f"{_fmt(x)} {_fmt(y0 + inset)} m {_fmt(x)} {_fmt(y1 - inset)} l S\n"  # right
+
+    @staticmethod
+    def _edge_endpoints(
+        edge: str, x0: float, y0: float, x1: float, y1: float, offset: float
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        """The (start, end) points of _edge_line's own path at the same
+        *offset*, for positioning a round-cap circle at either one."""
+        if edge == "top":
+            y = y1 + offset
+            return (x0, y), (x1, y)
+        if edge == "bottom":
+            y = y0 - offset
+            return (x0, y), (x1, y)
+        if edge == "left":
+            x = x0 - offset
+            return (x, y0), (x, y1)
+        x = x1 + offset
+        return (x, y0), (x, y1)  # right
+
+    @staticmethod
+    def _filled_circle(cx: float, cy: float, radius: float) -> str:
+        """A filled circle (four Bezier quarter-arcs), used as a round
+        line-cap at an edge's own open end -- see _draw_line_with_caps."""
+        if radius <= 0:
+            return ""
+        k = 0.5522847498 * radius
+        return (
+            f"{_fmt(cx + radius)} {_fmt(cy)} m\n"
+            f"{_fmt(cx + radius)} {_fmt(cy + k)} {_fmt(cx + k)} {_fmt(cy + radius)} {_fmt(cx)} {_fmt(cy + radius)} c\n"
+            f"{_fmt(cx - k)} {_fmt(cy + radius)} {_fmt(cx - radius)} {_fmt(cy + k)} {_fmt(cx - radius)} {_fmt(cy)} c\n"
+            f"{_fmt(cx - radius)} {_fmt(cy - k)} {_fmt(cx - k)} {_fmt(cy - radius)} {_fmt(cx)} {_fmt(cy - radius)} c\n"
+            f"{_fmt(cx + k)} {_fmt(cy - radius)} {_fmt(cx + radius)} {_fmt(cy - k)} {_fmt(cx + radius)} {_fmt(cy)} c\n"
+            "h f\n"
+        )
+
+    def _draw_border_band(
+        self,
+        edge: str,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        width: float,
+        rgb: Optional[tuple[float, float, float]],
+        outline_colour,
+    ) -> None:
+        """Border 4/5's own mitred picture-frame-moulding band: a
+        trapezoid whose inner edge is *edge*'s own true frame boundary
+        and whose outer edge is offset outward by *width*, tapering via
+        a 45-degree mitre at each end. Confirmed against
+        TestDoc-Real2Border4+5.png (both reference frames have their
+        left/right edges turned off, showing the mitred taper end
+        directly): this naturally forms a clean mitred corner wherever
+        an adjoining edge shares the style (their outer corners
+        coincide exactly, though that case isn't directly exercised by
+        the reference image), and a clean tapered point when the
+        adjoining edge is absent, with no special-casing needed either
+        way -- unlike the plain axis-aligned rectangle band this
+        superseded. Border 4 (rgb=_SHADOW_COLOUR_RGB) is a solid
+        mid-grey; Border 5 (rgb=_BORDER5_COLOUR_RGB) a solid light
+        grey -- TestDoc-Real2Border4+5.png's own "Border 5" band
+        rendered as a transparency checkerboard in that particular
+        screenshot (Impression's own editor showing an unfilled
+        selection state, not the style's actual printed appearance);
+        the user confirmed the real fill is a light grey, matching
+        this project's own earlier, since-reinstated pixel measurement
+        of _BORDER5_COLOUR_RGB. Only the
+        band's own outer edge gets a markedly thicker keyline stroke;
+        its inner edge and both mitred sides get a much thinner one --
+        also confirmed against the same image, whose bands show a bold
+        line only on the side away from the frame."""
+        if edge == "top":
+            outer_a, outer_b = (x0 - width, y1 + width), (x1 + width, y1 + width)
+            inner_a, inner_b = (x0, y1), (x1, y1)
+        elif edge == "bottom":
+            outer_a, outer_b = (x0 - width, y0 - width), (x1 + width, y0 - width)
+            inner_a, inner_b = (x0, y0), (x1, y0)
+        elif edge == "left":
+            outer_a, outer_b = (x0 - width, y0 - width), (x0 - width, y1 + width)
+            inner_a, inner_b = (x0, y0), (x0, y1)
+        else:  # right
+            outer_a, outer_b = (x1 + width, y0 - width), (x1 + width, y1 + width)
+            inner_a, inner_b = (x1, y0), (x1, y1)
+
+        path = (
+            f"{_fmt(outer_a[0])} {_fmt(outer_a[1])} m\n"
+            f"{_fmt(outer_b[0])} {_fmt(outer_b[1])} l\n"
+            f"{_fmt(inner_b[0])} {_fmt(inner_b[1])} l\n"
+            f"{_fmt(inner_a[0])} {_fmt(inner_a[1])} l\n"
+            "h\n"
+        )
+        c = self._content
+        if rgb is not None:
+            r, g, b = rgb
+            c.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg\n")
+            c.append(path)
+            c.append("f\n")
+        c.append(_stroke_colour_op(outline_colour))
+        c.append(f"{_fmt(self.border_width_pt)} w\n")
+        c.append(path)
+        c.append("S\n")
+        c.append(f"{_fmt(self.border_width_pt * 4.0)} w\n")
+        c.append(f"{_fmt(outer_a[0])} {_fmt(outer_a[1])} m {_fmt(outer_b[0])} {_fmt(outer_b[1])} l S\n")
+
+    def _draw_notched_shadow_edge(
+        self,
+        edge: str,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        sw: float,
+        colour,
+        mirrored: bool,
+    ) -> None:
+        """One edge's own contribution to Border 6 (mirrored=False) or
+        Border 7 (mirrored=True): a thin outline at the frame's own
+        true edge (its full length, x0 to x1 or y0 to y1), plus a solid
+        band of width *sw* outside it that's full-length at one end
+        (extending *sw* past the frame's own corner, flush with the
+        neighbouring edge's own band) and stops *sw* short of the other
+        end (short of reaching the frame's own corner at all) --
+        rotating consistently clockwise for Border 6 and anticlockwise
+        for Border 7. Confirmed against TestDoc-Real2Border6+7.png's
+        own single "Border 6"/"Border 7" reference frames (each with
+        its left edge turned off): a full pixel trace of each edge's
+        own band extent showed exactly this "full = corner + sw / short
+        = corner - sw" pattern, not the "full = corner + sw / short =
+        exactly at the corner, no thin outline" version this supersedes
+        -- that earlier version, derived from a different, ambiguous
+        multi-frame reference image, both retracted the short end by
+        the wrong amount and omitted the thin outline that shows
+        through in the gap it leaves."""
+        c = self._content
+        c.append(_stroke_colour_op(colour))
+        c.append(f"{_fmt(self.border_width_pt)} w\n")
+        c.append(self._edge_line(edge, x0, y0, x1, y1, 0.0))
+
+        if edge == "top":
+            rx0, rx1 = (x0 + sw, x1 + sw) if mirrored else (x0 - sw, x1 - sw)
+            ry0, ry1 = y1, y1 + sw
+        elif edge == "bottom":
+            rx0, rx1 = (x0 - sw, x1 - sw) if mirrored else (x0 + sw, x1 + sw)
+            ry0, ry1 = y0 - sw, y0
+        elif edge == "left":
+            rx0, rx1 = x0 - sw, x0
+            ry0, ry1 = (y0 + sw, y1 + sw) if mirrored else (y0 - sw, y1 - sw)
+        else:  # right
+            rx0, rx1 = x1, x1 + sw
+            ry0, ry1 = (y0 - sw, y1 - sw) if mirrored else (y0 + sw, y1 + sw)
+        c.append(_fill_colour_op(colour))
+        c.append(f"{_fmt(rx0)} {_fmt(ry0)} {_fmt(rx1 - rx0)} {_fmt(ry1 - ry0)} re f\n")
+
+    def _draw_rounded_border(
+        self, x0: float, y0: float, x1: float, y1: float, colour, edge_present: dict
+    ) -> None:
+        """Border 10 applied across a frame's edges: a single
+        rounded-rectangle stroke, corner radius scaled off the same
+        Border-3/10 line thickness. Expanded outward by half the line's
+        own thickness before stroking (centred on that expanded box,
+        the same way a plain `re S` stroke is centred on whatever box
+        it's given) so the stroke's own inner edge sits exactly on the
+        frame's own boundary rather than eating into it -- matching
+        _draw_line_with_caps's own non-encroaching offset for every
+        other straight-line style.
+
+        *edge_present* (a {"top"/"left"/"right"/"bottom": bool} map)
+        controls only the four straight runs, each independently
+        skipped when that edge is absent -- the four corner arcs are
+        always drawn in full regardless, simply left as their own
+        disconnected subpath wherever the straight run joining them to
+        their neighbour is missing. Confirmed against
+        TestDoc-Real2Border10.png's own "Border 10, no left" reference
+        frame: both corner arcs adjoining the missing edge are still
+        drawn as complete quarter-circles, each simply ending in a flat
+        cut at the point where the (absent) straight left edge would
+        have continued -- not skipped, and not replaced with a flat,
+        unrounded corner.
+
+        Unlike every other line-family style, Border 10 sits a visible
+        gap outside the frame's own boundary rather than touching it
+        directly -- confirmed against the same reference image, whose
+        dotted frame-bounds marker (not part of the border; the user
+        confirmed it's purely a bounds indicator) sits well clear of
+        the rounded line itself. _draw_border_edge's own single-edge
+        style-9 fallback (used when Border 10 is mixed with other
+        styles, so this whole-frame path doesn't apply) adds the same
+        gap itself, via _draw_line_with_caps's base_offset."""
+        thick = self.border_width_pt * 7.0
+        gap = thick * 3.0
+        half = thick / 2.0
+        ex0, ey0, ex1, ey1 = x0 - gap - half, y0 - gap - half, x1 + gap + half, y1 + gap + half
+        radius = min(thick * 1.8, (ex1 - ex0) / 2.0, (ey1 - ey0) / 2.0)
+        if radius <= 0:
+            # _draw_border_edge's own style-9 handling (_draw_line_with_caps)
+            # already applies the same non-encroaching offset itself, so
+            # this fallback keeps the original, unexpanded box.
+            for edge in ("top", "left", "right", "bottom"):
+                if edge_present.get(edge, True):
+                    self._draw_border_edge(edge, 9, x0, y0, x1, y1, colour, True, True)
+            return
+        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
+        k = 0.5522847498 * radius
+        c = self._content
+        c.append(_stroke_colour_op(colour))
+        c.append(f"{_fmt(thick)} w\n")
+
+        # (edge name or None for a corner arc, start point, end point,
+        # (ctrl1, ctrl2) or None for a straight edge) -- clockwise from
+        # the bottom edge's own left end, matching the fixed sequence
+        # this method always used before edge_present existed.
+        segments = [
+            ("bottom", (x0 + radius, y0), (x1 - radius, y0), None),
+            (None, (x1 - radius, y0), (x1, y0 + radius), ((x1 - radius + k, y0), (x1, y0 + radius - k))),
+            ("right", (x1, y0 + radius), (x1, y1 - radius), None),
+            (None, (x1, y1 - radius), (x1 - radius, y1), ((x1, y1 - radius + k), (x1 - radius + k, y1))),
+            ("top", (x1 - radius, y1), (x0 + radius, y1), None),
+            (None, (x0 + radius, y1), (x0, y1 - radius), ((x0 + radius - k, y1), (x0, y1 - radius + k))),
+            ("left", (x0, y1 - radius), (x0, y0 + radius), None),
+            (None, (x0, y0 + radius), (x0 + radius, y0), ((x0, y0 + radius - k), (x0 + radius - k, y0))),
+        ]
+        pen_down = False
+        for edge, start, end, ctrl in segments:
+            if edge is not None and not edge_present.get(edge, True):
+                pen_down = False  # skip this straight run; resume with a fresh moveto
+                continue
+            if not pen_down:
+                c.append(f"{_fmt(start[0])} {_fmt(start[1])} m\n")
+            if ctrl is None:
+                c.append(f"{_fmt(end[0])} {_fmt(end[1])} l\n")
+            else:
+                (cx1, cy1), (cx2, cy2) = ctrl
+                c.append(f"{_fmt(cx1)} {_fmt(cy1)} {_fmt(cx2)} {_fmt(cy2)} {_fmt(end[0])} {_fmt(end[1])} c\n")
+            pen_down = True
+        if all(edge_present.get(e, True) for e in ("top", "left", "right", "bottom")):
+            c.append("h S\n")
+        else:
+            c.append("S\n")
 
     def _boundary_clip_path(self, pict: PictureFrame, boundary) -> str:
         cx_doc = (pict.x0 + pict.x1) // 2

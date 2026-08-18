@@ -428,6 +428,44 @@ four-bit edge-presence mask for its own DDL `{border}` output, is
 exactly this same top/left/right/bottom order read out clockwise from
 the top -- not an arbitrary permutation.
 </p>
+<p>
+Each edge's own visual appearance is not recorded anywhere in the
+format itself, and each of the ten stored style values (0-9, "Border
+1".."Border 10" in Impression's own UI) is independent per edge, so a
+single frame can mix styles across its four edges. Their appearance
+was reconstructed by measuring a controlled test document (a
+"Border 1" through "Border 10" reference frame set, one style per
+frame, plus several single-style frames with one or more edges
+deliberately turned off to reveal how each style ends when it has no
+neighbour to join) against screenshots of how Impression itself
+renders it:
+</p>
+<p>
+<list type="ordered">
+<item>A thin plain line, drawn entirely outside the frame's own box (never straddling its boundary) with both ends rounded, regardless of whether the adjoining edge is present or absent.</item>
+<item>A plain line roughly twice as wide as style 1, same placement/end treatment.</item>
+<item>A plain line roughly seven times as wide as style 1, same placement/end treatment.</item>
+<item>A solid mid-grey band outside the frame's own box, mitred 45 degrees at each end like a picture-frame moulding (tapering to a clean point when the adjoining edge is absent, joining cleanly when it shares the style) -- with a markedly thicker keyline on the band's own outer edge only, and a much thinner one on its inner edge and mitred sides.</item>
+<item>The same mitred band shape as style 4, but light grey rather than mid-grey.</item>
+<item>A thin line at the frame's own true edge, plus a solid band (in the frame's own border colour, not grey) outside it that's full-length at one end -- extending past the frame's own corner by the band's own width, flush with the neighbouring edge's own band -- and stops short of the other end by that same width; each edge's own full/short ends rotate consistently clockwise around the frame, so the thin line only shows through in the resulting gaps rather than being visible along the whole edge.</item>
+<item>The same as style 6, but mirrored: the full/short ends rotate anticlockwise instead.</item>
+<item>A thin line at the frame's own boundary with a second, thicker line further out, a visible gap between them; the two lines meet cleanly at every corner.</item>
+<item>Two lines, both about as thick as style 8's outer line, spaced further apart than style 8; the two lines meet cleanly at every corner, the same as style 8.</item>
+<item>A plain line as thick as style 3, but with rounded corners -- unlike every other line style, held off the frame's own boundary by a visible gap rather than touching it directly. All four corners round even when one or more edges are absent -- an edge missing from an otherwise-style-10 frame simply removes the straight run between its two neighbouring corners, both of which still round in full.</item>
+</list>
+</p>
+<p>
+None of this is recorded by the original OvationPro DDL converter
+(`c/frames`, e.g. ixpictdata()): every one of its own border
+emissions unconditionally pairs a single hardcoded OvationPro border
+look ("1_Plain") with a fixed generic drop-shadow
+("{shadow 0 0x3 {colourvalue COL_01 0x10000 0} {w 5669}}"), regardless
+of which of the ten styles above the source document actually used --
+DDL's own OvationPro renderer never distinguished them either. COL_01
+happens to match style 4's own measured grey almost exactly, which is
+how that shadow's width was reused as several of these styles' own
+band width.
+</p>
 
 <subsubsection title="Frame flags word">
 <p>

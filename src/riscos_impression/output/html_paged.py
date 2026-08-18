@@ -98,6 +98,14 @@ _DEFAULT_FONT_SIZE_16THS = 160
 #: room at all -- matches pdfdoc.py's own _MIN_USABLE_WIDTH.
 _MIN_USABLE_WIDTH = 10.0
 
+#: Impression's own "Border 4"/"Border 5" fill-band colours (see
+#: pdfdoc.py's _SHADOW_COLOUR_RGB/_BORDER5_COLOUR_RGB for how these were
+#: measured against a reference image), reused as fixed CSS colours
+#: here since this converter has no equivalent of a separate filled
+#: band to draw -- see _border_css_for_style.
+_BORDER4_GREY_CSS = "#787878"
+_BORDER5_GREY_CSS = "#e2e2e2"
+
 #: RISC OS font name substring -> font_metrics.WIDTHS_256PT family, for
 #: _approx_width's own estimate of how many lines a chained story's
 #: paragraph will wrap to at a given frame width (see
@@ -334,15 +342,25 @@ class PagedHTMLConverter(HTML5Converter):
             # document), so a uniform `border` shorthand is wrong
             # whenever fewer than all four are set.
             border_css = colour_to_css(appearance.border_colour(self.document.colours)) or "#000000"
-            border_spec = f"{self.border_width_pt:.1f}pt solid {border_css}"
-            if appearance.border0 != 0xFF:
-                styles.append(f"border-top: {border_spec}")
-            if appearance.border1 != 0xFF:
-                styles.append(f"border-left: {border_spec}")
-            if appearance.border2 != 0xFF:
-                styles.append(f"border-right: {border_spec}")
-            if appearance.border3 != 0xFF:
-                styles.append(f"border-bottom: {border_spec}")
+            edges = (
+                (appearance.border0, "top"),
+                (appearance.border1, "left"),
+                (appearance.border2, "right"),
+                (appearance.border3, "bottom"),
+            )
+            present = [(style, edge) for style, edge in edges if style != 0xFF]
+            if present and all(style == 9 for style, _ in present) and len(present) == 4:
+                # Border 10 on every edge: CSS can round every corner
+                # of the div itself, unlike the PDF converter's own
+                # hand-drawn stroke -- see pdfdoc.py's own
+                # _draw_rounded_border docstring for why this needs all
+                # four edges to share the style.
+                thick = self.border_width_pt * 7.0
+                styles.append(f"border: {thick:.1f}pt solid {border_css}")
+                styles.append(f"border-radius: {thick * 1.8:.1f}pt")
+            else:
+                for style, edge in present:
+                    styles.append(f"border-{edge}: {self._border_css_for_style(style, border_css)}")
         h_inset = max(0.0, appearance.hinset / UNIT)
         v_inset = max(0.0, appearance.vinset / UNIT)
         if h_inset or v_inset:
@@ -357,6 +375,39 @@ class PagedHTMLConverter(HTML5Converter):
 
         style_attr = "; ".join(styles)
         return f'<div class="ro-frame" style="{style_attr}">{content}</div>\n'
+
+    def _border_css_for_style(self, style: int, border_css: str) -> str:
+        """A CSS `border-<edge>` value for one of Impression's ten
+        "Border 1".."Border 10" UI styles (style is the 0-based stored
+        byte -- see model.frames.Frame.has_border). A lower-fidelity
+        approximation than pdfdoc.py's own per-style rendering (see
+        that converter's _draw_border_edge for the pixel measurements
+        this is based on and the full set of styles) -- this converter
+        has no way to draw a separate filled band or the Border 6/7
+        "notched shadow" outside a div's own box, so styles 3-6 fall
+        back to a plain, correspondingly-coloured/widened line; CSS's
+        own `double` border style is used natively for 7-8 rather than
+        hand-building two lines."""
+        thin = self.border_width_pt
+        med = thin * 2.0
+        thick = thin * 7.0
+        if style == 1:  # Border 2
+            return f"{med:.1f}pt solid {border_css}"
+        if style == 2:  # Border 3
+            return f"{thick:.1f}pt solid {border_css}"
+        if style == 3:  # Border 4: mid-grey (best-effort: plain line, no separate band)
+            return f"{thick:.1f}pt solid {_BORDER4_GREY_CSS}"
+        if style == 4:  # Border 5: light-grey (best-effort: plain line, no separate band)
+            return f"{thick:.1f}pt solid {_BORDER5_GREY_CSS}"
+        if style in (5, 6):  # Border 6/7: notched shadow (best-effort: plain thick line)
+            return f"{thick:.1f}pt solid {border_css}"
+        if style == 7:  # Border 8: thin + thicker line
+            return f"{med * 2.0:.1f}pt double {border_css}"
+        if style == 8:  # Border 9: two thicker lines, wider gap
+            return f"{med * 3.0:.1f}pt double {border_css}"
+        if style == 9:  # Border 10 mixed with other styles: no rounding possible per-edge
+            return f"{thick:.1f}pt solid {border_css}"
+        return f"{thin:.1f}pt solid {border_css}"  # Border 1, or an unrecognised style byte
 
     def _render_picture(self, pict: PictureFrame) -> str:
         if pict.dictionary_index < 0:
