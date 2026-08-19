@@ -1175,8 +1175,20 @@ Every one of the 104 embedded pictures found across a 46-document
 survey classified as Draw, and every one began with the standard RISC
 OS DrawFile signature and a plausible bounding box when checked. No EPS,
 ArtWorks, other Draw-family application, or generic "Data" picture was
-found in that survey, so those paths remain unconfirmed against real
-documents.
+found in that survey.
+</p>
+<p>
+The ArtWorks and Sprite paths have since been confirmed against a real
+document: corpus/TestDoc,bc5 (a small, separately committed fixture,
+not part of the 104-picture survey above) carries 5 genuine ArtWorks
+(0xD94) DCPICT entries alongside 33 classified as Draw -- one of which
+is itself a real Sprite file rather than a DrawFile (0xAFF's own inner
+sub-code 0xFF9 path, confirmed working as documented above), and
+another a DrawFile containing both a Sprite object and a JPEG object
+(see the riscos-output skill's own drawfile-format.md for the JPEG
+object's on-disk layout, itself reverse-engineered from this same
+document). EPS and generic "Data" remain unconfirmed against a real
+document.
 </p>
 </subsection>
 

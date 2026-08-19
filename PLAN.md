@@ -136,6 +136,9 @@ riscos-impression/
 - [x] Stage 12 — CLI and polish
 - [x] Stage 13 (follow-up) — Real-document audit
 - [x] Stage 14 — Real DrawFile decoding and PDF/SVG rendering
+- [x] Stage 15 — `extract` subcommand
+- [x] Stage 16 — ArtWorks/Sprite/JPEG embedded-picture rendering (`artworks-experiment` branch)
+- [ ] Stage 17 — Known gaps and follow-ups (tracked below; picked up one at a time)
 
 ## Stages
 
@@ -2308,6 +2311,144 @@ the whole document as one file in one format the way `convert` does.
   (unlike `examples/`/`moreexamples/`, which stay gitignored, local-only,
   and are never referenced by anything under `tests/`). 25/25 new tests
   green (5 documents × 5 formats); full suite (363 tests) green.
+
+### Stage 16 — ArtWorks/Sprite/JPEG embedded-picture rendering (`artworks-experiment` branch)
+
+Sprite and ArtWorks were still bounding-box-only placeholders after Stage
+14 (which covered DrawFile only). This stage brought real rendering to
+both, plus a DrawFile object type (JPEG) not previously decoded at all,
+across several linked pieces of work:
+
+* **ArtWorks (`formats/artworks_svg.py`, third-party `riscos_artworks`
+  decoder, optional `artworks` extra)** — real path/fill/stroke/gradient/
+  text SVG rendering, ported from the `riscos-artworks-js` reference and
+  cross-checked against real files. Along the way, found and fixed two
+  real bugs upstream in `riscos_artworks` itself (separate repo, own
+  branches, not yet merged/released):
+  - `denormalise()`: the decoder reads a flat run of sibling records
+    exactly as stored on disk, but real ArtWorks documents (and the JS
+    reference) expect that run re-nested into a parent/child chain before
+    rendering -- without it, a shape's own local attribute override
+    (stored as a flat *trailing* sibling, not a preceding one) was
+    silently ignored. Confirmed with a minimal real repro
+    (`AWDocs/TestDocs/TestDocs/BlueRect,d94` rendering black instead of
+    blue) and is the same root cause behind a large stray-looking black
+    rectangle seen in an early real CD-cover test picture.
+  - "Registration Black" (`ColourIndex(0xFFFFFFFE)`, `Colour_RegBlack` in
+    the original ArtWorks source) was resolved as a literal direct BGR
+    colour (near-white) instead of the solid-black sentinel it actually
+    is -- confirmed against `AWDocs/TestDocs/RegistrationBlackRect,d94`
+    and the real "Shit Creek" corpus picture (77 uses, previously
+    rendering near-white text/line art).
+  - Text (`TextRecord`/`CharacterRecord`) rendered as real SVG `<text>`
+    glyphs for the first time -- the field layout wasn't documented
+    anywhere available, so it was reverse-engineered directly against
+    "Shit Creek" (see the module's own docstring for the full derivation:
+    position/count/angle fields, and the character code's low byte being
+    the real character with unrelated garbage in the high bits).
+* **DrawFile JPEG objects (type 16)** — not in the primary PRM source
+  this project checks against (it predates RISC OS 3.6); reverse-engineered
+  against a real RISC OS Paint-produced file and documented in the
+  `riscos-output` skill's own `drawfile-format.md`. Embedded as a data:
+  URI `<image>` in SVG, and a real `/DCTDecode` Image XObject in PDF (the
+  first image-embedding code in `pdfdoc.py`; added the `/XObject` page
+  resource plumbing this needed).
+* **Sprite pixel decoding (third-party `riscos_sprites` decoder, from
+  `github.com/gerph/riscos-dumpsprites`, `sprites-png-conversion` branch,
+  optional `sprites` extra -- not yet published to PyPI)** — real pixel
+  decoding for both top-level Sprite pictures and Sprite objects embedded
+  within a DrawFile, in both SVG (`<img>` PNG data URI) and PDF (Indexed/
+  RGB Image XObject, with colour-key `/Mask` or a real `/SMask` for
+  genuine alpha). Found and fixed two real gaps upstream in
+  `riscos-dumpsprites` too (own branch, not yet merged): `SpriteFile` had
+  no `from_bytes()` (only a real-file `parse()`), and there was no way to
+  get raw decoded pixel bytes without going through a full PNG file
+  (`raw_scanline_bytes()`, needed for the PDF path). Also fixed a real,
+  separate pre-existing bug in this project's own `formats/sprite.py`:
+  `SpriteArea.from_bytes()` read the sprite-area header at the
+  *in-memory* control-block offsets, not the *on-disk* file offsets a
+  real file actually uses -- confirmed against `riscos-dumpsprites`' own
+  test fixture.
+
+Not attempted in this stage -- see Stage 17 below for tracking: ArtWorks
+rendering in PDF (SVG only so far), ArtWorks blend interpolation, ArtWorks
+distortion/perspective, ArtWorks' own embedded sprites, EPS content
+rendering, DrawFile dash patterns.
+
+### Stage 17 — Known gaps and follow-ups
+
+A survey of every `unsupported`/`best_effort` log call site plus the
+open items noted during Stage 16, turned into a tracked checklist so
+they don't just live in conversation history. Picked up one functional
+area at a time, each with its own commit(s); ArtWorks gets its own
+sub-checklist since it's the area most likely to grow piecemeal.
+
+- [ ] **Non-decimal numbering styles.** All five converters (`ovprodll.py`,
+  `html_scrolling.py`, `html_paged.py`, `pdfdoc.py`, `markdown.py`) only
+  implement `NumberingStyle.DECIMAL`; any other style (Roman numerals,
+  alphabetic, ...) silently renders as an empty string, logged
+  `unsupported` each time it happens.
+  - **Example documents needed:** nothing in `corpus/` currently uses a
+    non-decimal numbering style for chapters, pages, or lists -- this
+    needs a real (or purpose-built, like `TestImp,bc5`) document
+    exercising Roman-numeral and alphabetic numbering before this can be
+    verified against real behaviour rather than just the DDL source's own
+    documented styles. Flagged for the user to supply/create one.
+
+- [ ] **ArtWorks pictures in PDF output.** SVG rendering (Stage 16) never
+  reached `pdfdoc.py` -- `_draw_picture_content`'s ArtWorks branch is
+  still the placeholder box. Sub-checklist, ticked off as each piece
+  lands (mirroring what SVG already covers):
+  - [ ] Path/rectangle/ellipse/rounded-rectangle geometry, flat fill/stroke
+  - [ ] Linear/radial gradient fills
+  - [ ] Text (`TextRecord`/`CharacterRecord`)
+  - [ ] Blends (depends on the SVG/PDF blend-interpolation items below
+    landing first, so the same interpolated geometry can be reused rather
+    than re-derived independently for PDF)
+
+- [ ] **ArtWorks blend interpolation — SVG.** Blend keyframes are marked
+  invisible by design (a correct renderer interpolates `blend_steps`
+  between them); currently nothing is drawn where a blend would be.
+  Confirmed against the real "Shit Creek" corpus picture (sky gradient,
+  building shadow both missing) -- that picture is real, already-committed
+  test material for this, no new example needed for the *basic* case.
+  - **Example documents wanted anyway:** no dedicated blend test file
+    exists yet in `AWDocs/TestDocs` (checked both `TestDocs/` and the
+    older nested `TestDocs/TestDocs/` -- neither has one; there are
+    gradient-fill examples there, `RectWhiteLeftToBlackRight[Radial],d94`,
+    but a gradient *fill* and a *blend* are different ArtWorks features).
+    A small, deliberately simple two-shape blend (matching the style of
+    the other `TestDocs` fixtures) would make this easier to verify in
+    isolation from "Shit Creek"'s own more complex real-world blends.
+
+- [ ] **ArtWorks blend interpolation — PDF.** Depends on the SVG item
+  above landing first (same interpolation logic, different emitter).
+
+- [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
+  structurally but the distortion itself isn't applied to the content
+  inside one.
+
+- [ ] **ArtWorks' own embedded sprites (`SpriteRecord`).** Not decoded at
+  all -- falls through to structural-only recursion. Real Sprite pixel
+  decoding is wired up everywhere else now (Stage 16), so this is
+  mechanically straightforward once there's something to verify it
+  against.
+  - **Example documents needed:** every ArtWorks picture available so
+    far (the CD-cover and "Shit Creek" corpus pictures) has
+    `sprite_area_offset == -1` and zero `SpriteRecord`s -- there is
+    currently no real file to check a SpritePool-format wiring against,
+    so this hasn't been attempted rather than guessed at. Flagged for the
+    user to supply one if/when available.
+
+- [ ] **EPS content rendering.** Always a placeholder box in both HTML
+  and PDF; PDF at least attaches the raw EPS as an embedded file (no
+  reliable native PDF EPS-rendering mechanism exists), HTML has no
+  equivalent mechanism at all.
+
+- [ ] **Dash patterns on DrawFile paths — HTML.** Parsed but not
+  honoured; rendered solid.
+
+- [ ] **Dash patterns on DrawFile paths — PDF.** Same gap, PDF side.
 
 ## Verification per stage
 
