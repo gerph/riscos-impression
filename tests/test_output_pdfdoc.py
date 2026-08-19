@@ -3163,13 +3163,24 @@ def test_artworks_pdf_pathified_character_renders_its_own_glyph_outline_not_tf_t
 
     converter = PDFConverter(None)
     converter._content = []
+    converter._font_resource_name = {"Helvetica": "F1"}
     style = dict(_DEFAULT_STYLE)
     converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
     content = "".join(converter._content)
 
     assert " m\n" in content  # the glyph outline's own path ops
-    assert "Tf " not in content
-    assert "Tj" not in content
+    # An invisible (Tr 3) text run carries the real letter for
+    # copy/search/accessibility, restored to visible (0 Tr) afterwards
+    # so it can't leak into later text -- see
+    # _artworks_pdf_emit_invisible_text's own docstring.
+    assert "3 Tr" in content
+    assert "(A) Tj" in content
+    assert "0 Tr ET" in content
+    # No *visible* Tf/Tj pair (the old substitute-font fallback) --
+    # only the invisible run's own Tf/Tj, inside its own BT/ET block
+    # together with "3 Tr".
+    assert content.count("Tf ") == 1
+    assert content.count("BT") == 1
 
 
 def test_artworks_pdf_picture_applies_xshift_yshift_and_xscale_yscale(tmp_path):

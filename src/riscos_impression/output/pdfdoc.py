@@ -2973,6 +2973,7 @@ class PDFConverter(Converter):
             # when no such outline exists.
             for glyph_path in glyph_paths:
                 self._artworks_pdf_emit(glyph_path, style, artwork, to_pt, scale, notes)
+            self._artworks_pdf_emit_invisible_text(record, style, char, to_pt, scale)
             return
         font_size_pt = style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS * scale
         if font_size_pt <= 0.1:
@@ -2991,6 +2992,43 @@ class PDFConverter(Converter):
             f"{colour_op}BT /{self._font_resource_name[pdf_font]} {_fmt(font_size_pt)} Tf "
             f"{_fmt(cos_a)} {_fmt(sin_a)} {_fmt(-sin_a)} {_fmt(cos_a)} {_fmt(x)} {_fmt(y)} Tm "
             f"{_pdf_str(chr(char))} Tj ET\n"
+        )
+
+    def _artworks_pdf_emit_invisible_text(self, record, style: dict, char: int, to_pt, scale: float) -> None:
+        """A pathified character already draws as a real vector outline
+        (see the caller above), which most PDF viewers can't select or
+        search the way ordinary text glyphs can. Emits the character's
+        own real letter as an invisible text run (PDF's own `Tr 3`
+        text-rendering mode -- the same trick a scanned-and-OCR'd PDF
+        uses) positioned exactly where the substitute-font glyph below
+        would have gone, so copy/search/accessibility work over the
+        outline without changing anything visible: `Tr 3` paints
+        nothing at all, only occupying space for hit-testing/selection
+        purposes. Position/size reuse the record's own already-decoded
+        origin (`unknown_values[0:2]`) and font_size the same way the
+        substitute-font path just below does -- not a new guess, since
+        that position/size is exactly what this same character would
+        have been drawn at before being pathified, so it already lines
+        up with the outline's own natural position closely enough to
+        select sensibly.
+
+        `Tr` is text *state*, not reset by `ET`/`BT` (matching this
+        file's own established `Tz` precedent) -- explicitly restored
+        to `0` (fill, the default visible mode) afterwards so it can't
+        leak into later, unrelated text elsewhere on the page."""
+        if len(record.unknown_values) < 2:
+            return
+        font_size_pt = style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS * scale
+        if font_size_pt <= 0.1:
+            return
+        x, y = to_pt(record.unknown_values[0], record.unknown_values[1])
+        pdf_font = _standard_font_for(style["font_name"], bold=False, italic=False)
+        angle_rad = math.radians(style["text_angle"])
+        cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
+        self._content.append(
+            f"BT 3 Tr /{self._font_resource_name[pdf_font]} {_fmt(font_size_pt)} Tf "
+            f"{_fmt(cos_a)} {_fmt(sin_a)} {_fmt(-sin_a)} {_fmt(cos_a)} {_fmt(x)} {_fmt(y)} Tm "
+            f"{_pdf_str(chr(char))} Tj 0 Tr ET\n"
         )
 
     @staticmethod

@@ -2642,25 +2642,46 @@ sub-checklist since it's the area most likely to grow piecemeal.
   pathified glyph still falls back correctly). Full suite (482 tests)
   passes.
 
-- [ ] **PDF: an invisible selectable/searchable text layer behind
-  pathified ArtWorks glyphs.** User idea, not yet started: PDF viewers
-  let you select/search text that isn't actually drawn as glyphs at
-  all -- the same trick a scanned-and-OCR'd PDF uses, an invisible text
-  run (`Tr 3`, the "invisible" text-rendering mode) positioned over or
-  behind whatever *is* visually rendered. Since a pathified character
-  (see the item above) already carries both the real `CharacterRecord`
+- [x] **PDF: an invisible selectable/searchable text layer behind
+  pathified ArtWorks glyphs.** User idea. PDF viewers let you select/
+  search text that isn't actually drawn as glyphs at all -- the same
+  trick a scanned-and-OCR'd PDF uses, an invisible text run (`Tr 3`,
+  the "invisible" text-rendering mode) positioned over or behind
+  whatever *is* visually rendered. Since a pathified character (see
+  the item above) already carries both the real `CharacterRecord`
   (the actual letter, still perfectly readable) and its own drawn
-  outline, the same trick applies directly here: emit each pathified
-  character's own real text run in `Tr 3` mode, at the same position
-  the outline already occupies, so the PDF stays visually identical but
-  gains copy/search/accessibility support the vector outline alone
-  can't provide. Not attempted yet -- needs its own investigation into
-  positioning a `Tr 3` run so it lines up with the *visual* glyph
-  outline closely enough to select sensibly (the outline's own natural
-  size/position, not the substitute font's metrics), and into whether
-  the same trick is worth applying to DrawFile text objects too (their
-  own real string is always present already, unlike ArtWorks' own
-  per-character-only records).
+  outline, the same trick applies directly here.
+
+  `_artworks_pdf_emit_character`'s own pathified branch now calls a
+  new `_artworks_pdf_emit_invisible_text` after drawing the outline:
+  `BT 3 Tr /F<n> <size> Tf <rotation matrix> Tm (<char>) Tj 0 Tr ET`,
+  reusing the *same* position (`unknown_values[0:2]`) and font size
+  (`style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS * scale`) the
+  substitute-font fallback path just below already uses -- not a new
+  guess, since that's exactly what this same character would have
+  been drawn at before being pathified, so it already lines up with
+  the outline's own natural position closely enough to select
+  sensibly. `Tr` is text *state*, not reset by `ET`/`BT` (matching
+  this file's own established `Tz` precedent), so it's explicitly
+  restored to `0` (visible) afterwards to avoid leaking into later,
+  unrelated text elsewhere on the page.
+
+  Verified two ways: visually, rasterising corpus/TestDoc,bc5's own
+  "Shit Creek" picture (whose signage text is pathified) shows no
+  change at all -- confirming the run really is invisible; and via
+  PyMuPDF's own text extraction on the same PDF, which previously
+  returned nothing at all for that picture's own text and now returns
+  the real strings ("PADDLE SALE TODAY", "Cancelled", "Sold Out",
+  "You are now entering", "SHIT CREEK", "Twinned with Johnathan Creek,
+  England") -- genuine copy/search support gained with zero visual
+  change.
+
+  Kept PDF-only, matching the item's own original framing -- not
+  extended to DrawFile text objects (their own real string is always
+  present already and drawn as ordinary visible text, not pathified,
+  so there's no missing-selectability gap to close there) or to SVG
+  output (browsers/SVG viewers don't have an equivalent invisible-but-
+  selectable text-rendering mode the way PDF's `Tr 3` provides).
 
 - [x] **ArtWorks pictures ignored their own frame's xshift/yshift/
   xscale/yscale placement (both SVG and PDF).** The user noticed a real
