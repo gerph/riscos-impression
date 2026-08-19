@@ -388,15 +388,18 @@ def _interpolate_path(start_path: tuple, end_path: tuple, t: float) -> Optional[
     return tuple(result)
 
 
-def _interpolate_colour_index(bgr_a: Optional[int], bgr_b: Optional[int], t: float) -> Optional[ColourIndex]:
-    """Linearly interpolates two resolved BGR colour words in RGB
-    space (matching riscos-artworks-js's own blend-groups research
-    notes: colours "appear to be linearly interpolated in RGB space"),
-    re-wrapped as a direct-colour ColourIndex (bit 24 set, per that
-    class's own docstring) ready to feed back through the normal
-    style/_colour_css machinery. None (fully transparent/unresolved) on
-    either end can't be meaningfully blended towards a colour, so
-    returns None -- callers fall back to a discrete keyframe choice."""
+def _interpolate_colour_index(bgr_a: Optional[int], bgr_b: Optional[int], t: float) -> Optional[int]:
+    """Linearly interpolates two already-resolved preview colour words
+    (bits 0-7 red, 8-15 green, 16-23 blue -- see resolve_colour's own
+    docstring) in RGB space (matching riscos-artworks-js's own
+    blend-groups research notes: colours "appear to be linearly
+    interpolated in RGB space"), returning another word in the same
+    convention, ready to store straight back into a style dict via
+    _resolve_style_colour -- see that function's own docstring for why
+    this can't just be re-wrapped as a direct ColourIndex and resolved
+    again the normal way. None (fully transparent/unresolved) on either
+    end can't be meaningfully blended towards a colour, so returns
+    None -- callers fall back to a discrete keyframe choice."""
     if bgr_a is None or bgr_b is None:
         return None
     ra, ga, ba = bgr_a & 0xFF, (bgr_a >> 8) & 0xFF, (bgr_a >> 16) & 0xFF
@@ -404,7 +407,31 @@ def _interpolate_colour_index(bgr_a: Optional[int], bgr_b: Optional[int], t: flo
     r = round(ra + (rb - ra) * t)
     g = round(ga + (gb - ga) * t)
     b = round(ba + (bb - ba) * t)
-    return ColourIndex(0x01000000 | (b << 16) | (g << 8) | r)
+    return 0x20000000 | (b << 16) | (g << 8) | r
+
+
+def _resolve_style_colour(artwork: ArtWorks, colour) -> Optional[int]:
+    """Resolves a style dict's own stroke/fill_colour entry to a
+    preview colour word, the same way artwork.resolve_colour() does --
+    except when *colour* is already a plain ``int`` (not a
+    ``ColourIndex``), in which case it's returned as-is.
+
+    A blend keyframe's own interpolated colour (see
+    _interpolate_colour_index) is stored back into the style dict as
+    exactly this: an already-resolved preview word, not a document
+    ColourIndex re-wrapped as a "direct" (>= 0x01000000) reference the
+    normal way. Re-resolving it the normal way would run it back
+    through ColourIndex's own K/C/M/Y CMYK decode a second time, which
+    is not just wrong but sometimes impossible to invert correctly --
+    pure white (255, 255, 255) needs every one of C/M/Y at 0 (no ink at
+    all), which always leaves the top byte 0 too and so no longer
+    satisfies ColourIndex.is_direct, regardless of which byte doubles
+    as which channel."""
+    if colour is None:
+        return None
+    if isinstance(colour, ColourIndex):
+        return artwork.resolve_colour(colour)
+    return colour
 
 
 def _escape_xml_text(text: str) -> str:
@@ -856,12 +883,12 @@ class _SvgBuilder:
         return "".join(attrs)
 
     def _stroke_css(self, style: dict) -> str:
-        return _colour_css(self.artwork.resolve_colour(style["stroke"]))
+        return _colour_css(_resolve_style_colour(self.artwork, style["stroke"]))
 
     def _fill_css(self, style: dict) -> str:
         fill_type = style["fill_type"]
         if fill_type == FillType.FLAT:
-            return _colour_css(self.artwork.resolve_colour(style["fill_colour"]) if style["fill_colour"] else None)
+            return _colour_css(_resolve_style_colour(self.artwork, style["fill_colour"]) if style["fill_colour"] else None)
         if fill_type in (FillType.LINEAR, FillType.RADIAL):
             return self._gradient_fill(style, radial=fill_type == FillType.RADIAL)
         return "none"
@@ -895,7 +922,7 @@ class _SvgBuilder:
         return f"url(#{fill_id})"
 
     def _resolve_optional(self, colour: Optional[ColourIndex]):
-        return self.artwork.resolve_colour(colour) if colour is not None else None
+        return _resolve_style_colour(self.artwork, colour)
 
 
 def artworks_to_svg(artwork: ArtWorks, sprite_to_png: Optional[SpriteToPng] = None) -> str:

@@ -204,6 +204,7 @@ try:
         WindingRuleRecord,
         _interpolate_colour_index,
         _interpolate_path,
+        _resolve_style_colour,
         artworks_svg_fragment,
     )
 except ImportError:  # pragma: no cover - exercised by CI without the extra
@@ -2886,7 +2887,7 @@ class PDFConverter(Converter):
         return ((bgr & 0xFF) / 255.0, ((bgr >> 8) & 0xFF) / 255.0, ((bgr >> 16) & 0xFF) / 255.0)
 
     def _artworks_pdf_stroke_rgb(self, style: dict, artwork) -> Optional[tuple[float, float, float]]:
-        return self._artworks_pdf_rgb(artwork.resolve_colour(style["stroke"]))
+        return self._artworks_pdf_rgb(_resolve_style_colour(artwork, style["stroke"]))
 
     def _artworks_pdf_fill_rgb(self, style: dict, artwork, notes: list[str]) -> Optional[tuple[float, float, float]]:
         """The *flat* fallback colour for a fill -- used directly for
@@ -2897,7 +2898,7 @@ class PDFConverter(Converter):
         fill_type = style["fill_type"]
         if fill_type == FillType.FLAT:
             colour = style["fill_colour"]
-            return self._artworks_pdf_rgb(artwork.resolve_colour(colour) if colour else None)
+            return self._artworks_pdf_rgb(_resolve_style_colour(artwork, colour) if colour else None)
         if fill_type in (FillType.LINEAR, FillType.RADIAL):
             notes.append(
                 "an ArtWorks gradient fill with an unresolvable colour or gradient "

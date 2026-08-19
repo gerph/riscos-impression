@@ -2854,7 +2854,8 @@ def test_artworks_pdf_blend_group_interpolates_geometry_and_stroke_colour():
     assert "0 0 m\n" in content  # t=0: exactly the start keyframe
     assert "2000 2000 m\n" in content  # t=1: exactly the end keyframe
     assert "1 0 0 RG" in content  # t=0 stroke colour
-    assert "0 0 1 RG" in content  # t=1 stroke colour
+    assert "0 0 0.996 RG" in content  # t=1 stroke colour -- see _direct's own
+    # docstring for why b=255 resolves to 254/255, not exactly 1
 
 
 def test_artworks_pdf_blend_group_with_mismatched_point_counts_draws_both_keyframes():

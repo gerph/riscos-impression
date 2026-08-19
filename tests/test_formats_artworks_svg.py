@@ -68,10 +68,22 @@ def _list(*records):
 
 
 def _direct(r, g, b):
-    """A direct (non-palette-indexed) ColourIndex -- values below
-    0x01000000 are palette *indices*, not colours (see
-    riscos_artworks.model.ColourIndex.is_indexed/is_direct)."""
-    return ColourIndex(0x01000000 | (b << 16) | (g << 8) | r)
+    """A direct (non-palette-indexed) ColourIndex resolving to
+    approximately (r, g, b) -- values below 0x01000000 are palette
+    *indices*, not colours (see
+    riscos_artworks.model.ColourIndex.is_indexed/is_direct).
+
+    Packs (r, g, b) as K=0, C=255-r, M=255-g, Y=255-b, matching real
+    ArtWorks' own on-disk encoding (see ColourIndex's own docstring for
+    how that was confirmed) -- except b=255 is clamped down to a Y of 1
+    rather than 0, since a real direct colour can't have Y=0 at all
+    (its word would then read as an indexed reference instead, given
+    Y sits in the top byte); this makes b=255 resolve to 254, one below
+    what was asked for. That's a genuine limitation of the real format,
+    not a decoder bug, so tests requesting rgb(0, 0, 255) or (255, 255,
+    255) expect 254 in the blue channel instead."""
+    c, m, y = 255 - r, 255 - g, max(1, 255 - b)
+    return ColourIndex((y << 24) | (m << 16) | (c << 8))
 
 
 def _square_path(*, filled=True):
@@ -110,7 +122,7 @@ def test_flat_filled_path_renders_as_svg_path_with_resolved_colour():
     svg = artworks_to_svg(artwork)
 
     assert "<path d=\"M0,0L1000,0L1000,1000L0,1000Z\"" in svg
-    assert 'fill="rgb(0,0,255)"' in svg
+    assert 'fill="rgb(0,0,254)"' in svg
 
 
 def test_path_without_the_filled_flag_ignores_the_propagated_fill():
@@ -125,7 +137,7 @@ def test_path_without_the_filled_flag_ignores_the_propagated_fill():
 
     assert "<path" in svg
     assert 'fill="none"' in svg
-    assert 'fill="rgb(0,0,255)"' not in svg
+    assert 'fill="rgb(0,0,254)"' not in svg
 
 
 def test_hidden_object_is_not_drawn():
@@ -225,7 +237,7 @@ def test_linear_gradient_fill_adds_a_definition_and_references_it():
     assert "<path" in svg
     assert "<linearGradient" in svg
     assert 'stop-color="rgb(255,0,0)"' in svg
-    assert 'stop-color="rgb(0,0,255)"' in svg
+    assert 'stop-color="rgb(0,0,254)"' in svg
     assert "fill=\"url(#linear-gradient-1)\"" in svg
 
 
@@ -270,7 +282,7 @@ def test_artworks_svg_fragment_matches_artworks_to_svgs_own_viewbox_and_content(
     assert height_pt == "1"
     assert "<defs>" in inner
     assert '<g transform="scale(1,-1)">' in inner
-    assert 'fill="rgb(0,0,255)"' in inner
+    assert 'fill="rgb(0,0,254)"' in inner
     # the fragment's own inner markup is exactly what artworks_to_svg()
     # wraps in its own outer <svg ...> tag -- same content, not a
     # separately-derived rendering.
@@ -303,7 +315,7 @@ def test_a_fill_set_in_one_top_level_list_is_seen_by_a_later_sibling_list():
 
     svg = artworks_to_svg(artwork)
 
-    assert 'fill="rgb(0,0,255)"' in svg
+    assert 'fill="rgb(0,0,254)"' in svg
 
 
 def test_a_trailing_local_fill_override_is_applied_to_the_object_before_it():
@@ -334,7 +346,7 @@ def test_a_trailing_local_fill_override_is_applied_to_the_object_before_it():
     svg = artworks_to_svg(artwork)
 
     assert "<path" in svg
-    assert 'fill="rgb(0,0,255)"' in svg
+    assert 'fill="rgb(0,0,254)"' in svg
     assert 'fill="rgb(0,0,0)"' not in svg
 
 
@@ -356,7 +368,7 @@ def test_a_trailing_local_override_does_not_leak_to_a_later_sibling_list():
 
     paths = svg.split("<path")[1:]
     assert len(paths) == 2
-    assert 'fill="rgb(0,0,255)"' in paths[0]
+    assert 'fill="rgb(0,0,254)"' in paths[0]
     assert 'fill="none"' in paths[1]  # no ambient default was ever set
 
 
@@ -568,8 +580,9 @@ def test_blend_group_interpolates_geometry_and_stroke_colour_between_keyframes()
     assert 'd="M0,0L1000,0L1000,1000L0,1000Z"' in svg  # t=0: exactly the start keyframe
     assert 'd="M2000,2000L2200,2000L2200,2200L2000,2200Z"' in svg  # t=1: exactly the end keyframe
     assert 'stroke="rgb(255,0,0)"' in svg  # t=0 stroke colour
-    assert 'stroke="rgb(0,0,255)"' in svg  # t=1 stroke colour
-    assert 'stroke="rgb(128,0,128)"' in svg  # t=0.5 midpoint stroke colour
+    assert 'stroke="rgb(0,0,254)"' in svg  # t=1 stroke colour
+    assert 'stroke="rgb(128,0,127)"' in svg  # t=0.5 midpoint stroke colour --
+    # (255,0,0) to (0,0,254) [see _direct's own docstring for why 254, not 255]
 
 
 def test_blend_group_with_mismatched_point_counts_draws_both_keyframes_as_is():
