@@ -2832,6 +2832,27 @@ sub-checklist since it's the area most likely to grow piecemeal.
   specifically, to pin down the intended resolved colour without
   further guessing.
 
+  Two more real examples chased a promising but ultimately different
+  lead: the user's own hunch that dragging a DrawFile into ArtWorks
+  might be what creates "anonymous" colours like this one.
+  `RO4Bugs,d94` (a real DrawFile-to-ArtWorks conversion) did show 9
+  garbled, seemingly-uninitialised trailing palette entries -- but a
+  second file, `FromDrawfileRGBCircles,d94`, showed conclusively that
+  this was our own decoder's bug, not ArtWorks leaving anonymous
+  colours behind: its palette's declared `count_word` (49) ran straight
+  past the 18 genuinely populated entries into unrelated later file
+  content (an entry at the boundary decoded as `"<Nothing>"`/`"Redo"`,
+  ArtWorks' own undo-stack labels). `control_word` (a second, separate
+  word in the same header) turned out to be the real, live count in
+  every file checked (17/18/72 exactly, vs the false 17/49/81
+  `count_word` gave) -- fixed upstream in riscos_artworks (branch
+  `fix/palette-count-is-control-word`), confirmed against the whole
+  27-file `AWDocs/TestDocs` corpus (zero garbage names anywhere now).
+  So: neither of these two files was the direct-colour-word bug after
+  all, but real DrawFile-to-ArtWorks conversion documents remain a
+  good place to keep looking, now that this particular false lead is
+  closed off.
+
 - [ ] **EPS content rendering.** Always a placeholder box in both HTML
   and PDF; PDF at least attaches the raw EPS as an embedded file (no
   reliable native PDF EPS-rendering mechanism exists), HTML has no
