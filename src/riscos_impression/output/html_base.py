@@ -1011,7 +1011,10 @@ class HTML5Converter(Converter):
         not min_y, precisely to compensate for it) -- see the two
         inline comments below for the derivation."""
         with self.catch("picture", location="ArtWorks rendering"):
-            viewbox, _native_width_pt, _native_height_pt, inner = artworks_svg_fragment(artwork)
+            def sprite_to_png(sprite_data: bytes) -> Optional[bytes]:
+                return sprite_area_to_png(wrap_single_sprite_as_area(sprite_data))
+            viewbox, _native_width_pt, _native_height_pt, inner = artworks_svg_fragment(
+                artwork, sprite_to_png)
             min_x, neg_max_y, width, height = (float(v) for v in viewbox.split())
             min_y = -neg_max_y - height
 

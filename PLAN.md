@@ -2716,8 +2716,8 @@ sub-checklist since it's the area most likely to grow piecemeal.
   structurally but the distortion itself isn't applied to the content
   inside one.
 
-- [ ] **ArtWorks' own embedded sprites (`SpriteRecord`).** Two sub-problems,
-  tracked separately since the first is now solved and the second isn't:
+- [x] **ArtWorks' own embedded sprites (`SpriteRecord`).** Three
+  sub-problems, all now solved:
   - [x] **Decoding the record without crashing.** A real picture
     (corpus/TestDoc,bc5's own "SVG logo") failed entirely --
     riscos_artworks raised "sprite palette count exceeds record". Fixed
@@ -2734,21 +2734,48 @@ sub-checklist since it's the area most likely to grow piecemeal.
     corpus/TestDoc,bc5 now decode without error (previously 2 of 5
     failed) -- verified in riscos-impression's own venv (an editable
     install of the fixed riscos_artworks).
-  - [ ] **Locating and rendering the sprite's own raw pixel data.**
-    Still open. The palette fix above only gets past the palette
-    itself; what follows it (before the sprite's own actual embedded
-    native-format pixel data begins) isn't reliably modelled yet -- an
-    unaccounted gap of varying size shows up in every real file checked
-    so far, between the end of the palette and where the sprite's own
-    native header can be found (located, so far, only by searching for
-    its own name string, not by any confirmed length/offset field).
-    Real Sprite pixel decoding (riscos_sprites) is already wired up
-    everywhere else in this project (Stage 16), so rendering itself
-    will be mechanically straightforward once the raw bytes can be
-    located reliably -- this is purely a "where do the bytes start"
-    problem. **Example documents wanted:** the user is gathering more
-    sprite examples to narrow this down further, the same way the
-    three files above resolved the palette-count question precisely.
+  - [x] **Locating the sprite's own raw pixel data.** Solved upstream
+    (riscos_artworks, branch `feature/sprite-record-raw-data`, on top of
+    the palette fix above). Five more real files the user supplied
+    specifically for this (`Sprite1BPP-lefthandwastae,d94`,
+    `Sprite2BPP-lefthandwastage,d94`, `Sprite4BPP-lethandwastage,d94`,
+    `SpriteManyFlame,d94` -- 8 sprites, `SpritesLots,d94` -- 23 sprites)
+    revealed the real structure: ArtWorks stores the pixel data for one
+    or more sibling `SpriteRecord`s together, once, in a single shared
+    RISC OS-format sprite area (a standard `[size, count, first_offset,
+    size]` control block) placed after all of their own metadata
+    blocks -- not per-record, and not at any fixed gap (the gap before
+    that area varied 48-56 bytes across the single-sprite examples, for
+    reasons not otherwise modelled). `riscos_artworks.SpriteRecord`
+    gained a new `data: bytes` field, resolved during decoding by
+    scanning forward for the shared area's own header and walking its
+    native sprite chain matching by name -- naturally handling the
+    multi-sprite case too, since every sibling record resolves against
+    the same shared area independently. Verified against all 7 example
+    files (23/23 sprites matched in `SpritesLots,d94`) and, in
+    riscos-impression, by round-tripping the two real embedded sprites
+    in `corpus/TestDoc,bc5` through
+    `wrap_single_sprite_as_area`/`sprite_area_to_png_image` into
+    correct, recognisable images.
+  - [x] **Rendering.** Wired into both converters: `formats/
+    artworks_svg.py` gained a `sprite_to_png` callback parameter
+    (`artworks_to_svg`/`artworks_svg_fragment`) rather than importing
+    riscos_impression's own Sprite/PNG modules directly, keeping that
+    module's own no-riscos_impression-dependency rule intact (see its
+    module docstring) -- `html_base.py`'s `_artworks_svg` supplies the
+    callback via `wrap_single_sprite_as_area`/`sprite_area_to_png`, and
+    the emitted `<image>` is wrapped in its own local counter-flip
+    `<g>` to cancel out the builder's outer `scale(1,-1)` (which is
+    correct for vector content but would otherwise flip a raster image
+    upside down). `output/pdfdoc.py`'s PDF converter (which walks
+    ArtWorks records directly rather than using the opaque SVG
+    fragment) reuses the same `_draw_sprite_image`/`_draw_placeholder`
+    pipeline a DrawFile-embedded Sprite object already uses. Verified
+    against corpus/TestDoc,bc5's own sprite-bearing picture in both PDF
+    (rasterised via PyMuPDF) and HTML output: the sprite now renders
+    with its mask correctly applied (the purple background showing
+    through, resolving the user's own original report from earlier in
+    this stage) alongside the JPEG on the same page.
 
 - [ ] **ArtWorks "direct" (non-indexed) colour words don't resolve
   correctly.** The user reported a real document (corpus/TestDoc,bc5's

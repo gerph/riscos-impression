@@ -360,14 +360,15 @@ def test_a_trailing_local_override_does_not_leak_to_a_later_sibling_list():
     assert 'fill="none"' in paths[1]  # no ambient default was ever set
 
 
-def test_sprite_record_draws_nothing():
-    # Sprites are deliberately out of scope: a separate project is
-    # expected to provide sprite handling, so a SpriteRecord just
-    # recurses into its own (typically empty) child_lists like any
-    # other not-yet-handled record type, drawing nothing of its own.
+def test_sprite_record_draws_nothing_without_a_sprite_to_png_callback():
+    # formats/artworks_svg.py stays free of any riscos_impression
+    # dependency (see the module docstring) -- without a caller-
+    # supplied sprite_to_png callback, a SpriteRecord contributes only
+    # its own bounding box, drawing nothing.
     sprite = _record(
         SpriteRecord, bbox=_bbox(0, 0, 1000, 1000),
         unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
+        data=b"",
     )
     artwork = _artwork((_list(sprite),))
 
@@ -375,6 +376,40 @@ def test_sprite_record_draws_nothing():
 
     assert "<rect" not in svg
     assert "<path" not in svg
+    assert "<image" not in svg
+
+
+def test_sprite_record_is_drawn_via_its_own_sprite_to_png_callback():
+    sprite = _record(
+        SpriteRecord, bbox=_bbox(0, 0, 1000, 1000),
+        unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
+        data=b"raw-native-sprite-bytes",
+    )
+    artwork = _artwork((_list(sprite),))
+    calls = []
+
+    def sprite_to_png(data: bytes):
+        calls.append(data)
+        return b"PNGDATA"
+
+    svg = artworks_to_svg(artwork, sprite_to_png)
+
+    assert calls == [b"raw-native-sprite-bytes"]
+    assert "<image" in svg
+    assert "base64,UE5HREFUQQ==" in svg  # base64("PNGDATA")
+
+
+def test_hidden_sprite_record_is_not_drawn_even_with_a_sprite_to_png_callback():
+    sprite = _record(
+        SpriteRecord, bbox=_bbox(0, 0, 1000, 1000), control_word=0,
+        unknown_24=0, name=DecodedString("photo", b"photo", b""), unknown_values=(), palette=(),
+        data=b"raw-native-sprite-bytes",
+    )
+    artwork = _artwork((_list(sprite),))
+
+    svg = artworks_to_svg(artwork, lambda data: b"PNGDATA")
+
+    assert "<image" not in svg
 
 
 def test_visible_blend_path_keyframe_is_drawn_like_a_plain_path():

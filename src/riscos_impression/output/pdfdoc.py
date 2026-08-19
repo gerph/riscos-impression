@@ -196,6 +196,7 @@ try:
         FontNameRecord,
         FontSizeRecord,
         JoinStyleRecord,
+        SpriteRecord,
         StartCapRecord,
         StrokeColourRecord,
         StrokeWidthRecord,
@@ -2590,8 +2591,37 @@ class PDFConverter(Converter):
             self._artworks_pdf_emit_character(record, style, artwork, to_pt, scale, notes)
         elif isinstance(record, BlendGroupRecord):
             self._artworks_pdf_process_blend_group(record, style, artwork, to_pt, scale, notes)
+        elif isinstance(record, SpriteRecord):
+            self._artworks_pdf_emit_sprite(record, to_pt, notes)
         else:
             self._artworks_pdf_process_lists(record.child_lists, dict(style), artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_emit_sprite(self, record, to_pt, notes: list[str]) -> None:
+        """PDF counterpart of formats/artworks_svg.py's own
+        _emit_sprite -- record.data is already a single native sprite
+        record with any shared-area wrapper stripped (see
+        riscos_artworks.SpriteRecord's own docstring), so this reuses
+        the same wrap_single_sprite_as_area/sprite_area_to_png_image/
+        _draw_sprite_image pipeline a DrawFile-embedded Sprite object
+        already uses (see _draw_drawfile_object's own DrawSprite
+        branch)."""
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        box = record.bounding_box
+        sx0, sy0 = to_pt(box.min_x, box.min_y)
+        sx1, sy1 = to_pt(box.max_x, box.max_y)
+        x0, x1 = min(sx0, sx1), max(sx0, sx1)
+        y0, y1 = min(sy0, sy1), max(sy0, sy1)
+        image = sprite_area_to_png_image(wrap_single_sprite_as_area(record.data)) if record.data else None
+        if image is not None:
+            self._draw_sprite_image(image, x0, y0, x1, y1)
+        else:
+            self._draw_placeholder(x0, y0, x1, y1, "Sprite")
+            notes.append(
+                "a sprite embedded within an ArtWorks picture is drawn as a "
+                "placeholder box; the optional 'sprites' extra (riscos_sprites) is "
+                "not installed, or the sprite failed to decode"
+            )
 
     def _artworks_pdf_process_blend_group(self, group, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
         """PDF counterpart of formats/artworks_svg.py's own

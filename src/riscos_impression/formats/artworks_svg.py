@@ -158,15 +158,21 @@ open research problem for that sibling project, not something to
 guess at here -- both keyframes are drawn as-is instead (closer to the
 real appearance than drawing nothing, the previous behaviour).
 
-Sprites are deliberately out of scope here too: a SpriteRecord falls
-through to the generic default case below (recursed into structurally,
-drawing nothing of its own) rather than getting a placeholder -- a
-separate project is expected to provide sprite handling, so this
-module doesn't attempt even a placeholder for one."""
+A SpriteRecord's own raw pixel data (riscos_artworks.SpriteRecord.data,
+resolved from ArtWorks's own shared native sprite area -- see that
+package's own docstring) still needs real Sprite decoding to turn into
+an `<image>`, which would break this module's own no-riscos_impression-
+dependency rule above. Rather than import riscos_impression.formats.sprite*
+directly, callers pass in an optional `sprite_to_png` callback (raw
+native sprite bytes -> PNG bytes, or None) -- see artworks_to_svg()/
+artworks_svg_fragment(). With no callback (or a sprite that fails to
+decode/has no data), a SpriteRecord still contributes its own bounding
+box to the picture's overall extent but draws nothing."""
 
 from __future__ import annotations
 
-from typing import Optional
+import base64
+from typing import Callable, Optional
 
 from riscos_artworks import (
     ArtWorks,
@@ -203,8 +209,13 @@ from riscos_artworks import (
     CharacterRecord,
     FontNameRecord,
     FontSizeRecord,
+    SpriteRecord,
     denormalise,
 )
+
+#: Raw native sprite bytes (riscos_artworks.SpriteRecord.data) -> PNG
+#: bytes, or None if it can't be decoded -- see the module docstring.
+SpriteToPng = Callable[[bytes], Optional[bytes]]
 
 #: ArtWorks' own native unit -> "user units" (this project's own
 #: convention: CSS/PDF points, 72 per inch, matching every other
@@ -414,8 +425,9 @@ def _font_family_css_for_name(font_name: Optional[str]) -> str:
 
 
 class _SvgBuilder:
-    def __init__(self, artwork: ArtWorks):
+    def __init__(self, artwork: ArtWorks, sprite_to_png: Optional[SpriteToPng] = None):
         self.artwork = artwork
+        self.sprite_to_png = sprite_to_png
         self.objects: list[str] = []
         self.definitions: dict[str, str] = {}
         self._next_fill_id = 1
@@ -518,15 +530,45 @@ class _SvgBuilder:
             self._emit_character(record, style)
         elif isinstance(record, BlendGroupRecord):
             self.process_blend_group(record, style)
+        elif isinstance(record, SpriteRecord):
+            self._emit_sprite(record)
         else:
-            # Group/layer/blend/distortion/sprite and anything else
-            # not drawn directly: descend into its own children with a
-            # scoped copy of the current style, matching
-            # riscos-artworks-js's own default case. Sprites are
-            # deliberately skipped rather than given a placeholder --
-            # see the module docstring: a separate project is expected
-            # to provide sprite handling.
+            # Group/layer/blend/distortion and anything else not drawn
+            # directly: descend into its own children with a scoped
+            # copy of the current style, matching riscos-artworks-js's
+            # own default case.
             self.process_lists(record.child_lists, dict(style))
+
+    def _emit_sprite(self, record: SpriteRecord) -> None:
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        box = record.bounding_box
+        self._merge_bbox(box)
+        if self.sprite_to_png is None or not record.data:
+            return
+        png = self.sprite_to_png(record.data)
+        if png is None:
+            return
+        # The <image> element's own pixel content is naturally top-down
+        # (y increasing downward); this builder's whole output already
+        # lives inside one outer `<g transform="scale(1,-1)">` (see
+        # build_fragment) so every *vector* object, emitted directly in
+        # native Y-up coordinates, comes out the right way up -- but
+        # that same outer flip would turn a raster image upside down.
+        # Countered here with a second, local flip scoped to just this
+        # <image>, cancelling the outer one out for its own content
+        # while still placing it at the record's own native bounding
+        # box (the same double-flip trick output/html_base.py's own
+        # _artworks_svg uses to anchor an ArtWorks picture as a whole).
+        width = box.max_x - box.min_x
+        height = box.max_y - box.min_y
+        encoded = base64.b64encode(png).decode("ascii")
+        self.objects.append(
+            f'<g transform="translate(0,{_fmt(box.min_y + box.max_y)}) scale(1,-1)">'
+            f'<image x="{_fmt(box.min_x)}" y="{_fmt(box.min_y)}" '
+            f'width="{_fmt(width)}" height="{_fmt(height)}" '
+            f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/></g>'
+        )
 
     def process_text(self, record: Record, style: dict) -> None:
         # A TextRecord draws nothing of its own -- its own child_lists
@@ -856,14 +898,18 @@ class _SvgBuilder:
         return self.artwork.resolve_colour(colour) if colour is not None else None
 
 
-def artworks_to_svg(artwork: ArtWorks) -> str:
+def artworks_to_svg(artwork: ArtWorks, sprite_to_png: Optional[SpriteToPng] = None) -> str:
     """A standalone SVG document reproducing *artwork*'s own visible
     content -- see the module docstring for the rendering algorithm and
-    its known gaps."""
-    return _SvgBuilder(denormalise(artwork)).build()
+    its known gaps. *sprite_to_png* is an optional callback (raw native
+    sprite bytes -> PNG bytes, or None) a caller passes in to render any
+    embedded SpriteRecords -- see the module docstring; with none given,
+    embedded sprites contribute only their own bounding box."""
+    return _SvgBuilder(denormalise(artwork), sprite_to_png).build()
 
 
-def artworks_svg_fragment(artwork: ArtWorks) -> tuple[str, str, str, str]:
+def artworks_svg_fragment(artwork: ArtWorks,
+                          sprite_to_png: Optional[SpriteToPng] = None) -> tuple[str, str, str, str]:
     """Like artworks_to_svg(), but returns the artwork's own native
     (viewbox, width_pt, height_pt, inner_markup) separately rather than
     one standalone `<svg>...</svg>` document -- for a caller (e.g. a
@@ -873,4 +919,4 @@ def artworks_svg_fragment(artwork: ArtWorks) -> tuple[str, str, str, str]:
     viewport. *inner_markup* is `<defs>...</defs><g transform=
     "scale(1,-1)">...</g>` -- everything artworks_to_svg() would put
     inside its own outer `<svg>` tag."""
-    return _SvgBuilder(denormalise(artwork)).build_fragment()
+    return _SvgBuilder(denormalise(artwork), sprite_to_png).build_fragment()
