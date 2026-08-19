@@ -2458,10 +2458,15 @@ sub-checklist since it's the area most likely to grow piecemeal.
     let this be checked against actual behaviour too. Flagged for the
     user to supply/create one.
 
-- [ ] **ArtWorks pictures in PDF output.** SVG rendering (Stage 16) never
-  reached `pdfdoc.py` -- `_draw_picture_content`'s ArtWorks branch is
+- [x] **ArtWorks pictures in PDF output.** SVG rendering (Stage 16) never
+  reached `pdfdoc.py` -- `_draw_picture_content`'s ArtWorks branch was
   still the placeholder box. Sub-checklist, ticked off as each piece
-  lands (mirroring what SVG already covers):
+  landed (mirroring what SVG already covers). Now complete: geometry/
+  fill/stroke/gradients/text/blends (below), embedded sprites (own
+  item, "ArtWorks' own embedded sprites"), embedded JPEGs (own item,
+  "Embedded JPEG records"), and direct-colour CMYK resolution (own
+  item, the `0xFFFF9C00`/`0xFFFF9900` mystery) all land in both SVG and
+  PDF output now.
   - [x] Path/rectangle/ellipse/rounded-rectangle geometry, flat fill/stroke.
     `_draw_artworks_picture` and its `_artworks_pdf_*` walker methods in
     `pdfdoc.py` mirror `formats/artworks_svg.py`'s `_SvgBuilder` record-tree
@@ -2821,6 +2826,34 @@ sub-checklist since it's the area most likely to grow piecemeal.
     with its mask correctly applied (the purple background showing
     through, resolving the user's own original report from earlier in
     this stage) alongside the JPEG on the same page.
+
+- [x] **Embedded JPEG records (`JpegRecord`, type `0x6D`).** The user
+  reported two of three images on a real document's own page 1
+  (`NVMeFlyer,bc5`) missing entirely from PDF output; both are JPEGs
+  embedded within an ArtWorks picture, a record type riscos_artworks
+  did not recognise at all -- decoded as two `UnknownRecord`s instead.
+  Fixed upstream in riscos_artworks: the record body closely mirrors
+  DrawFile's own embedded-JPEG object (one unknown word, pixel_width/
+  pixel_height, dpi_x/dpi_y, a 24-byte "corner" field reusing the same
+  3-point structure `EllipseRecord`/`RoundedRectangleRecord` call
+  "triangle", a standard 6-word transform matrix, a length word, then
+  the raw JPEG bytes themselves) -- confirmed against a real file
+  (`AWDocs/TestDocs/JPEG,d94`) two ways independently: pixel_width/
+  pixel_height match the embedded JPEG's own SOF0 marker exactly, and
+  dpi_x/dpi_y match its own JFIF APP0 density fields exactly. `data`
+  is the complete standalone JPEG file, no area wrapper to resolve
+  (unlike `SpriteRecord`).
+
+  Wired into both riscos-impression converters: `formats/
+  artworks_svg.py` gained `_emit_jpeg` -- needing no external decode
+  callback at all (unlike a sprite), just a base64 `data:` URI, reusing
+  `_emit_sprite`'s own local counter-flip `<g>` trick for the same
+  reason. `output/pdfdoc.py` gained `_artworks_pdf_emit_jpeg`, reusing
+  the existing `_jpeg_info`/DCTDecode Image XObject pipeline a
+  DrawFile-embedded JPEG object already uses. Verified against both
+  the minimal single-JPEG example (renders as the expected Acorn logo)
+  and the real document: all three of page 1's own images now render
+  in both PDF and scrolling HTML output.
 
 - [x] **ArtWorks "direct" (non-indexed) colour words don't resolve
   correctly.** The user reported a real document (corpus/TestDoc,bc5's
