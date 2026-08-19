@@ -199,6 +199,40 @@ def test_artworks_picture_frame_renders_as_real_svg_content(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_artworks_picture_frame_applies_xshift_yshift_and_xscale_yscale(tmp_path):
+    # Regression test: the user reported two placements of similar
+    # ArtWorks content in a real document rendering identically --
+    # _artworks_svg previously always scaled-to-fit-and-centred (via
+    # the nested SVG's own preserveAspectRatio) regardless of the
+    # frame's own xshift/yshift/xscale/yscale.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    picture_bytes = build_single_path_document()
+
+    def _document_for(**overrides):
+        picture = _picture(x0=0, y0=0, x1=100000, y1=100000, dictionary_index=1, **overrides)
+        document, _ = _document_with_frames([_frame_record(1008, picture)])
+        dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xD94)
+        document.dictionary.append(dict_entry)
+        document.picture_bytes = lambda entry: picture_bytes
+        return document
+
+    default = ScrollingHTMLConverter(_document_for())
+    out_a = tmp_path / "a.html"
+    default.convert(out_a)
+    transform_a = re.search(r'<g transform="([^"]+)">', out_a.read_text())
+    assert transform_a is not None
+
+    shifted = ScrollingHTMLConverter(_document_for(xshift=20000, yshift=10000))
+    out_b = tmp_path / "b.html"
+    shifted.convert(out_b)
+    transform_b = re.search(r'<g transform="([^"]+)">', out_b.read_text())
+    assert transform_b is not None
+
+    assert transform_a.group(1) != transform_b.group(1)
+    assert not default.log.has_errors()
+    assert not shifted.log.has_errors()
+
+
 def test_embed_tagged_picture_frame_is_not_also_drawn_independently(tmp_path):
     """Regression test: the user reported PCI_Spec's 3 DrawFile diagrams
     appearing repeated (once inline, once again independently, near

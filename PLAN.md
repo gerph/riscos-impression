@@ -2612,6 +2612,41 @@ sub-checklist since it's the area most likely to grow piecemeal.
   own real string is always present already, unlike ArtWorks' own
   per-character-only records).
 
+- [x] **ArtWorks pictures ignored their own frame's xshift/yshift/
+  xscale/yscale placement (both SVG and PDF).** The user noticed a real
+  document placing similar ArtWorks content at two different picture
+  frames render identically, instead of each showing its own declared
+  size/position. `_draw_artworks_picture` (PDF) and `_artworks_svg`
+  (HTML) always scaled the artwork's own native bounding box to fit and
+  centred it, ignoring the frame's own placement fields entirely.
+
+  Both now use the same xshift/yshift/xscale/yscale formula
+  `_draw_drawfile_picture`/`_drawfile_svg` already use for DrawFile
+  pictures (see that method's own docstring for the full derivation and
+  calibration history), substituting the artwork's own native bounding
+  box (from `artworks_svg_fragment`'s own `viewbox` string) for
+  DrawFile's decoded `BoundingBox`, and `ARTWORKS_UNIT_TO_USER_UNITS`
+  for `_DRAW_UNIT_TO_PT`. PDF also applies `pict.angle` rotation (via
+  an explicit per-point `to_pt` closure, the same mechanism DrawFile
+  uses); the SVG version can't -- `artworks_svg_fragment`'s own `inner`
+  is opaque pre-rendered markup with no per-point hook to rotate
+  through, unlike `_drawfile_svg`'s own `to_svg` -- so a non-zero angle
+  is logged once there instead, a smaller follow-up of its own.
+
+  Fixing this also exposed a real, separate bug: `_draw_artworks_picture`
+  had no clip rectangle at all (unlike `_draw_drawfile_picture`'s own
+  `re W n`), so a picture now legitimately scaled/shifted bigger than
+  its own frame would bleed into whatever else shares the page -- fixed
+  alongside this, with its own regression test.
+
+  Verified against the real document (`corpus/TestDoc,bc5`): its own
+  two different CD-cover pictures (dictionary entries 48 and 51, each
+  with a different declared `xscale`) now render at visibly, correctly
+  different sizes rather than identically. Regression-tested in both
+  converters (xshift/yshift and xscale/yscale each independently change
+  the rendered output; PDF's own clip rectangle matches the frame's
+  box exactly). Full suite (485 tests) passes.
+
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
   inside one.

@@ -76,10 +76,11 @@ try:
     # back to the usual labelled placeholder, exactly like any other
     # undecoded picture kind, when it isn't available.
     from riscos_artworks import ArtWorks
-    from riscos_impression.formats.artworks_svg import artworks_svg_fragment
+    from riscos_impression.formats.artworks_svg import ARTWORKS_UNIT_TO_USER_UNITS, artworks_svg_fragment
 except ImportError:  # pragma: no cover - exercised by CI without the extra
     ArtWorks = None
     artworks_svg_fragment = None
+    ARTWORKS_UNIT_TO_USER_UNITS = None
 
 #: Millipoints per CSS point; see docs/impression-documents.xml's note
 #: under "Frame object common layout" (the same confirmed unit pdfdoc.py
@@ -609,7 +610,7 @@ class HTML5Converter(Converter):
                     "picture", f"ArtWorks picture rendered as a placeholder box; failed to decode ({e})"
                 )
                 return self._placeholder_img("ArtWorks", width_pt, height_pt)
-            return self._artworks_svg(artwork, width_pt, height_pt)
+            return self._artworks_svg(artwork, pict, width_pt, height_pt)
 
         label = kind.value if kind is not None else "data"
         self.log.best_effort("picture", f"{label} picture rendered as a placeholder box; not decoded by this converter")
@@ -974,25 +975,100 @@ class HTML5Converter(Converter):
 
     # -- ArtWorks pictures -------------------------------------------------
 
-    def _artworks_svg(self, artwork: "ArtWorks", width_pt: float, height_pt: float) -> str:
+    def _artworks_svg(self, artwork: "ArtWorks", pict, width_pt: float, height_pt: float) -> str:
         """Embed *artwork*'s own content (via formats/artworks_svg.py's
         artworks_svg_fragment(), the same renderer output/extract.py
-        uses) as a nested `<svg>` sized to the picture frame's own
-        width_pt/height_pt, scaled and centred within it (preserving
-        the artwork's own aspect ratio) via the nested SVG's own
-        viewBox/preserveAspectRatio -- unlike _drawfile_svg, this does
-        not attempt DrawFile's own xshift/yshift/rotation/overlap
-        placement heuristic; the frame's own scale/shift/angle fields
-        are not applied. Any exception during rendering (an unsupported
-        record shape, a malformed file that decoded but doesn't walk
-        cleanly) falls back to the usual labelled placeholder rather
-        than raising, matching every other picture kind's own
-        best-effort behaviour here."""
+        uses), using the picture frame's own xshift/yshift/xscale/
+        yscale placement -- the same formula _drawfile_svg uses (see
+        that method's own docstring for the full derivation and
+        calibration history), adapted for ArtWorks' own native units
+        (ARTWORKS_UNIT_TO_USER_UNITS in place of _DRAW_UNIT_TO_PT) and
+        a viewBox-derived bounding box in place of DrawFile's own
+        decoded BoundingBox. This superseded an earlier version that
+        only ever centred the content (via the nested SVG's own
+        preserveAspectRatio="xMidYMid meet"), never applying
+        xshift/yshift at all -- confirmed wrong by the user against a
+        real document, where a picture reusing the same ArtWorks
+        content at two different placements (once shifted/scaled,
+        once not) rendered identically instead of showing its own
+        distinct placement.
+
+        Unlike _drawfile_svg's own to_svg, which rotates each point
+        individually before scaling, artworks_svg_fragment()'s own
+        `inner` is opaque pre-rendered markup (with its own internal
+        `scale(1,-1)` Y-flip already baked in) -- there's no per-point
+        hook to rotate through, so pict.angle isn't applied here yet;
+        a non-zero angle is logged once rather than silently ignored,
+        matching this project's own convention for a known, deferred
+        gap. The translate+scale composed below accounts for that
+        pre-existing internal flip (translate_y includes native max_y,
+        not min_y, precisely to compensate for it) -- see the two
+        inline comments below for the derivation."""
         with self.catch("picture", location="ArtWorks rendering"):
             viewbox, _native_width_pt, _native_height_pt, inner = artworks_svg_fragment(artwork)
+            min_x, neg_max_y, width, height = (float(v) for v in viewbox.split())
+            min_y = -neg_max_y - height
+
+            display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
+            display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
+            sx = ARTWORKS_UNIT_TO_USER_UNITS * display_scale_x
+            sy = ARTWORKS_UNIT_TO_USER_UNITS * display_scale_y
+            displayed_w = width * sx
+            displayed_h = height * sy
+
+            x0, y0, x1, y1 = 0.0, 0.0, width_pt, height_pt
+            x_anchor = x0 + pict.hinset / UNIT
+            shifted_x = x_anchor - pict.xshift / UNIT + min_x * sx
+            shifted_y = y0 - pict.yshift / UNIT + min_y * sy
+            overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))
+            overlap_h = max(0.0, min(y1, shifted_y + displayed_h) - max(y0, shifted_y))
+            frame_area = (x1 - x0) * (y1 - y0)
+            content_area = displayed_w * displayed_h
+            reference_area = min(frame_area, content_area)
+            shifted = None
+            if reference_area <= 0 or (overlap_w * overlap_h) / reference_area >= 0.05:
+                shifted = (shifted_x, shifted_y)
+
+            if shifted is not None:
+                origin_x, origin_y = shifted
+            else:
+                frame_w, frame_h = x1 - x0, y1 - y0
+                if displayed_w > frame_w or displayed_h > frame_h:
+                    fit_scale = min(
+                        frame_w / displayed_w if displayed_w else 1.0,
+                        frame_h / displayed_h if displayed_h else 1.0,
+                    )
+                    sx *= fit_scale
+                    sy *= fit_scale
+                    displayed_w *= fit_scale
+                    displayed_h *= fit_scale
+                origin_x = x0 + max(0.0, (frame_w - displayed_w) / 2.0)
+                origin_y = y0 + max(0.0, (frame_h - displayed_h) / 2.0)
+
+            if pict.angle:
+                self.log.best_effort(
+                    "picture", "an ArtWorks picture's own rotation angle is not applied in HTML output"
+                )
+
+            # origin_x/origin_y are in the same Y-up (frame-bottom-
+            # relative) working space _drawfile_svg's own version uses;
+            # top_y converts to this fragment's own Y-down (frame-top-
+            # relative) space. translate_y then additionally accounts
+            # for inner's own internal scale(1,-1): that flip already
+            # negates the native Y coordinate before this transform
+            # ever sees it, so the translation must anchor against the
+            # native max_y (== min_y + height), not min_y, to land the
+            # content's own top edge at top_y -- see the module's own
+            # sibling formula in pdfdoc.py's _draw_artworks_picture for
+            # the equivalent, flip-free (PDF is Y-up throughout) case.
+            top_y = height_pt - origin_y - displayed_h
+            translate_x = origin_x - min_x * sx
+            translate_y = top_y + (min_y + height) * sy
             return (
                 f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt:.2f}pt" '
-                f'height="{height_pt:.2f}pt" viewBox="{viewbox}" '
-                f'preserveAspectRatio="xMidYMid meet">{inner}</svg>'
+                f'height="{height_pt:.2f}pt" viewBox="0 0 {width_pt:.2f} {height_pt:.2f}" '
+                f'style="overflow: hidden;">'
+                f'<g transform="translate({translate_x:.4f},{translate_y:.4f}) '
+                f'scale({sx:.6f},{sy:.6f})">{inner}</g></svg>'
             )
         return self._placeholder_img("ArtWorks", width_pt, height_pt)

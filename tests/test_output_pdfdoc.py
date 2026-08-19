@@ -3067,3 +3067,65 @@ def test_artworks_pdf_pathified_character_renders_its_own_glyph_outline_not_tf_t
     assert " m\n" in content  # the glyph outline's own path ops
     assert "Tf " not in content
     assert "Tj" not in content
+
+
+def test_artworks_pdf_picture_applies_xshift_yshift_and_xscale_yscale(tmp_path):
+    # Regression test: the user reported two placements of similar
+    # ArtWorks content in a real document rendering identically, when
+    # their own declared xshift/yshift/xscale/yscale should have shown
+    # each at its own distinct size and position -- _draw_artworks_
+    # picture previously always scaled-to-fit-and-centred regardless
+    # of these fields, matching neither placement's own real appearance.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    picture_bytes = build_single_path_document()
+
+    default = _artworks_picture_document(picture_bytes, x0=0, y0=0, x1=100000, y1=100000)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(default).convert(out_a)
+    xa, ya = _first_moveto_point(out_a.read_bytes())
+
+    shifted = _artworks_picture_document(
+        picture_bytes, x0=0, y0=0, x1=100000, y1=100000, xshift=20000, yshift=10000,
+    )
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(shifted).convert(out_b)
+    xb, yb = _first_moveto_point(out_b.read_bytes())
+
+    assert (xb, yb) != (xa, ya)
+
+    half_scale = _artworks_picture_document(
+        picture_bytes, x0=0, y0=0, x1=100000, y1=100000, xscale=0x20000, yscale=0x20000,
+    )
+    out_c = tmp_path / "c.pdf"
+    PDFConverter(half_scale).convert(out_c)
+    # The first moveto point sits exactly at the shape's own native
+    # origin, which xscale/yscale alone doesn't move (only points away
+    # from it) -- the first lineto point does move, since it isn't at
+    # the origin.
+    match_a = re.search(rb"([\d.-]+) ([\d.-]+) l\n", out_a.read_bytes())
+    match_c = re.search(rb"([\d.-]+) ([\d.-]+) l\n", out_c.read_bytes())
+    assert match_a is not None and match_c is not None
+    assert match_a.groups() != match_c.groups()
+
+
+def test_artworks_pdf_picture_content_is_clipped_to_its_own_frame(tmp_path):
+    # Regression test: _draw_artworks_picture had no clip rectangle at
+    # all (unlike _draw_drawfile_picture's own "re W n"), so a picture
+    # placed/scaled bigger than its own frame (a real, legitimate case
+    # once xshift/yshift/xscale are honoured -- see the sibling test
+    # above) would bleed into whatever else shares the same page.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _artworks_picture_document(
+        build_single_path_document(), x0=10000, y0=20000, x1=60000, y1=70000,
+    )
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"10 20 50 50 re W n\n" in data
+    assert not converter.log.has_errors()

@@ -181,6 +181,7 @@ try:
         denormalise,
     )
     from riscos_impression.formats.artworks_svg import (
+        ARTWORKS_UNIT_TO_USER_UNITS,
         _DEFAULT_STYLE,
         _GEOMETRY_TYPES,
         _TAG_BEZIER,
@@ -1847,7 +1848,7 @@ class PDFConverter(Converter):
                     "picture", f"ArtWorks picture rendered as a placeholder box; failed to decode ({e})"
                 )
                 return
-            self._draw_artworks_picture(artwork, x0, y0, x1, y1)
+            self._draw_artworks_picture(artwork, x0, y0, x1, y1, pict, apply_shift)
             return
 
         label = kind.value if kind is not None else "data"
@@ -2429,7 +2430,9 @@ class PDFConverter(Converter):
 
     # -- ArtWorks pictures --------------------------------------------------
 
-    def _draw_artworks_picture(self, artwork, x0: float, y0: float, x1: float, y1: float) -> None:
+    def _draw_artworks_picture(
+        self, artwork, x0: float, y0: float, x1: float, y1: float, pict: PictureFrame, apply_shift: bool
+    ) -> None:
         """Real ArtWorks rendering for PDF: paths/rectangles/ellipses/
         rounded-rectangles/blend-path-keyframes with flat fill/stroke,
         and text -- following the same record-tree walk and style
@@ -2444,30 +2447,91 @@ class PDFConverter(Converter):
         marked invisible by design, needing real interpolation neither
         converter does yet).
 
-        Unlike DrawFile rendering, no xshift/yshift/rotation placement
-        heuristic is attempted -- the artwork's own native bounding box
-        (reusing artworks_svg.py's own bbox computation, via its
-        `viewbox` string, rather than re-deriving it independently) is
-        simply scaled to fit and centred within the frame's own box,
-        matching the SVG converter's own nested-viewport behaviour
-        exactly. Both ArtWorks' own native coordinates and PDF are
-        Y-up, so -- unlike SVG's own Y-down convention -- no coordinate
-        flip is needed anywhere here, including for text."""
+        Placement uses the same xshift/yshift/xscale/yscale formula as
+        _draw_drawfile_picture (see that method's own docstring for the
+        full derivation and calibration history), substituting the
+        artwork's own native bounding box (via artworks_svg_fragment()'s
+        own `viewbox` string, rather than re-deriving it independently)
+        for DrawFile's own decoded BoundingBox, and
+        ARTWORKS_UNIT_TO_USER_UNITS for _DRAW_UNIT_TO_PT. This
+        supersedes an earlier version that always scaled-to-fit and
+        centred regardless of the frame's own declared placement --
+        confirmed wrong by the user against a real document, where a
+        picture reusing the same ArtWorks content at two different
+        placements (once shifted/scaled, once not) rendered identically
+        instead of showing its own distinct placement. Rotation
+        (pict.angle) is applied here (unlike the sibling SVG version,
+        html_base.py's own _artworks_svg, which can't rotate through
+        artworks_svg_fragment()'s own opaque pre-rendered markup) since
+        PDF renders via an explicit to_pt closure this method fully
+        controls, the same as _draw_drawfile_picture's own to_pt."""
         denormalised = denormalise(artwork)
         viewbox, _width_pt, _height_pt, _inner = artworks_svg_fragment(artwork)
         min_x, neg_max_y, width, height = (float(v) for v in viewbox.split())
         min_y = -neg_max_y - height
         if width <= 0 or height <= 0:
             return
-        scale = min((x1 - x0) / width, (y1 - y0) / height)
-        origin_x = x0 + ((x1 - x0) - width * scale) / 2.0
-        origin_y = y0 + ((y1 - y0) - height * scale) / 2.0
+        display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
+        display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
+        scale_x = ARTWORKS_UNIT_TO_USER_UNITS * display_scale_x
+        scale_y = ARTWORKS_UNIT_TO_USER_UNITS * display_scale_y
+        displayed_w = width * scale_x
+        displayed_h = height * scale_y
+
+        shifted = None
+        if apply_shift:
+            x_anchor = x0 + pict.hinset / UNIT
+            shifted_x = x_anchor - pict.xshift / UNIT + min_x * scale_x
+            shifted_y = y0 - pict.yshift / UNIT + min_y * scale_y
+            overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))
+            overlap_h = max(0.0, min(y1, shifted_y + displayed_h) - max(y0, shifted_y))
+            frame_area = (x1 - x0) * (y1 - y0)
+            content_area = displayed_w * displayed_h
+            reference_area = min(frame_area, content_area)
+            if reference_area <= 0 or (overlap_w * overlap_h) / reference_area >= 0.05:
+                shifted = (shifted_x, shifted_y)
+
+        if shifted is not None:
+            origin_x, origin_y = shifted
+        else:
+            frame_w, frame_h = x1 - x0, y1 - y0
+            if displayed_w > frame_w or displayed_h > frame_h:
+                fit_scale = min(
+                    frame_w / displayed_w if displayed_w else 1.0,
+                    frame_h / displayed_h if displayed_h else 1.0,
+                )
+                scale_x *= fit_scale
+                scale_y *= fit_scale
+                displayed_w *= fit_scale
+                displayed_h *= fit_scale
+            origin_x = x0 + max(0.0, (frame_w - displayed_w) / 2.0)
+            origin_y = y0 + max(0.0, (frame_h - displayed_h) / 2.0)
+
+        # pict.angle is 16.16 fixed-point degrees, a standard
+        # mathematical (counter-clockwise) rotation about the artwork's
+        # own native (0, 0) origin, applied before the anchor's own
+        # scale/translate -- see _draw_drawfile_picture's own docstring
+        # for the full derivation (confirmed there against a purpose-
+        # built calibration document; not separately re-verified for
+        # ArtWorks, but the same picture-frame field, so presumed to
+        # follow the same convention).
+        angle_rad = math.radians(pict.angle / 65536.0) if pict.angle else 0.0
+        cos_a, sin_a = (math.cos(angle_rad), math.sin(angle_rad)) if angle_rad else (1.0, 0.0)
 
         def to_pt(nx: float, ny: float) -> tuple[float, float]:
-            return origin_x + (nx - min_x) * scale, origin_y + (ny - min_y) * scale
+            if angle_rad:
+                nx, ny = nx * cos_a - ny * sin_a, nx * sin_a + ny * cos_a
+            return origin_x + (nx - min_x) * scale_x, origin_y + (ny - min_y) * scale_y
 
         notes: list[str] = []
+        # stroke_width/font_size still take a single scalar throughout
+        # the rest of this walk (unlike the x/y-split scale_x/scale_y
+        # above, needed only for placement) -- averaging the two axes
+        # here matches _draw_drawfile_path's own precedent for the same
+        # non-uniform-scale case.
+        scale = (abs(scale_x) + abs(scale_y)) / 2.0
         self._content.append("q\n")
+        self._content.append(f"{_fmt(x0)} {_fmt(y0)} {_fmt(x1 - x0)} {_fmt(y1 - y0)} re W n\n")
         self._artworks_pdf_process_lists(
             denormalised.record_lists, dict(_DEFAULT_STYLE), denormalised, to_pt, scale, notes
         )
