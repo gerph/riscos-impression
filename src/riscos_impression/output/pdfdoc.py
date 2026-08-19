@@ -196,6 +196,7 @@ try:
         FontNameRecord,
         FontSizeRecord,
         JoinStyleRecord,
+        JpegRecord,
         SpriteRecord,
         StartCapRecord,
         StrokeColourRecord,
@@ -2663,8 +2664,50 @@ class PDFConverter(Converter):
             self._artworks_pdf_process_blend_group(record, style, artwork, to_pt, scale, notes)
         elif isinstance(record, SpriteRecord):
             self._artworks_pdf_emit_sprite(record, to_pt, notes)
+        elif isinstance(record, JpegRecord):
+            self._artworks_pdf_emit_jpeg(record, to_pt, notes)
         else:
             self._artworks_pdf_process_lists(record.child_lists, dict(style), artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_emit_jpeg(self, record, to_pt, notes: list[str]) -> None:
+        """PDF counterpart of formats/artworks_svg.py's own
+        _emit_jpeg -- record.data is already a complete, standalone
+        JPEG file (see riscos_artworks.JpegRecord's own docstring), so
+        this reuses the same _jpeg_info/DCTDecode Image XObject
+        pipeline a DrawFile-embedded JPEG object already uses (see
+        _draw_drawfile_jpeg), positioned from the record's own
+        bounding box rather than applying its own transform matrix
+        (matching that method's own documented simplification)."""
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        box = record.bounding_box
+        sx0, sy0 = to_pt(box.min_x, box.min_y)
+        sx1, sy1 = to_pt(box.max_x, box.max_y)
+        x0, x1 = min(sx0, sx1), max(sx0, sx1)
+        y0, y1 = min(sy0, sy1), max(sy0, sy1)
+        info = _jpeg_info(record.data)
+        if info is None:
+            self._draw_placeholder(x0, y0, x1, y1, "JPEG")
+            notes.append(
+                "a JPEG image embedded within an ArtWorks picture could not be "
+                "parsed and is rendered as a placeholder box instead"
+            )
+            return
+        width, height, components = info
+        colour_space = {1: "/DeviceGray", 4: "/DeviceCMYK"}.get(components, "/DeviceRGB")
+        image_obj = self._writer.add(_stream_obj(
+            record.data,
+            extra=(
+                "/Type /XObject /Subtype /Image "
+                f"/Width {width} /Height {height} /ColorSpace {colour_space} "
+                "/BitsPerComponent 8 /Filter /DCTDecode "
+            ),
+        ))
+        name = f"Im{len(self._page_xobjects) + 1}"
+        self._page_xobjects[name] = image_obj
+        self._content.append(
+            f"q {_fmt(x1 - x0)} 0 0 {_fmt(y1 - y0)} {_fmt(x0)} {_fmt(y0)} cm /{name} Do Q\n"
+        )
 
     def _artworks_pdf_emit_sprite(self, record, to_pt, notes: list[str]) -> None:
         """PDF counterpart of formats/artworks_svg.py's own

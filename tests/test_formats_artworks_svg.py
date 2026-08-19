@@ -32,7 +32,7 @@ from riscos_artworks import (
     WindingRuleRecord,
 )
 
-from riscos_artworks import BlendPathRecord, SpriteRecord, TextRecord, CharacterRecord, FontNameRecord, FontSizeRecord
+from riscos_artworks import BlendPathRecord, JpegRecord, SpriteRecord, TextRecord, CharacterRecord, FontNameRecord, FontSizeRecord
 from riscos_artworks import BlendGroupRecord, BlendOptionsRecord
 
 from riscos_impression.formats.artworks_svg import artworks_svg_fragment, artworks_to_svg
@@ -420,6 +420,42 @@ def test_hidden_sprite_record_is_not_drawn_even_with_a_sprite_to_png_callback():
     artwork = _artwork((_list(sprite),))
 
     svg = artworks_to_svg(artwork, lambda data: b"PNGDATA")
+
+    assert "<image" not in svg
+
+
+def _jpeg_record(**overrides):
+    fields = dict(
+        bbox=_bbox(0, 0, 1000, 1000),
+        unknown_24=0, pixel_width=10, pixel_height=10, dpi_x=90, dpi_y=90,
+        corner=(Point(0, 0), Point(1000, 0), Point(1000, 1000)),
+        matrix=(0x10000, 0, 0, 0x10000, 0, 0),
+        data=b"\xff\xd8fake-jpeg-bytes\xff\xd9",
+    )
+    fields.update(overrides)
+    return _record(JpegRecord, **fields)
+
+
+def test_jpeg_record_is_embedded_directly_with_no_callback_needed():
+    # Unlike a SpriteRecord, a JpegRecord's own data is already a
+    # complete, standalone JPEG file -- no sprite_to_png-style decode
+    # callback is needed at all.
+    jpeg = _jpeg_record()
+    artwork = _artwork((_list(jpeg),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<image" in svg
+    import base64
+    encoded = base64.b64encode(b"\xff\xd8fake-jpeg-bytes\xff\xd9").decode("ascii")
+    assert f"data:image/jpeg;base64,{encoded}" in svg
+
+
+def test_hidden_jpeg_record_is_not_drawn():
+    jpeg = _jpeg_record(control_word=0)
+    artwork = _artwork((_list(jpeg),))
+
+    svg = artworks_to_svg(artwork)
 
     assert "<image" not in svg
 

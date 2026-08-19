@@ -209,6 +209,7 @@ from riscos_artworks import (
     CharacterRecord,
     FontNameRecord,
     FontSizeRecord,
+    JpegRecord,
     SpriteRecord,
     denormalise,
 )
@@ -559,6 +560,8 @@ class _SvgBuilder:
             self.process_blend_group(record, style)
         elif isinstance(record, SpriteRecord):
             self._emit_sprite(record)
+        elif isinstance(record, JpegRecord):
+            self._emit_jpeg(record)
         else:
             # Group/layer/blend/distortion and anything else not drawn
             # directly: descend into its own children with a scoped
@@ -595,6 +598,30 @@ class _SvgBuilder:
             f'<image x="{_fmt(box.min_x)}" y="{_fmt(box.min_y)}" '
             f'width="{_fmt(width)}" height="{_fmt(height)}" '
             f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/></g>'
+        )
+
+    def _emit_jpeg(self, record: JpegRecord) -> None:
+        """record.data is already a complete, standalone JPEG file
+        (see riscos_artworks.JpegRecord's own docstring) -- unlike a
+        sprite, it needs no external decode at all, just a base64 data:
+        URI, so this needs no sprite_to_png-style callback. See
+        _emit_sprite's own docstring for why the <image> element is
+        wrapped in a local counter-flip <g>: the same reasoning applies
+        here."""
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        box = record.bounding_box
+        self._merge_bbox(box)
+        if not record.data:
+            return
+        width = box.max_x - box.min_x
+        height = box.max_y - box.min_y
+        encoded = base64.b64encode(record.data).decode("ascii")
+        self.objects.append(
+            f'<g transform="translate(0,{_fmt(box.min_y + box.max_y)}) scale(1,-1)">'
+            f'<image x="{_fmt(box.min_x)}" y="{_fmt(box.min_y)}" '
+            f'width="{_fmt(width)}" height="{_fmt(height)}" '
+            f'preserveAspectRatio="none" href="data:image/jpeg;base64,{encoded}"/></g>'
         )
 
     def process_text(self, record: Record, style: dict) -> None:
