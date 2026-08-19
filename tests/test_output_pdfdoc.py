@@ -2614,7 +2614,9 @@ def test_drawfile_path_with_triangular_end_cap_draws_an_arrowhead(tmp_path):
     assert "h f\n" in content
 
 
-def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
+def test_drawfile_dashed_path_emits_a_real_dash_array(tmp_path):
+    # build_path's own dashed=True fixture writes a real (offset=0,
+    # elements=[10, 5]) dash pattern -- see drawfile_builders.py.
     from riscos_impression.output.pdfdoc import PDFConverter
 
     ops = move(0, 0) + line(2560, 0) + end_path()
@@ -2627,7 +2629,32 @@ def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
     data = out.read_bytes()
 
     assert b"\nS\n" in data  # stroked, since there's no fill colour
-    assert any("dash patterns are not reproduced" in e.message for e in converter.log.entries)
+    assert re.search(rb"\[[\d. ]+\] [\d.]+ d\n", data)
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_non_dashed_path_after_a_dashed_one_resets_to_solid(tmp_path):
+    # PDF's own dash array is graphics *state*, unlike SVG's per-element
+    # stroke-dasharray attribute -- a later solid path drawn within the
+    # same DrawFile (sharing one q/Q pair) must not inherit an earlier
+    # path's own dash pattern.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    dashed_ops = move(0, 0) + line(2560, 0) + end_path()
+    dashed_path = build_path(ops=dashed_ops, bounds=(0, 0, 2560, 100), stroke_colour=0x000000FF, dashed=True)
+    solid_ops = move(0, 200) + line(2560, 200) + end_path()
+    solid_path = build_path(ops=solid_ops, bounds=(0, 200, 2560, 300), stroke_colour=0x000000FF, dashed=False)
+    document = _picture_document(
+        build_drawfile(dashed_path + solid_path, bounds=(0, 0, 2560, 300))
+    )
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"[] 0 d\n" in data
+    assert not converter.log.has_errors()
 
 
 def test_drawfile_group_and_unknown_object_types_are_handled(tmp_path):

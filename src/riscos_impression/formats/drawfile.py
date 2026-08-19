@@ -140,7 +140,17 @@ class DrawPath:
     stroke_colour: Optional[int]
     line_width: int  #: Draw units; 0 = hairline
     even_odd: bool  #: winding rule: False = non-zero, True = even-odd
-    dashed: bool  #: a dash pattern is present but not decoded further
+    dashed: bool  #: a dash pattern is present (see dash_offset/dash_elements)
+    #: Distance into the pattern the path starts at (Draw units); only
+    #: meaningful when dashed. 0 when not dashed.
+    dash_offset: int = 0
+    #: Alternating on/off distances (Draw units); the pattern always
+    #: starts "on" -- see the drawfile-format skill reference's own
+    #: note on the odd-element-count sense-inversion rule, which this
+    #: project's SVG/PDF stroke-dasharray output doesn't need to
+    #: reproduce itself (both formats' own dash-array semantics already
+    #: repeat/alternate the same way). Empty when not dashed.
+    dash_elements: tuple[int, ...] = ()
     join_style: int = 0  #: 0=mitred, 1=round, 2=bevelled; not decoded further than the raw code
     start_cap: int = CAP_BUTT  #: the path's own first point ("leading" cap)
     end_cap: int = CAP_BUTT  #: the path's own last point ("trailing" cap)
@@ -361,10 +371,16 @@ def _parse_path(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawP
     triangle_cap_width = binary.bits(style, 16, 8)
     triangle_cap_length = binary.bits(style, 24, 8)
     data_start = start + 16
+    dash_offset = 0
+    dash_elements: tuple[int, ...] = ()
     if dashed:
         # Dash pattern block: 4-byte start offset + 4-byte element count +
-        # one 4-byte word per element; skip over it to reach the path data.
+        # one 4-byte word per element.
+        dash_offset = binary.u32(data, data_start)
         element_count = binary.u32(data, data_start + 4)
+        dash_elements = tuple(
+            binary.u32(data, data_start + 8 + 4 * i) for i in range(element_count)
+        )
         data_start += 8 + element_count * 4
     return DrawPath(
         bounds=bounds,
@@ -373,6 +389,8 @@ def _parse_path(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawP
         line_width=line_width,
         even_odd=even_odd,
         dashed=dashed,
+        dash_offset=dash_offset,
+        dash_elements=dash_elements,
         join_style=join_style,
         start_cap=start_cap,
         end_cap=end_cap,

@@ -2530,10 +2530,26 @@ sub-checklist since it's the area most likely to grow piecemeal.
   reliable native PDF EPS-rendering mechanism exists), HTML has no
   equivalent mechanism at all.
 
-- [ ] **Dash patterns on DrawFile paths — HTML.** Parsed but not
-  honoured; rendered solid.
+- [x] **Dash patterns on DrawFile paths — HTML.** `formats/drawfile.py`'s
+  `DrawPath` now keeps the pattern's own `dash_offset`/`dash_elements`
+  (previously parsed only far enough to skip over them) --
+  `_drawfile_svg_path` in `html_base.py` (shared by both the scrolling
+  and paged HTML converters) emits a real `stroke-dasharray`/
+  `stroke-dashoffset`, scaled by the same Draw-unit-to-pt factor already
+  used for stroke width. No odd-element-count sense-inversion handling
+  is needed: SVG's own dasharray already repeats/alternates the same
+  way DrawFile's own pattern does.
 
-- [ ] **Dash patterns on DrawFile paths — PDF.** Same gap, PDF side.
+- [x] **Dash patterns on DrawFile paths — PDF.** Landed in the same
+  commit as the HTML item above, since both consume the same
+  `DrawPath.dash_offset`/`dash_elements` fields. `_draw_drawfile_path`
+  in `pdfdoc.py` emits PDF's own `[on off ...] phase d` operator.
+  Unlike SVG's per-element `stroke-dasharray` attribute, PDF's dash
+  array is graphics *state* that persists until changed -- since a
+  DrawFile's objects all share one `q`/`Q` pair (not one per object), a
+  non-dashed path drawn after a dashed one now explicitly resets to
+  `[] 0 d`, or it would otherwise inherit the earlier path's own
+  pattern.
 
 ## Verification per stage
 

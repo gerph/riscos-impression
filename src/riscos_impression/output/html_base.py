@@ -775,8 +775,6 @@ class HTML5Converter(Converter):
     def _drawfile_svg_object(self, obj, fonts: dict, to_svg, scale, parts: list[str], notes: list[str]) -> None:
         if isinstance(obj, DrawPath):
             self._drawfile_svg_path(obj, to_svg, scale, parts)
-            if obj.dashed:
-                notes.append("dashed DrawFile path lines are rendered solid; dash patterns are not reproduced")
         elif isinstance(obj, DrawText):
             self._drawfile_svg_text(obj, fonts, to_svg, scale, parts)
         elif isinstance(obj, DrawGroup):
@@ -893,6 +891,17 @@ class HTML5Converter(Converter):
             line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
             width_pt = path.line_width * line_scale if path.line_width else 0.3
             attrs.append(f'stroke-width="{max(0.1, width_pt):.2f}"')
+            if path.dashed and path.dash_elements:
+                # line_scale converts Draw units -> pt the same way
+                # width_pt above does; SVG's own stroke-dasharray takes
+                # a plain list of on/off lengths in the current
+                # coordinate system, so no odd-element-count sense-
+                # inversion handling is needed here (SVG already
+                # repeats/alternates the array itself the same way).
+                dasharray = " ".join(f"{e * line_scale:.2f}" for e in path.dash_elements)
+                attrs.append(f'stroke-dasharray="{dasharray}"')
+                if path.dash_offset:
+                    attrs.append(f'stroke-dashoffset="{path.dash_offset * line_scale:.2f}"')
         if has_fill and path.even_odd:
             attrs.append('fill-rule="evenodd"')
         parts.append(f"<path {' '.join(attrs)}/>")

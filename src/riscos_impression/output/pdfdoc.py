@@ -2130,8 +2130,6 @@ class PDFConverter(Converter):
     def _draw_drawfile_object(self, obj, fonts: dict, to_pt, scale: tuple[float, float], notes: list[str]) -> None:
         if isinstance(obj, DrawPath):
             self._draw_drawfile_path(obj, to_pt, scale)
-            if obj.dashed:
-                notes.append("dashed DrawFile path lines are rendered solid; dash patterns are not reproduced")
         elif isinstance(obj, DrawText):
             self._draw_drawfile_text(obj, fonts, to_pt, scale)
         elif isinstance(obj, DrawGroup):
@@ -2206,6 +2204,24 @@ class PDFConverter(Converter):
             line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
             width_pt = path.line_width * line_scale if path.line_width else 0.3
             style_parts.append(f"{_fmt(max(0.1, width_pt))} w\n")
+            if path.dashed and path.dash_elements:
+                # PDF's own "d" operator takes a dash array plus a
+                # phase, the same on/off-lengths-plus-offset shape as
+                # the DrawFile dash pattern itself -- no odd-element-
+                # count sense-inversion handling needed here either
+                # (PDF viewers already repeat/alternate the array the
+                # same way SVG does; see html_base.py's own note).
+                dasharray = " ".join(_fmt(e * line_scale) for e in path.dash_elements)
+                style_parts.append(f"[{dasharray}] {_fmt(path.dash_offset * line_scale)} d\n")
+            else:
+                # Unlike SVG's stroke-dasharray (a per-element
+                # attribute), PDF's dash array is graphics *state* that
+                # persists across drawing operators until changed --
+                # explicitly reset to solid so an earlier dashed path
+                # drawn within the same DrawFile (all sharing one q/Q
+                # pair; see _draw_drawfile_picture) can't leak its own
+                # dash pattern onto this one.
+                style_parts.append("[] 0 d\n")
 
         op_code = {(True, True): "B", (True, False): "f", (False, True): "S"}[(has_fill, has_stroke)]
         if has_fill and path.even_odd:

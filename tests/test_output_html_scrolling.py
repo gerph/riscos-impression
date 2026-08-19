@@ -159,6 +159,27 @@ def test_drawfile_picture_frame_renders_as_real_svg_content(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_drawfile_dashed_path_emits_a_real_stroke_dasharray(tmp_path):
+    # build_path's own dashed=True fixture writes a real (offset=0,
+    # elements=[10, 5]) dash pattern -- see drawfile_builders.py.
+    picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
+    document, _ = _document_with_frames([_frame_record(1008, picture)])
+    dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.append(dict_entry)
+    ops = move(0, 0) + line(1000, 0) + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 100), stroke_colour=0x000000FF, dashed=True)
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 100))
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "stroke-dasharray=" in text
+    assert "dash patterns are not reproduced" not in text
+    assert not converter.log.has_errors()
+
+
 def test_artworks_picture_frame_renders_as_real_svg_content(tmp_path):
     pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
     picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
