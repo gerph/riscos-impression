@@ -2783,11 +2783,26 @@ sub-checklist since it's the area most likely to grow piecemeal.
   way `SpriteRecord` had) is simple and correctly aligned, so
   `0xFFFF9C00` is genuinely what's stored on disk for this fill;
   the mystery is purely in how to interpret it correctly, not a
-  decode/alignment bug. **Example document wanted:** either a document
-  with a shape filled via a picked-but-not-palette-added colour (so it
-  stays a direct reference rather than being indexed), or confirmation
-  from real ArtWorks/AWViewer's own Object Info dialog on the SVG-logo
-  shape specifically, to pin down the intended resolved colour without
+  decode/alignment bug.
+
+  Two further real examples (`AWDocs/TestDocs/ShapeBlendRedoCyan,d94`,
+  an RGB-named blend, and `ShapeBlendCMYK,d94`, a CMYK one) were
+  checked on the theory that a blend's own interpolated *intermediate*
+  colour might be stored as a direct word somewhere -- it isn't: both
+  files' own two keyframes each reference a named palette colour
+  (Red/Cyan, and two auto-named CMYK entries), never a direct one.
+  Neither ArtWorks itself nor this project's own blend interpolation
+  stores/needs the intermediate colour on disk at all (both compute it
+  at render time), so there was never going to be an on-disk example of
+  one to find this way -- confirmed, not just assumed. Still useful
+  independently: confirms blend keyframe colour resolution already
+  works correctly for CMYK-named endpoints too.
+
+  **Example document wanted:** either a document with a shape filled
+  via a picked-but-not-palette-added colour (so it stays a direct
+  reference rather than being indexed), or confirmation from real
+  ArtWorks/AWViewer's own Object Info dialog on the SVG-logo shape
+  specifically, to pin down the intended resolved colour without
   further guessing.
 
 - [ ] **EPS content rendering.** Always a placeholder box in both HTML
