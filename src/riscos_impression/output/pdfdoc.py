@@ -170,6 +170,8 @@ try:
     # dependency on the rest of riscos_impression" self-containment.
     from riscos_artworks import (
         ArtWorks,
+        BlendGroupRecord,
+        BlendOptionsRecord,
         CapStyle,
         ColourIndex,
         FillType,
@@ -197,6 +199,8 @@ try:
         StrokeWidthRecord,
         TextRecord,
         WindingRuleRecord,
+        _interpolate_colour_index,
+        _interpolate_path,
         artworks_svg_fragment,
     )
 except ImportError:  # pragma: no cover - exercised by CI without the extra
@@ -2489,8 +2493,111 @@ class PDFConverter(Converter):
             self._artworks_pdf_process_text(record, style, artwork, to_pt, scale, notes)
         elif isinstance(record, CharacterRecord):
             self._artworks_pdf_emit_character(record, style, artwork, to_pt, scale, notes)
+        elif isinstance(record, BlendGroupRecord):
+            self._artworks_pdf_process_blend_group(record, style, artwork, to_pt, scale, notes)
         else:
             self._artworks_pdf_process_lists(record.child_lists, dict(style), artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_process_blend_group(self, group, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        """PDF counterpart of formats/artworks_svg.py's own
+        process_blend_group -- same interpolation rules, same
+        BlendGroupRecord.child_lists shape (see that module's own
+        docstring for how it was confirmed against real data), reusing
+        its module-level _interpolate_path/_interpolate_colour_index
+        helpers directly rather than re-deriving them, but emitting PDF
+        path operators instead of SVG markup."""
+        if not (group.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        blend_steps = 1
+        keyframe_lists: list[tuple] = []
+        for child_list in group.child_lists:
+            options = next((r for r in child_list.records if isinstance(r, BlendOptionsRecord)), None)
+            if options is not None:
+                blend_steps = max(options.blend_steps, 1)
+            else:
+                keyframe_lists.append(child_list.records)
+        if len(keyframe_lists) != 2:
+            # Not the two-keyframe shape this code understands -- fall
+            # back to drawing whatever's structurally there.
+            self._artworks_pdf_process_lists(group.child_lists, dict(style), artwork, to_pt, scale, notes)
+            return
+        start_path, start_style = self._artworks_pdf_capture_blend_keyframe(keyframe_lists[0], style)
+        end_path, end_style = self._artworks_pdf_capture_blend_keyframe(keyframe_lists[1], style)
+        if start_path is None or end_path is None:
+            self._artworks_pdf_process_lists(group.child_lists, dict(style), artwork, to_pt, scale, notes)
+            return
+        if _interpolate_path(start_path, end_path, 0.0) is None:
+            # Geometry can't be safely interpolated (different point
+            # counts or mismatched segment types) -- draw both
+            # keyframes as-is, closer to the real appearance than
+            # nothing (see artworks_svg.py's own process_blend_group
+            # docstring for why AWViewer's own point-insertion
+            # algorithm for that case isn't attempted here).
+            self._artworks_pdf_emit_path(start_path, start_style, artwork, to_pt, scale, notes)
+            self._artworks_pdf_emit_path(end_path, end_style, artwork, to_pt, scale, notes)
+            return
+        for step in range(blend_steps + 1):
+            t = step / blend_steps
+            path = _interpolate_path(start_path, end_path, t)
+            step_style = self._artworks_pdf_interpolate_blend_style(start_style, end_style, t, artwork)
+            self._artworks_pdf_emit_path(path, step_style, artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_capture_blend_keyframe(self, records, ambient_style: dict) -> tuple:
+        """Walks one blend keyframe's own record list, capturing its
+        path and final resolved style rather than drawing it -- mirrors
+        _artworks_pdf_process_record's own attribute-record cascade
+        (duplicated rather than shared, since this variant returns
+        instead of drawing), matching formats/artworks_svg.py's own
+        _capture_blend_keyframe exactly."""
+        style = dict(ambient_style)
+        path = None
+        for record in records:
+            if isinstance(record, _GEOMETRY_TYPES):
+                own_records = tuple(r for child_list in record.child_lists for r in child_list.records)
+                _, style = self._artworks_pdf_capture_blend_keyframe(own_records, style)
+                path = record.path
+            elif isinstance(record, StrokeColourRecord):
+                style["stroke"] = record.colour
+            elif isinstance(record, StrokeWidthRecord):
+                style["stroke_width"] = record.width
+            elif isinstance(record, FillColourRecord):
+                style["fill_type"] = record.fill_type_enum or FillType.FLAT
+                style["fill_colour"] = record.colour
+                style["gradient_line"] = record.gradient_line
+                style["fill_start"] = record.start_colour
+                style["fill_end"] = record.end_colour
+            elif isinstance(record, JoinStyleRecord):
+                style["join"] = record.join_style_enum or JoinStyle.MITRE
+            elif isinstance(record, StartCapRecord):
+                style["cap_start"] = record.cap_style_enum or CapStyle.BUTT
+            elif isinstance(record, EndCapRecord):
+                style["cap_end"] = record.cap_style_enum or CapStyle.BUTT
+            elif isinstance(record, WindingRuleRecord):
+                style["winding"] = record.winding_rule_enum or WindingRule.NON_ZERO
+            elif isinstance(record, DashPatternRecord):
+                style["dash_offset"] = record.offset or 0
+                style["dash_elements"] = record.elements
+        return path, style
+
+    def _artworks_pdf_interpolate_blend_style(self, start_style: dict, end_style: dict, t: float, artwork) -> dict:
+        style = dict(end_style if t >= 0.5 else start_style)
+        stroke = _interpolate_colour_index(
+            artwork.resolve_colour(start_style["stroke"]), artwork.resolve_colour(end_style["stroke"]), t
+        )
+        if stroke is not None:
+            style["stroke"] = stroke
+        a, b = start_style["stroke_width"], end_style["stroke_width"]
+        style["stroke_width"] = a + (b - a) * t
+        if start_style["fill_type"] == FillType.FLAT and end_style["fill_type"] == FillType.FLAT:
+            fill = _interpolate_colour_index(
+                artwork.resolve_colour(start_style["fill_colour"]) if start_style["fill_colour"] else None,
+                artwork.resolve_colour(end_style["fill_colour"]) if end_style["fill_colour"] else None,
+                t,
+            )
+            if fill is not None:
+                style["fill_type"] = FillType.FLAT
+                style["fill_colour"] = fill
+        return style
 
     def _artworks_pdf_process_text(self, record, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
         if not (record.control_word >> 1) & 1:
@@ -2517,6 +2624,13 @@ class PDFConverter(Converter):
             style = dict(style)
             style["fill_type"] = FillType.FLAT
             style["fill_colour"] = ColourIndex(0xFFFFFFFF)
+        self._artworks_pdf_emit_path(path, style, artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_emit_path(self, path, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        """The drawing core shared by _artworks_pdf_emit (a real
+        geometry Record, already visibility/fill-flag checked) and
+        _artworks_pdf_process_blend_group (a synthesised interpolated
+        path with no Record of its own behind it)."""
         ops = self._artworks_pdf_path_ops(path, to_pt)
         if not ops:
             return

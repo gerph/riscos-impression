@@ -2758,3 +2758,78 @@ def test_artworks_picture_frame_with_unparseable_data_falls_back_to_placeholder(
 
     assert b"([ArtWorks])" in data
     assert any("ArtWorks" in e.message for e in converter.log.entries)
+
+
+def test_artworks_pdf_blend_group_interpolates_geometry_and_stroke_colour():
+    # Unit-tests PDFConverter._artworks_pdf_process_blend_group directly
+    # against hand-built riscos_artworks dataclasses (reusing the same
+    # helpers as formats/artworks_svg.py's own blend tests), bypassing
+    # ArtWorks.from_buffer()'s byte-level decoding entirely -- this
+    # class needs no document/page state at all for that method, only
+    # self._content, so a full PDF document isn't built here.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import BlendGroupRecord, BlendOptionsRecord, PathRecord, StrokeColourRecord
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square
+
+    start_stroke = _record(StrokeColourRecord, colour=_direct(255, 0, 0))
+    start_path = _record(PathRecord, path=_square(0, 0, 1000), child_lists=(_list(start_stroke),))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    end_stroke = _record(StrokeColourRecord, colour=_direct(0, 0, 255))
+    end_path = _record(PathRecord, path=_square(2000, 2000, 200), child_lists=(_list(end_stroke),))
+    group = _record(
+        BlendGroupRecord, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._artworks_pdf_process_blend_group(
+        group, dict(_DEFAULT_STYLE), artwork, lambda x, y: (x, y), 1.0, [],
+    )
+    content = "".join(converter._content)
+
+    assert content.count(" m\n") == 5  # blend_steps + 1
+    assert "0 0 m\n" in content  # t=0: exactly the start keyframe
+    assert "2000 2000 m\n" in content  # t=1: exactly the end keyframe
+    assert "1 0 0 RG" in content  # t=0 stroke colour
+    assert "0 0 1 RG" in content  # t=1 stroke colour
+
+
+def test_artworks_pdf_blend_group_with_mismatched_point_counts_draws_both_keyframes():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import BlendGroupRecord, BlendOptionsRecord, CloseElement, EndElement, LineElement, MoveElement, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _list, _record, _square
+
+    start_path = _record(PathRecord, path=_square(0, 0, 1000))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    triangle_path = (
+        MoveElement(2, Point(2000, 2000)),
+        LineElement(8, Point(2200, 2000)),
+        LineElement(8, Point(2100, 2200)),
+        CloseElement(5),
+        EndElement(0),
+    )
+    end_path = _record(PathRecord, path=triangle_path)
+    group = _record(
+        BlendGroupRecord, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._artworks_pdf_process_blend_group(
+        group, dict(_DEFAULT_STYLE), artwork, lambda x, y: (x, y), 1.0, [],
+    )
+    content = "".join(converter._content)
+
+    assert content.count(" m\n") == 2
+    assert "0 0 m\n" in content
+    assert "2000 2000 m\n" in content

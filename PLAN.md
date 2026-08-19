@@ -2486,8 +2486,28 @@ sub-checklist since it's the area most likely to grow piecemeal.
     counts would help decide whether AWViewer's own point-insertion
     algorithm is ever worth implementing here.
 
-- [ ] **ArtWorks blend interpolation — PDF.** Depends on the SVG item
-  above landing first (same interpolation logic, different emitter).
+- [x] **ArtWorks blend interpolation — PDF.** `_artworks_pdf_process_blend_group`
+  in `pdfdoc.py` reuses `formats/artworks_svg.py`'s own module-level
+  `_interpolate_path`/`_interpolate_colour_index` helpers directly (not
+  re-derived), with a parallel `_artworks_pdf_capture_blend_keyframe` and
+  `_artworks_pdf_interpolate_blend_style` mirroring the SVG converter's
+  own keyframe-capture/style-interpolation logic, but emitting PDF path
+  operators instead of SVG markup -- exactly the "same interpolation
+  logic, different emitter" this item originally anticipated.
+  `_artworks_pdf_emit` was split so its drawing core
+  (`_artworks_pdf_emit_path`) can be reused for a synthesised
+  interpolated path that has no `Record` of its own behind it. Verified
+  against the real corpus picture (entry 50) by rasterising the PDF with
+  PyMuPDF and comparing crops directly: geometry/stroke/fill match the
+  SVG rendering exactly wherever a feature is supported by both (the
+  sky's flat-yellow fallback is the already-documented PDF gradient
+  limitation, not a blend bug -- confirmed by rendering the *same* SVG
+  through MuPDF's own SVG engine, where the walls are black in both
+  outputs, ruling out a PDF-specific colour bug). Unit-tested with the
+  same hand-built `BlendGroupRecord` fixtures as the SVG tests (geometry
+  interpolation, stroke colour at t=0/1, and the mismatched-point-count
+  fallback), calling `_artworks_pdf_process_blend_group` directly since
+  it needs no document/page state. Full suite (471 tests) passes.
 
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
