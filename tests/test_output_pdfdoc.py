@@ -2814,8 +2814,8 @@ def test_artworks_pdf_character_font_size_is_converted_via_font_size_to_native_u
     converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
     content = "".join(converter._content)
 
-    assert FONT_SIZE_TO_NATIVE_UNITS == 30.0
-    assert " 15360 Tf " in content  # 512 * 30 * scale(1.0)
+    assert FONT_SIZE_TO_NATIVE_UNITS == 40.0
+    assert " 20480 Tf " in content  # 512 * 40 * scale(1.0)
 
 
 def test_artworks_pdf_blend_group_interpolates_geometry_and_stroke_colour():

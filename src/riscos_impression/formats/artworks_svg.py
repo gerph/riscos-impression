@@ -206,11 +206,43 @@ from riscos_artworks import (
     denormalise,
 )
 
-#: ArtWorks' own native unit -> "user units" in the emitted SVG's own
-#: declared width/height (the coordinate system inside the SVG's own
-#: viewBox stays in native units throughout; see the module docstring).
-#: Matches riscos-artworks-js's own ARTWORKS_UNITS_TO_USER_UNITS exactly.
-ARTWORKS_UNIT_TO_USER_UNITS = (1.0 / 640.0) * (4.0 / 3.0)
+#: ArtWorks' own native unit -> "user units" (this project's own
+#: convention: CSS/PDF points, 72 per inch, matching every other
+#: converter's own "_pt" fields throughout riscos_impression) in the
+#: emitted SVG's own declared width/height (the coordinate system
+#: inside the SVG's own viewBox stays in native units throughout; see
+#: the module docstring).
+#:
+#: A previous version of this constant carried an extra *(4.0/3.0)
+#: factor, described as matching riscos-artworks-js's own
+#: ARTWORKS_UNITS_TO_USER_UNITS -- true of that constant's own value,
+#: but not of its own *unit*: riscos-artworks-js targets a browser's
+#: own CSS pixels (96 per inch) as its "user units", not points (72
+#: per inch) the way this project's own "_pt"-suffixed fields
+#: everywhere else do, and 96/72 is exactly 4/3 -- so copying that
+#: constant's own value verbatim, into a project using a different
+#: target unit, silently introduced a 4/3 (33%) oversizing error
+#: throughout every ArtWorks picture's own rendered size, without
+#: affecting anything *within* one picture (every element in a
+#: picture shares the same error, so proportions -- e.g. text size
+#: relative to a disc's own diameter -- still matched a real
+#: reference render exactly, which is what let it go unnoticed until
+#: the user directly compared a picture's own real, dialog-reported
+#: mm/percent placement figures against the rendered output and
+#: found it about a third too big).
+#:
+#: Confirmed and corrected via a real, independent, and exact source:
+#: ArtWorksHeader.american_paper_width/height (391680, 506880 in
+#: every real picture checked, corpus/TestDoc,bc5's own dictionary
+#: entries 48/50/51) divide *exactly* -- no rounding at all -- by US
+#: Letter's own dimensions in points (612 x 792, i.e. 8.5in/11in x
+#: 72pt/in): 391680 / 612 == 506880 / 792 == 640.0 precisely. That
+#: makes the correct native-units-per-point figure exactly 640, with
+#: no additional factor -- corroborated by european_paper_width/height
+#: (538808, 380976 there) landing within A4's own point size's
+#: rounding (595.28pt x 841.89pt, themselves not exact integers)
+#: of the same 640 figure.
+ARTWORKS_UNIT_TO_USER_UNITS = 1.0 / 640.0
 
 #: FontSizeRecord.x_size/y_size -> native ArtWorks coordinate units
 #: (the same space every other geometry field, including
@@ -231,16 +263,17 @@ ARTWORKS_UNIT_TO_USER_UNITS = (1.0 / 640.0) * (4.0 / 3.0)
 #: 728, 480, 576, 832, 352) by 16 gives a consistent set of ordinary,
 #: round-ish point sizes (32, 20, 45.5, 30, 36, 52, 22), rather than
 #: the sub-point sizes a "already native units" or a "1/640 point"
-#: (DrawFile's own text-size convention) reading would give. Combined
-#: with ARTWORKS_UNIT_TO_USER_UNITS's own native-units-per-point factor
-#: (1 / ARTWORKS_UNIT_TO_USER_UNITS = 480), this gives
-#: 480 / 16 = 30 native units per FontSizeRecord unit -- cross-checked
-#: against real CharacterRecord.bounding_box/TextRecord.bounding_box
-#: heights at several different font sizes across both pictures, and
-#: landing consistently within the range a font's own cap-height
-#: (~70-100% of em-size) and full ascent+descent line-height
-#: (~115-135% of em-size) would be expected to fall in.
-FONT_SIZE_TO_NATIVE_UNITS = 480.0 / 16.0
+#: (DrawFile's own text-size convention) reading would give. Expressed
+#: as a function of ARTWORKS_UNIT_TO_USER_UNITS's own native-units-
+#: per-point figure (1 / ARTWORKS_UNIT_TO_USER_UNITS, 640) rather than
+#: a second hardcoded constant, so the two stay consistent with each
+#: other automatically -- cross-checked against real
+#: CharacterRecord.bounding_box/TextRecord.bounding_box heights at
+#: several different font sizes across both pictures, landing
+#: consistently within the range a font's own cap-height (~70-100% of
+#: em-size) and full ascent+descent line-height (~115-135% of em-size)
+#: would be expected to fall in.
+FONT_SIZE_TO_NATIVE_UNITS = (1.0 / ARTWORKS_UNIT_TO_USER_UNITS) / 16.0
 
 _JOIN_CSS = {JoinStyle.MITRE: "miter", JoinStyle.ROUND: "round", JoinStyle.BEVEL: "bevel"}
 _CAP_CSS = {CapStyle.BUTT: "butt", CapStyle.ROUND: "round", CapStyle.SQUARE: "square", CapStyle.TRIANGLE: "butt"}

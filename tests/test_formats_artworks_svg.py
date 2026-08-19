@@ -250,8 +250,8 @@ def test_bounding_box_drives_the_viewbox_and_unit_scaled_size():
     svg = artworks_to_svg(artwork)
 
     assert 'viewBox="0 -640 640 640"' in svg
-    # 640 artworks units * (1/640) * (4/3) = 4/3 pt.
-    assert 'width="1.3333pt"' in svg
+    # 640 artworks units * (1/640) = 1pt.
+    assert 'width="1pt"' in svg
 
 
 def test_artworks_svg_fragment_matches_artworks_to_svgs_own_viewbox_and_content():
@@ -266,8 +266,8 @@ def test_artworks_svg_fragment_matches_artworks_to_svgs_own_viewbox_and_content(
     viewbox, width_pt, height_pt, inner = artworks_svg_fragment(artwork)
 
     assert viewbox == "0 -640 640 640"
-    assert width_pt == "1.3333"
-    assert height_pt == "1.3333"
+    assert width_pt == "1"
+    assert height_pt == "1"
     assert "<defs>" in inner
     assert '<g transform="scale(1,-1)">' in inner
     assert 'fill="rgb(0,0,255)"' in inner
@@ -425,9 +425,9 @@ def test_text_renders_one_svg_text_glyph_per_character_at_its_own_position():
     assert ">B<" in svg
     assert 'translate(1000,2000)' in svg
     assert 'translate(1500,2000)' in svg
-    # y_size(320) * FONT_SIZE_TO_NATIVE_UNITS(30) -- see that constant's
+    # y_size(320) * FONT_SIZE_TO_NATIVE_UNITS(40) -- see that constant's
     # own docstring for the empirical derivation.
-    assert 'font-size="9600"' in svg
+    assert 'font-size="12800"' in svg
 
 
 def test_text_uses_the_current_fill_colour():
@@ -460,8 +460,8 @@ def test_character_font_size_is_converted_via_font_size_to_native_units():
 
     svg = artworks_to_svg(artwork)
 
-    assert FONT_SIZE_TO_NATIVE_UNITS == 30.0
-    assert 'font-size="15360"' in svg  # 512 * 30
+    assert FONT_SIZE_TO_NATIVE_UNITS == 40.0
+    assert 'font-size="20480"' in svg  # 512 * 40
 
 
 def test_text_object_angle_rotates_every_one_of_its_own_characters():

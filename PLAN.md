@@ -2675,6 +2675,43 @@ sub-checklist since it's the area most likely to grow piecemeal.
   Regression-tested in both converters against the real document's own
   confirmed raw values. Full suite (487 tests) passes.
 
+- [x] **ArtWorks pictures rendered about a third too big (both SVG and
+  PDF).** After the xshift/yshift/xscale placement fix above, the user
+  checked the real document's own picture-info dialog figures directly
+  (graphic X/Y and scale%) and found the rendered *scale itself*
+  matched exactly (16.2%, 40%), but the overall rendered size still
+  looked roughly 33% too big regardless. Traced to
+  `ARTWORKS_UNIT_TO_USER_UNITS`, the native-ArtWorks-unit-to-point
+  conversion factor every placement/geometry/font-size calculation in
+  both converters is built on: it carried an extra `*(4/3)` beyond the
+  base `1/640`, described as "matching riscos-artworks-js's own
+  ARTWORKS_UNITS_TO_USER_UNITS" -- true of that constant's own numeric
+  value, but that project targets a browser's own CSS pixels (96 per
+  inch) as its "user units", not points (72 per inch) the way this
+  project's own "_pt"-suffixed fields do everywhere else; 96/72 is
+  exactly 4/3, so copying the value verbatim into a points-based
+  project silently introduced a 4/3 oversizing error throughout. It
+  went unnoticed until now because the error is uniform across an
+  entire picture's own content -- proportions *within* one picture
+  (e.g. title text size relative to a disc's own diameter) still
+  matched a real reference render exactly, which is what the earlier
+  font-size and pathified-text fixes above were verified against.
+
+  Corrected via a real, independent, and exact source:
+  `ArtWorksHeader.american_paper_width/height` (391680, 506880 in
+  every real picture checked) divide *exactly* -- no rounding -- by US
+  Letter's own size in points (612 x 792, i.e. 8.5in/11in x 72pt/in):
+  `391680 / 612 == 506880 / 792 == 640.0` precisely, confirming the
+  correct native-units-per-point figure is exactly 640 with no
+  additional factor (corroborated by `european_paper_width/height`,
+  538808/380976, landing within A4's own point size's rounding of the
+  same 640 figure). `ARTWORKS_UNIT_TO_USER_UNITS` is now `1/640`
+  directly; `FONT_SIZE_TO_NATIVE_UNITS` (added by the earlier font-size
+  fix) is now derived from it (`(1/ARTWORKS_UNIT_TO_USER_UNITS)/16`)
+  rather than a second hardcoded constant, so the two can't drift apart
+  again. Existing tests asserting the old (33%-too-big) numeric
+  expectations updated to match. Full suite (487 tests) passes.
+
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
   inside one.
