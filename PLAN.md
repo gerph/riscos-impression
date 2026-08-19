@@ -2750,29 +2750,45 @@ sub-checklist since it's the area most likely to grow piecemeal.
     sprite examples to narrow this down further, the same way the
     three files above resolved the palette-count question precisely.
 
-- [ ] **ArtWorks "direct" colour words only resolve as RGB, not CMYK/HSV.**
-  The user reported a real document (corpus/TestDoc,bc5's own "SVG logo"
-  picture) rendering a shape's own fill as blue instead of an unnamed
-  CMYK colour (59.8% / 99.6% / 99.2% / 0% K, confirmed from the real
-  document's own colour picker dialog). The fill word in question,
-  `0xFFFF9C00`, satisfies `riscos_artworks.ColourIndex`'s own
-  `value >= 0x01000000` "direct colour" test, and is currently *always*
-  unpacked as a raw BGR triple (giving RGB(0,156,255), a blue) --
-  `ColourIndex` has no model-selector logic for a direct colour word at
-  all, unlike Impression's own inline colour value words (docs/
-  impression-documents.xml's own "Inline colour value words": low 2
-  bits select RGB/CMYK/HSV/named). Checked whether this fill might
-  instead be a palette index into one of the picture's own "unnamed"
-  palette entries (`colour_model_value == 0`, all with markedly smaller
-  component values than the picture's own named colours) and tried
-  treating their components as MAXCV-scaled CMYK percentages -- none
-  matched the confirmed 59.8/99.6/99.2/0 values closely enough to be
-  confident, so this remains unresolved rather than guessed at further.
-  **Example document wanted:** the user is preparing a minimal ArtWorks
-  document with a single shape filled with exactly that CMYK colour via
-  the real colour picker, to byte-inspect the exact on-disk encoding
-  against known percentages -- the same approach that pinned down the
-  HSV hue bug and the sprite palette-count bug precisely.
+- [ ] **ArtWorks "direct" (non-indexed) colour words don't resolve
+  correctly.** The user reported a real document (corpus/TestDoc,bc5's
+  own "SVG logo" picture) rendering a shape's own fill as blue instead
+  of an unnamed CMYK colour (59.8% / 99.6% / 99.2% / 0% K, confirmed
+  from the real document's own colour picker dialog). The fill word in
+  question, `0xFFFF9C00`, satisfies `riscos_artworks.ColourIndex`'s own
+  `value >= 0x01000000` "direct colour" test, and is currently unpacked
+  as a raw BGR triple (giving RGB(0,156,255), a blue).
+
+  Three further real example documents the user provided
+  (`AWDocs/TestDocs/TextCMYK64,26,75,45_Process,d94`,
+  `TextCMYK70,60,50,40_Spot,d94`, `PolygonStellated6Sides,d94`) resolved
+  one branch of this investigation conclusively but not the reported
+  bug itself: all three use a *palette-indexed* colour reference
+  (`ColourIndex` value < 0x01000000, e.g. index 17), not a direct one.
+  Confirmed exactly against both CMYK files' own filenames (component /
+  2147483647 * 100 matches the declared percentages to 8+ significant
+  figures for both a process and a spot colour), and confirmed
+  riscos-impression already renders both correctly -- each
+  `PaletteEntry` carries its own pre-baked preview `.colour` word
+  (e.g. `0x20004a00` for "DGreen", CMYK 64/26/75/45), already resolved
+  and used correctly by the existing `Palette.resolve()` /
+  `_artworks_pdf_rgb` pipeline, with no CMYK-specific handling needed
+  downstream at all. So: indexed CMYK colours were never actually
+  broken.
+
+  The original bug is therefore specifically about a *direct* colour
+  word, still unreproduced by any example so far. Also confirmed
+  `FillColourRecord`'s own on-disk layout (`fill_type`, `unknown_28`,
+  `colour` -- three plain words, no room for a hidden extra field the
+  way `SpriteRecord` had) is simple and correctly aligned, so
+  `0xFFFF9C00` is genuinely what's stored on disk for this fill;
+  the mystery is purely in how to interpret it correctly, not a
+  decode/alignment bug. **Example document wanted:** either a document
+  with a shape filled via a picked-but-not-palette-added colour (so it
+  stays a direct reference rather than being indexed), or confirmation
+  from real ArtWorks/AWViewer's own Object Info dialog on the SVG-logo
+  shape specifically, to pin down the intended resolved colour without
+  further guessing.
 
 - [ ] **EPS content rendering.** Always a placeholder box in both HTML
   and PDF; PDF at least attaches the raw EPS as an embedded file (no
