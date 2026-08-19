@@ -2417,9 +2417,32 @@ sub-checklist since it's the area most likely to grow piecemeal.
   reached `pdfdoc.py` -- `_draw_picture_content`'s ArtWorks branch is
   still the placeholder box. Sub-checklist, ticked off as each piece
   lands (mirroring what SVG already covers):
-  - [ ] Path/rectangle/ellipse/rounded-rectangle geometry, flat fill/stroke
-  - [ ] Linear/radial gradient fills
-  - [ ] Text (`TextRecord`/`CharacterRecord`)
+  - [x] Path/rectangle/ellipse/rounded-rectangle geometry, flat fill/stroke.
+    `_draw_artworks_picture` and its `_artworks_pdf_*` walker methods in
+    `pdfdoc.py` mirror `formats/artworks_svg.py`'s `_SvgBuilder` record-tree
+    walk and style cascade exactly, but emit PDF path operators (`m`/`l`/
+    `c`/`h`) and fill/stroke operators (`f`/`f*`/`S`/`B`/`B*` chosen from
+    `style["winding"]` and whether fill/stroke are active) instead of SVG
+    markup. No Y-flip is needed anywhere (PDF and ArtWorks' own native
+    coordinates are both Y-up), unlike the SVG converter's own outer
+    `scale(1,-1)` plus local text counter-flip -- a genuine simplification.
+    Stroke width uses PDF's own `w` operator directly: PDF's "0 = thinnest
+    device line" convention matches ArtWorks' own zero-width semantics with
+    no SVG-style hack needed. `JoinStyle`/`CapStyle` map onto PDF's `j`/`J`
+    operators directly (confirmed numeric alignment for join; `CapStyle.
+    TRIANGLE` has no PDF equivalent and falls back to butt, undocumented
+    beyond a code comment since it's a decorative simplification, not
+    logged). Text (`TextRecord`/`CharacterRecord`) draws via `BT`/`Tf`/
+    `Tm`/`Tj`/`ET`, with a real rotation matrix (`cos sin -sin cos x y Tm`)
+    for the character's own angle rather than SVG's translate+scale+rotate
+    trick, since there is no ambient flip to cancel here.
+  - [ ] Linear/radial gradient fills. Deferred: a gradient `FillColourRecord`
+    currently falls back to a flat fill using its own start colour, with a
+    `best_effort` log note that real PDF gradients (a Shading Pattern)
+    aren't implemented yet. Needs its own dedicated commit.
+  - [x] Text (`TextRecord`/`CharacterRecord`) -- see above; landed together
+    with geometry/fill/stroke in the same commit since both walk the same
+    record tree via the same style cascade.
   - [ ] Blends (depends on the SVG/PDF blend-interpolation items below
     landing first, so the same interpolated geometry can be reused rather
     than re-derived independently for PDF)

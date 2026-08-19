@@ -157,6 +157,52 @@ from riscos_impression.formats.sprite_png import (
     raw_scanline_bytes,
     sprite_area_to_png_image,
 )
+
+try:
+    # riscos_artworks is only installed via this project's own optional
+    # "artworks" extra (see pyproject.toml) -- ArtWorks pictures fall
+    # back to the usual labelled placeholder, exactly like any other
+    # undecoded picture kind, when it isn't available. Reuses
+    # formats/artworks_svg.py's own structural constants (_GEOMETRY_TYPES,
+    # _DEFAULT_STYLE, path tag constants) rather than re-declaring them --
+    # a one-way dependency (this module depends on that one, never the
+    # reverse) that doesn't compromise artworks_svg.py's own "no
+    # dependency on the rest of riscos_impression" self-containment.
+    from riscos_artworks import (
+        ArtWorks,
+        CapStyle,
+        ColourIndex,
+        FillType,
+        JoinStyle,
+        Record,
+        WindingRule,
+        denormalise,
+    )
+    from riscos_impression.formats.artworks_svg import (
+        _DEFAULT_STYLE,
+        _GEOMETRY_TYPES,
+        _TAG_BEZIER,
+        _TAG_CLOSE,
+        _TAG_LINE,
+        _TAG_MOVE,
+        CharacterRecord,
+        DashPatternRecord,
+        EndCapRecord,
+        FillColourRecord,
+        FontNameRecord,
+        FontSizeRecord,
+        JoinStyleRecord,
+        StartCapRecord,
+        StrokeColourRecord,
+        StrokeWidthRecord,
+        TextRecord,
+        WindingRuleRecord,
+        artworks_svg_fragment,
+    )
+except ImportError:  # pragma: no cover - exercised by CI without the extra
+    ArtWorks = None
+    denormalise = None
+    artworks_svg_fragment = None
 from riscos_impression.log import ConversionLog
 from riscos_impression.output import font_metrics
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
@@ -1772,12 +1818,26 @@ class PDFConverter(Converter):
             return
 
         if kind is EmbeddedObjectType.ARTWORKS:
-            self._draw_placeholder(x0, y0, x1, y1, "ArtWorks")
-            self.log.unsupported(
-                "picture",
-                "ArtWorks picture rendered as a placeholder box; this format is "
-                "not decoded at all by this converter",
-            )
+            if ArtWorks is None:
+                self._draw_placeholder(x0, y0, x1, y1, "ArtWorks")
+                self.log.unsupported(
+                    "picture", "ArtWorks picture rendered as a placeholder box; the optional "
+                    "'artworks' extra (riscos_artworks) is not installed"
+                )
+                return
+            try:
+                artwork = ArtWorks.from_buffer(data)
+            except Exception as e:
+                # A real, current riscos_artworks decoder gap (not this
+                # project's own bug) -- see html_base.py's own identical
+                # handling for the SVG converter, which found this in
+                # practice against a real document.
+                self._draw_placeholder(x0, y0, x1, y1, "ArtWorks")
+                self.log.best_effort(
+                    "picture", f"ArtWorks picture rendered as a placeholder box; failed to decode ({e})"
+                )
+                return
+            self._draw_artworks_picture(artwork, x0, y0, x1, y1)
             return
 
         label = kind.value if kind is not None else "data"
@@ -2340,6 +2400,231 @@ class PDFConverter(Converter):
         self._content.append(
             f"q {_fmt(x1 - x0)} 0 0 {_fmt(y1 - y0)} {_fmt(x0)} {_fmt(y0)} cm /{name} Do Q\n"
         )
+
+    # -- ArtWorks pictures --------------------------------------------------
+
+    def _draw_artworks_picture(self, artwork, x0: float, y0: float, x1: float, y1: float) -> None:
+        """Real ArtWorks rendering for PDF: paths/rectangles/ellipses/
+        rounded-rectangles/blend-path-keyframes with flat fill/stroke,
+        and text -- following the same record-tree walk and style
+        cascade as the SVG converter (formats/artworks_svg.py):
+        denormalise() first (see that module's own docstring for why),
+        then a style dict threaded through process_lists/process_record.
+        Gradient fills are approximated as a flat colour (their own
+        start colour) for now, logged best_effort -- see PLAN.md's own
+        ArtWorks-in-PDF sub-checklist; not yet a real PDF Shading
+        Pattern. Blends are not attempted at all here (see
+        artworks_svg.py's own docstring for why: blend keyframes are
+        marked invisible by design, needing real interpolation neither
+        converter does yet).
+
+        Unlike DrawFile rendering, no xshift/yshift/rotation placement
+        heuristic is attempted -- the artwork's own native bounding box
+        (reusing artworks_svg.py's own bbox computation, via its
+        `viewbox` string, rather than re-deriving it independently) is
+        simply scaled to fit and centred within the frame's own box,
+        matching the SVG converter's own nested-viewport behaviour
+        exactly. Both ArtWorks' own native coordinates and PDF are
+        Y-up, so -- unlike SVG's own Y-down convention -- no coordinate
+        flip is needed anywhere here, including for text."""
+        denormalised = denormalise(artwork)
+        viewbox, _width_pt, _height_pt, _inner = artworks_svg_fragment(artwork)
+        min_x, neg_max_y, width, height = (float(v) for v in viewbox.split())
+        min_y = -neg_max_y - height
+        if width <= 0 or height <= 0:
+            return
+        scale = min((x1 - x0) / width, (y1 - y0) / height)
+        origin_x = x0 + ((x1 - x0) - width * scale) / 2.0
+        origin_y = y0 + ((y1 - y0) - height * scale) / 2.0
+
+        def to_pt(nx: float, ny: float) -> tuple[float, float]:
+            return origin_x + (nx - min_x) * scale, origin_y + (ny - min_y) * scale
+
+        notes: list[str] = []
+        self._content.append("q\n")
+        self._artworks_pdf_process_lists(
+            denormalised.record_lists, dict(_DEFAULT_STYLE), denormalised, to_pt, scale, notes
+        )
+        self._content.append("Q\n")
+        for note in dict.fromkeys(notes):  # de-duplicate, keep first-seen order
+            self.log.best_effort("picture", note)
+
+    def _artworks_pdf_process_lists(self, lists, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        for record_list in lists:
+            self._artworks_pdf_process_list(record_list.records, style, artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_process_list(self, records, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        for record in records:
+            self._artworks_pdf_process_record(record, style, artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_process_record(self, record, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        if isinstance(record, _GEOMETRY_TYPES):
+            self._artworks_pdf_process_geometry(record, style, artwork, to_pt, scale, notes)
+        elif isinstance(record, StrokeColourRecord):
+            style["stroke"] = record.colour
+        elif isinstance(record, StrokeWidthRecord):
+            style["stroke_width"] = record.width
+        elif isinstance(record, FillColourRecord):
+            style["fill_type"] = record.fill_type_enum or FillType.FLAT
+            style["fill_colour"] = record.colour
+            style["gradient_line"] = record.gradient_line
+            style["fill_start"] = record.start_colour
+            style["fill_end"] = record.end_colour
+        elif isinstance(record, JoinStyleRecord):
+            style["join"] = record.join_style_enum or JoinStyle.MITRE
+        elif isinstance(record, StartCapRecord):
+            style["cap_start"] = record.cap_style_enum or CapStyle.BUTT
+        elif isinstance(record, EndCapRecord):
+            style["cap_end"] = record.cap_style_enum or CapStyle.BUTT
+        elif isinstance(record, WindingRuleRecord):
+            style["winding"] = record.winding_rule_enum or WindingRule.NON_ZERO
+        elif isinstance(record, DashPatternRecord):
+            style["dash_offset"] = record.offset or 0
+            style["dash_elements"] = record.elements
+        elif isinstance(record, FontNameRecord):
+            style["font_name"] = record.font_name.text
+        elif isinstance(record, FontSizeRecord):
+            style["font_size"] = record.y_size
+        elif isinstance(record, TextRecord):
+            self._artworks_pdf_process_text(record, style, artwork, to_pt, scale, notes)
+        elif isinstance(record, CharacterRecord):
+            self._artworks_pdf_emit_character(record, style, artwork, to_pt, scale, notes)
+        else:
+            self._artworks_pdf_process_lists(record.child_lists, dict(style), artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_process_text(self, record, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        child_style = dict(style)
+        angle_raw = record.unknown_values[5] if len(record.unknown_values) > 5 else 0
+        child_style["text_angle"] = angle_raw / 65536.0
+        self._artworks_pdf_process_lists(record.child_lists, child_style, artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_process_geometry(self, record, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        child_style = dict(style)
+        self._artworks_pdf_process_lists(record.child_lists, child_style, artwork, to_pt, scale, notes)
+        self._artworks_pdf_emit(record, child_style, artwork, to_pt, scale, notes)
+
+    def _artworks_pdf_emit(self, record, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        if not (record.control_word >> 1) & 1:
+            return  # bit 1 clear: object marked not visible
+        path = record.path
+        if not path:
+            return
+        if not (path[0].tag >> 31) & 1:
+            # ArtWorks' own per-path "is filled" flag is clear: drawn
+            # unfilled regardless of whatever fill colour is in scope.
+            style = dict(style)
+            style["fill_type"] = FillType.FLAT
+            style["fill_colour"] = ColourIndex(0xFFFFFFFF)
+        ops = self._artworks_pdf_path_ops(path, to_pt)
+        if not ops:
+            return
+        fill_rgb = self._artworks_pdf_fill_rgb(style, artwork, notes)
+        stroke_rgb = self._artworks_pdf_stroke_rgb(style, artwork)
+        if fill_rgb is None and stroke_rgb is None:
+            return
+        parts = []
+        if fill_rgb is not None:
+            parts.append(f"{_fmt(fill_rgb[0])} {_fmt(fill_rgb[1])} {_fmt(fill_rgb[2])} rg\n")
+        if stroke_rgb is not None:
+            parts.append(f"{_fmt(stroke_rgb[0])} {_fmt(stroke_rgb[1])} {_fmt(stroke_rgb[2])} RG\n")
+            parts.append(f"{_fmt(max(style['stroke_width'] * scale, 0.0))} w\n")
+            join = {JoinStyle.MITRE: 0, JoinStyle.ROUND: 1, JoinStyle.BEVEL: 2}.get(style["join"], 0)
+            # PDF's own line-cap styles have no triangular option (RISC OS
+            # Draw/ArtWorks' own arrowhead-style cap) -- falls back to
+            # butt, a decorative simplification, not logged separately.
+            cap = {CapStyle.BUTT: 0, CapStyle.ROUND: 1, CapStyle.SQUARE: 2, CapStyle.TRIANGLE: 0}.get(
+                style["cap_start"], 0
+            )
+            parts.append(f"{join} j {cap} J\n")
+        parts.append(ops)
+        even_odd = style["winding"] == WindingRule.EVEN_ODD
+        if fill_rgb is not None and stroke_rgb is not None:
+            parts.append("B*\n" if even_odd else "B\n")
+        elif fill_rgb is not None:
+            parts.append("f*\n" if even_odd else "f\n")
+        else:
+            parts.append("S\n")
+        self._content.append("".join(parts))
+
+    def _artworks_pdf_emit_character(self, record, style: dict, artwork, to_pt, scale: float, notes: list[str]) -> None:
+        # See artworks_svg.py's own docstring for how unknown_values and
+        # character_code were reverse-engineered. Unlike SVG, no local
+        # Y-flip-cancelling transform is needed for the glyph itself
+        # (PDF and ArtWorks' own native coordinates are both Y-up) --
+        # only the object's own rotation angle needs a real matrix (Tm),
+        # not just a translation (Td).
+        if len(record.unknown_values) < 2:
+            return
+        char = record.character_code & 0xFF
+        if char < 0x20 or char == 0x7F:
+            return  # control character (kerning/ligature marker?), nothing to draw
+        font_size_pt = style["font_size"] * scale
+        if font_size_pt <= 0.1:
+            return
+        fill_rgb = self._artworks_pdf_fill_rgb(style, artwork, notes)
+        if fill_rgb is None:
+            fill_rgb = self._artworks_pdf_stroke_rgb(style, artwork)
+        if fill_rgb is None:
+            return
+        x, y = to_pt(record.unknown_values[0], record.unknown_values[1])
+        pdf_font = _standard_font_for(style["font_name"], bold=False, italic=False)
+        angle_rad = math.radians(style["text_angle"])
+        cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
+        colour_op = f"{_fmt(fill_rgb[0])} {_fmt(fill_rgb[1])} {_fmt(fill_rgb[2])} rg\n"
+        self._content.append(
+            f"{colour_op}BT /{self._font_resource_name[pdf_font]} {_fmt(font_size_pt)} Tf "
+            f"{_fmt(cos_a)} {_fmt(sin_a)} {_fmt(-sin_a)} {_fmt(cos_a)} {_fmt(x)} {_fmt(y)} Tm "
+            f"{_pdf_str(chr(char))} Tj ET\n"
+        )
+
+    @staticmethod
+    def _artworks_pdf_path_ops(path, to_pt) -> str:
+        parts = []
+        for element in path:
+            masked = element.tag & 0xFF
+            if masked == _TAG_MOVE:
+                x, y = to_pt(element.point.x, element.point.y)
+                parts.append(f"{_fmt(x)} {_fmt(y)} m\n")
+            elif masked == _TAG_LINE:
+                x, y = to_pt(element.point.x, element.point.y)
+                parts.append(f"{_fmt(x)} {_fmt(y)} l\n")
+            elif masked == _TAG_BEZIER:
+                c1x, c1y = to_pt(element.control_1.x, element.control_1.y)
+                c2x, c2y = to_pt(element.control_2.x, element.control_2.y)
+                ex, ey = to_pt(element.end.x, element.end.y)
+                parts.append(f"{_fmt(c1x)} {_fmt(c1y)} {_fmt(c2x)} {_fmt(c2y)} {_fmt(ex)} {_fmt(ey)} c\n")
+            elif masked == _TAG_CLOSE:
+                parts.append("h\n")
+            # TAG_END and any unrecognised tag contribute nothing.
+        return "".join(parts)
+
+    @staticmethod
+    def _artworks_pdf_rgb(bgr: Optional[int]) -> Optional[tuple[float, float, float]]:
+        """(r, g, b) floats 0-1 from a resolved ArtWorks BGR word, or
+        None for transparent/unresolved -- same bit layout as
+        artworks_svg.py's own _colour_css."""
+        if bgr is None:
+            return None
+        return ((bgr & 0xFF) / 255.0, ((bgr >> 8) & 0xFF) / 255.0, ((bgr >> 16) & 0xFF) / 255.0)
+
+    def _artworks_pdf_stroke_rgb(self, style: dict, artwork) -> Optional[tuple[float, float, float]]:
+        return self._artworks_pdf_rgb(artwork.resolve_colour(style["stroke"]))
+
+    def _artworks_pdf_fill_rgb(self, style: dict, artwork, notes: list[str]) -> Optional[tuple[float, float, float]]:
+        fill_type = style["fill_type"]
+        if fill_type == FillType.FLAT:
+            colour = style["fill_colour"]
+            return self._artworks_pdf_rgb(artwork.resolve_colour(colour) if colour else None)
+        if fill_type in (FillType.LINEAR, FillType.RADIAL):
+            notes.append(
+                "an ArtWorks gradient fill is approximated as a flat colour (its own "
+                "start colour) in PDF output; true gradients are not yet implemented there"
+            )
+            start = style["fill_start"]
+            return self._artworks_pdf_rgb(artwork.resolve_colour(start) if start is not None else None)
+        return None
 
     def _draw_placeholder(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:
         w, h = x1 - x0, y1 - y0

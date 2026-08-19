@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from riscos_impression.model.colours import Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
@@ -25,6 +27,7 @@ from riscos_impression.output.pdfdoc import (
 
 # Reuse the test helpers already established for the OvProDDL converter's tests.
 from tests.test_output_ovprodll import _picture
+from tests.fixtures.artworks_builders import build_single_path_document
 from tests.fixtures.drawfile_builders import (
     build_drawfile,
     build_font_table,
@@ -2709,3 +2712,49 @@ def test_drawfile_picture_angle_rotates_about_the_drawfiles_own_origin(tmp_path)
     assert round(xb, 3) == 0.0
     assert round(ya, 3) == 0.0
     assert round(yb, 3) == round(xa, 3)
+
+
+def _artworks_picture_document(picture_bytes: bytes, **kwargs):
+    document = _picture_document(picture_bytes, **kwargs)
+    entry = document.dictionary[-1]
+    document.dictionary[-1] = DictionaryEntry(index=entry.index, type=entry.type, id=entry.id, types=0xD94)
+    return document
+
+
+def test_artworks_picture_frame_renders_as_real_pdf_path_content(tmp_path):
+    # No FillColourRecord is present in this minimal fixture, so the
+    # ambient _DEFAULT_STYLE fill colour (ArtWorks' own "no colour"
+    # sentinel, ColourIndex(0xFFFFFFFF)) resolves to None -- matching
+    # the SVG converter's own "solid black hairline stroke, no fill"
+    # default -- so only the stroke operator is expected here, not a
+    # fill/both operator; see the module docstring on _DEFAULT_STYLE.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _artworks_picture_document(build_single_path_document())
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b" m\n" in data
+    assert b" l\n" in data
+    assert b"\nS\n" in data
+    assert b"([ArtWorks])" not in data
+    assert not converter.log.has_errors()
+
+
+def test_artworks_picture_frame_with_unparseable_data_falls_back_to_placeholder(tmp_path):
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _artworks_picture_document(b"not a real ArtWorks file at all")
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"([ArtWorks])" in data
+    assert any("ArtWorks" in e.message for e in converter.log.entries)
