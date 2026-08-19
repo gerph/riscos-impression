@@ -2787,6 +2787,36 @@ def test_artworks_picture_frame_with_unparseable_data_falls_back_to_placeholder(
     assert any("ArtWorks" in e.message for e in converter.log.entries)
 
 
+def test_artworks_pdf_character_font_size_is_converted_via_font_size_to_native_units():
+    # Regression test: FontSizeRecord.y_size was previously used
+    # directly as if it were already in native ArtWorks coordinate
+    # units -- see formats/artworks_svg.py's own
+    # FONT_SIZE_TO_NATIVE_UNITS docstring for the empirical derivation
+    # and why the bug went unnoticed for a while (only glaringly
+    # visible in a picture whose own frame was small).
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import CharacterRecord, FontSizeRecord, TextRecord
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE, FONT_SIZE_TO_NATIVE_UNITS
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _list, _record
+
+    size = _record(FontSizeRecord, x_size=512, y_size=512)
+    char_a = _record(CharacterRecord, character_code=ord("A"), unknown_values=(0, 0, 0, 0))
+    text = _record(TextRecord, unknown_values=(0, 0, 0, 1, 1, 0), rectangle=(), child_lists=(_list(size), _list(char_a)))
+    artwork = _artwork((_list(text),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._font_resource_name = {"Helvetica": "F1"}
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert FONT_SIZE_TO_NATIVE_UNITS == 30.0
+    assert " 15360 Tf " in content  # 512 * 30 * scale(1.0)
+
+
 def test_artworks_pdf_blend_group_interpolates_geometry_and_stroke_colour():
     # Unit-tests PDFConverter._artworks_pdf_process_blend_group directly
     # against hand-built riscos_artworks dataclasses (reusing the same

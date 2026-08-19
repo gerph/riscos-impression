@@ -425,7 +425,9 @@ def test_text_renders_one_svg_text_glyph_per_character_at_its_own_position():
     assert ">B<" in svg
     assert 'translate(1000,2000)' in svg
     assert 'translate(1500,2000)' in svg
-    assert 'font-size="320"' in svg
+    # y_size(320) * FONT_SIZE_TO_NATIVE_UNITS(30) -- see that constant's
+    # own docstring for the empirical derivation.
+    assert 'font-size="9600"' in svg
 
 
 def test_text_uses_the_current_fill_colour():
@@ -440,6 +442,26 @@ def test_text_uses_the_current_fill_colour():
     svg = artworks_to_svg(artwork)
 
     assert 'fill="rgb(0,200,0)"' in svg
+
+
+def test_character_font_size_is_converted_via_font_size_to_native_units():
+    # Regression test: FontSizeRecord.y_size was previously used
+    # directly as if it were already in native ArtWorks coordinate
+    # units -- see FONT_SIZE_TO_NATIVE_UNITS's own docstring for the
+    # empirical derivation (RISC OS's own "1/16th of a point"
+    # convention) and why the bug went unnoticed for a while (it only
+    # became glaringly visible in a picture with a small frame).
+    from riscos_impression.formats.artworks_svg import FONT_SIZE_TO_NATIVE_UNITS
+
+    size = _record(FontSizeRecord, x_size=512, y_size=512)
+    char_a = _character(ord("A"), 0, 0)
+    text = _text(child_lists=(_list(size), _list(char_a)))
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert FONT_SIZE_TO_NATIVE_UNITS == 30.0
+    assert 'font-size="15360"' in svg  # 512 * 30
 
 
 def test_text_object_angle_rotates_every_one_of_its_own_characters():

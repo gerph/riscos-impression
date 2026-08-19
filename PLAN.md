@@ -2534,6 +2534,30 @@ sub-checklist since it's the area most likely to grow piecemeal.
   fallback), calling `_artworks_pdf_process_blend_group` directly since
   it needs no document/page state. Full suite (471 tests) passes.
 
+- [x] **ArtWorks character font size was ~20-40x too small (SVG and PDF).**
+  A real, shipped bug, found after the gradient-fill work above by the
+  user reporting a real document's CD-cover picture as having no
+  visible text at all, compared against `TestDoc-Real5.png` (a real
+  reference render of the same page). `FontSizeRecord.x_size/y_size`
+  was being used directly as if it were already in native ArtWorks
+  coordinate units (the same space path geometry lives in); it isn't --
+  confirmed empirically against `CharacterRecord.bounding_box`/
+  `TextRecord.bounding_box` heights across two different real pictures
+  in `corpus/TestDoc,bc5` at several different declared font sizes,
+  RISC OS's own "1/16th of a point" font-size convention (already used
+  elsewhere in this project for Impression's own unrelated
+  `Style.font_size` field) gives a consistent set of ordinary point
+  sizes where "already native units" doesn't. New
+  `FONT_SIZE_TO_NATIVE_UNITS = 480/16 = 30` constant in
+  `formats/artworks_svg.py`, applied in both `_emit_character` (SVG)
+  and `pdfdoc.py`'s `_artworks_pdf_emit_character` (PDF). The CD-cover
+  picture's own text (previously invisible; the picture's frame was too
+  small to make even the pre-existing ~20-40x undersizing incidentally
+  legible, unlike a road-sign picture in a full-page frame, where it
+  had been) now visually matches `TestDoc-Real5.png` exactly, verified
+  by rasterising the PDF output with PyMuPDF and comparing directly.
+  Regression-tested in both converters. Full suite (479 tests) passes.
+
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
   inside one.

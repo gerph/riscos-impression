@@ -96,6 +96,17 @@ cheaply). No word-wrap, justification, or kerning-pair-table lookups
 are attempted -- each glyph is placed exactly where its own
 CharacterRecord says, nothing more.
 
+FontSizeRecord.x_size/y_size need converting via FONT_SIZE_TO_NATIVE_UNITS
+before use -- see that constant's own docstring for the empirical
+derivation (RISC OS's own "1/16th of a point" font-size convention,
+already used elsewhere in this project for Impression's own unrelated
+Style.font_size field). Treating y_size as already being in native
+units was a real, shipped bug: every glyph rendered roughly 20-40x too
+small, invisible in a picture whose own frame wasn't huge (a CD-cover
+picture in a thumbnail-sized frame, reported by the user against a
+real document) and merely small enough to go unremarked in one whose
+frame happened to be large (a road-sign picture in a full-page frame).
+
 Not yet handled fully (best-effort gaps): distortion/perspective envelopes
 (recursed into structurally, the distortion itself not applied).
 
@@ -200,6 +211,36 @@ from riscos_artworks import (
 #: viewBox stays in native units throughout; see the module docstring).
 #: Matches riscos-artworks-js's own ARTWORKS_UNITS_TO_USER_UNITS exactly.
 ARTWORKS_UNIT_TO_USER_UNITS = (1.0 / 640.0) * (4.0 / 3.0)
+
+#: FontSizeRecord.x_size/y_size -> native ArtWorks coordinate units
+#: (the same space every other geometry field, including
+#: CharacterRecord's own bounding_box, already lives in -- neither the
+#: SDK manual nor riscos-artworks-js documents this field's own unit,
+#: same as TextRecord/CharacterRecord's own unknown_values; see the
+#: module docstring). Confirmed empirically against two real pictures
+#: (corpus/TestDoc,bc5's own CD-cover and "Shit Creek" pictures, in
+#: riscos-impression): treating y_size as already being in native units
+#: (the assumption this code made before this constant existed)
+#: under-sized every glyph by roughly 20-40x -- invisible in a small
+#: frame (the CD cover, a thumbnail-sized picture), merely small enough
+#: to go unnoticed in a large one ("Shit Creek", whose own frame
+#: happened to be big enough to make even a ~30x-undersized glyph
+#: nominally legible). Real font sizes on RISC OS are conventionally
+#: expressed in 1/16ths of a point (matching Font_SetFont's own R1/R2
+#: units) -- dividing every observed y_size in the corpus (512, 320,
+#: 728, 480, 576, 832, 352) by 16 gives a consistent set of ordinary,
+#: round-ish point sizes (32, 20, 45.5, 30, 36, 52, 22), rather than
+#: the sub-point sizes a "already native units" or a "1/640 point"
+#: (DrawFile's own text-size convention) reading would give. Combined
+#: with ARTWORKS_UNIT_TO_USER_UNITS's own native-units-per-point factor
+#: (1 / ARTWORKS_UNIT_TO_USER_UNITS = 480), this gives
+#: 480 / 16 = 30 native units per FontSizeRecord unit -- cross-checked
+#: against real CharacterRecord.bounding_box/TextRecord.bounding_box
+#: heights at several different font sizes across both pictures, and
+#: landing consistently within the range a font's own cap-height
+#: (~70-100% of em-size) and full ascent+descent line-height
+#: (~115-135% of em-size) would be expected to fall in.
+FONT_SIZE_TO_NATIVE_UNITS = 480.0 / 16.0
 
 _JOIN_CSS = {JoinStyle.MITRE: "miter", JoinStyle.ROUND: "round", JoinStyle.BEVEL: "bevel"}
 _CAP_CSS = {CapStyle.BUTT: "butt", CapStyle.ROUND: "round", CapStyle.SQUARE: "square", CapStyle.TRIANGLE: "butt"}
@@ -642,7 +683,7 @@ class _SvgBuilder:
             return  # control character (kerning/ligature marker?), nothing to draw
         x, y = record.unknown_values[0], record.unknown_values[1]
         font_family = _font_family_css_for_name(style["font_name"])
-        font_size = style["font_size"]
+        font_size = style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS
         angle = style["text_angle"]
         fill = self._fill_css(style)
         stroke_attr = ""

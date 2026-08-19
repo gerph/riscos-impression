@@ -191,6 +191,7 @@ try:
         DashPatternRecord,
         EndCapRecord,
         FillColourRecord,
+        FONT_SIZE_TO_NATIVE_UNITS,
         FontNameRecord,
         FontSizeRecord,
         JoinStyleRecord,
@@ -2720,7 +2721,7 @@ class PDFConverter(Converter):
         char = record.character_code & 0xFF
         if char < 0x20 or char == 0x7F:
             return  # control character (kerning/ligature marker?), nothing to draw
-        font_size_pt = style["font_size"] * scale
+        font_size_pt = style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS * scale
         if font_size_pt <= 0.1:
             return
         fill_rgb = self._artworks_pdf_fill_rgb(style, artwork, notes)
