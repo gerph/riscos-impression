@@ -42,6 +42,19 @@ def test_colour_to_css_none_is_none():
     assert colour_to_css(None) is None
 
 
+def test_colour_to_css_hsv_hue_is_normalised_by_360_not_255():
+    # Regression test: see pdfdoc.py's own equivalent test for the full
+    # story -- hue is an angle (0-360 degrees), not a byte-range (0-255)
+    # channel like saturation/value, confirmed against a real document
+    # (corpus/TestDoc,bc5) whose own colour picker dialog gives 268
+    # degrees / 75% / 88% (a purple) for these same raw values.
+    colour = Colour(
+        index=None, name="", model=ColourModel.HSV, values=(17563648, 49087, 57825),
+        process=True, overprint=False, palette_word=0,
+    )
+    assert colour_to_css(colour) == "#8738e1"
+
+
 def test_font_family_css_maps_riscos_families():
     assert "sans-serif" in font_family_css(_style(1, font_style_name="Homerton.Medium"))
     assert "serif" in font_family_css(_style(1, font_style_name="Trinity.Medium"))

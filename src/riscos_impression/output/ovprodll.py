@@ -275,9 +275,11 @@ def _synthetic_colour_key(colour: Colour) -> str:
     if colour.model is ColourModel.CMYK:
         c, m, y, k = (v * 255 // MAXCV for v in colour.values)
         return f"CMYK{c:02X}{m:02X}{y:02X}{k:02X}"
-    # HSV: never observed in real documents (see docs/impression-documents.xml).
-    # The original names these from the raw, unscaled source bytes; this is a
-    # best-effort approximation re-derived from the already-scaled values.
+    # HSV: confirmed present in a real document (corpus/TestDoc,bc5's
+    # own picture-frame fill colours; see pdfdoc.py's own _to_rgb for
+    # the fuller story). The original names these from the raw,
+    # unscaled source bytes; this is a best-effort approximation
+    # re-derived from the already-scaled values.
     h, s, v = colour.values
     return f"HSV{(h // 0x10000) & 0xFFF:03X}{(s * 255 // MAXCV) & 0xFF:02X}{(v * 255 // MAXCV) & 0xFF:02X}"
 

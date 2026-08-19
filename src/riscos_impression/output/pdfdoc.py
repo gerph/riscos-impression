@@ -623,8 +623,17 @@ def _to_rgb(colour: Colour) -> tuple[float, float, float]:
     if colour.model is ColourModel.HSV:
         h, s, v = colour.values
         # h carries no /255 scaling (see docs/impression-documents.xml,
-        # "Colour channel encoding"); normalise it back to a 0..1 fraction.
-        return _hsv_to_rgb((h / MAXCV) / 255.0, s / MAXCV, v / MAXCV)
+        # "Colour channel encoding") because it isn't a byte-range
+        # value like every other channel -- it's an angle, 0-360
+        # degrees, packed into the same on-disk slot. Confirmed against
+        # the user's own real document and its own colour picker
+        # dialog (268 degrees, 75% saturation, 88% value): h/MAXCV
+        # equals exactly 268.0 there, and dividing by 255 (an earlier,
+        # wrong assumption that h needed the same byte-range
+        # normalisation s/v do) put the resolved colour visibly wrong
+        # (orange instead of the picker's own purple) on a real
+        # document, sending it round the colour wheel more than once.
+        return _hsv_to_rgb((h / MAXCV) / 360.0, s / MAXCV, v / MAXCV)
     raise ValueError(f"unexpected colour model {colour.model}")  # CMYK has its own operator; see _fill_colour_op
 
 

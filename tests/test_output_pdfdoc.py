@@ -20,6 +20,7 @@ from riscos_impression.output.pdfdoc import (
     _segment_width,
     _stroke_colour_op,
     _tab_advance,
+    _to_rgb,
     _Token,
     _wrap_tokens,
     choose_standard_font,
@@ -3129,3 +3130,21 @@ def test_artworks_pdf_picture_content_is_clipped_to_its_own_frame(tmp_path):
 
     assert b"10 20 50 50 re W n\n" in data
     assert not converter.log.has_errors()
+
+
+def test_hsv_colour_hue_is_normalised_by_360_not_255():
+    # Regression test: hue is an angle (0-360 degrees) packed into the
+    # same on-disk slot as saturation/value's own byte-range (0-255)
+    # channels, but was normalised by 255 like them -- confirmed wrong
+    # against a real document (corpus/TestDoc,bc5) whose own picture-
+    # frame fill colour, per its own colour picker dialog, is 268
+    # degrees / 75% saturation / 88% value (a purple): h/MAXCV there is
+    # exactly 268.0, and /255 sent the resolved colour round the wheel
+    # more than once, rendering orange instead of purple. These are
+    # that same real document's own raw on-disk values.
+    colour = Colour(
+        index=None, name="", model=ColourModel.HSV, values=(17563648, 49087, 57825),
+        process=True, overprint=False, palette_word=0,
+    )
+    r, g, b = _to_rgb(colour)
+    assert (round(r * 255), round(g * 255), round(b * 255)) == (135, 56, 225)

@@ -2647,6 +2647,34 @@ sub-checklist since it's the area most likely to grow piecemeal.
   the rendered output; PDF's own clip rectangle matches the frame's
   box exactly). Full suite (485 tests) passes.
 
+- [x] **HSV colours resolved wrong (both SVG and PDF): hue was
+  normalised as a byte-range channel, not the angle it actually is.**
+  Investigating a separate report -- a sprite's own transparent
+  background not showing the expected purple frame fill through it --
+  turned out not to be a masking bug at all (the `/Mask` colour-key
+  entry was present and correct all along); the frame's own fill
+  colour itself was resolving to orange instead of purple.
+  `_to_rgb`/`colour_to_css`'s own HSV branch (`pdfdoc.py`/
+  `html_base.py`, each with their own independent copy) normalised the
+  hue channel by dividing by 255, the same as saturation and value --
+  but unlike those two, hue isn't a byte-range (0-255) value at all,
+  it's an angle (0-360 degrees) packed into the same on-disk slot (see
+  `docs/impression-documents.xml`'s own "Colour channel encoding",
+  updated with this confirmation). The user confirmed the real,
+  intended value directly from their own colour picker dialog: 268
+  degrees / 75% / 88%, and `h / MAXCV` for the real document's own raw
+  value is exactly `268.0` -- dividing that by 255 instead of 360 sent
+  the resolved colour more than a full turn round the colour wheel,
+  landing on orange. Fixed in both converters (divide by 360, not
+  255); `ovprodll.py`'s own HSV handling needed no change, since it
+  passes the raw `{hsv ...}` values straight through to OvationPro's
+  own DDL syntax rather than resolving them to RGB itself. Since this
+  bug affects colour resolution generally, not anything ArtWorks/sprite
+  -specific, it likely also explains other HSV-coloured elements
+  throughout any document using them, not just this one frame fill.
+  Regression-tested in both converters against the real document's own
+  confirmed raw values. Full suite (487 tests) passes.
+
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
   inside one.

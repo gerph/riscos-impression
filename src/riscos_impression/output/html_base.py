@@ -184,8 +184,14 @@ def colour_to_css(colour: Optional[Colour]) -> Optional[str]:
     else:
         h, s, v = colour.values
         # h carries no /255 scaling (see docs/impression-documents.xml,
-        # "Colour channel encoding"); normalise it back to a 0..1 fraction.
-        r, g, b = _hsv_to_rgb((h / MAXCV) / 255.0, s / MAXCV, v / MAXCV)
+        # "Colour channel encoding") because it isn't a byte-range
+        # value like every other channel -- it's an angle, 0-360
+        # degrees, packed into the same on-disk slot. See pdfdoc.py's
+        # own _to_rgb for the real-document confirmation (268 degrees,
+        # h/MAXCV == 268.0 exactly, matching the user's own colour
+        # picker dialog) that /255 (the earlier, wrong assumption) sent
+        # the resolved colour round the wheel more than once.
+        r, g, b = _hsv_to_rgb((h / MAXCV) / 360.0, s / MAXCV, v / MAXCV)
     return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
