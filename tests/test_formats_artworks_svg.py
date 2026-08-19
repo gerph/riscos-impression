@@ -578,3 +578,37 @@ def test_hidden_blend_group_draws_nothing():
     svg = artworks_to_svg(artwork)
 
     assert "<path" not in svg
+
+
+def test_pathified_character_renders_its_own_glyph_outline_not_a_text_element():
+    # ArtWorks "pathifies" individual characters (converts them to a
+    # real vector-traced outline, stored as the CharacterRecord's own
+    # child object) when it can't rely on standard text rendering --
+    # see the module docstring (AWDocs/MethodsManual.md's own
+    # PathifyText_* description) and _emit_character's own docstring.
+    # Confirmed against a real picture (corpus/TestDoc,bc5's own "Shit
+    # Creek"): every visible character there has exactly this shape.
+    glyph_path = _record(PathRecord, path=_square_path(filled=True))
+    char_a = _record(
+        CharacterRecord, character_code=ord("A"), unknown_values=(1000, 2000, 0, 0),
+        child_lists=(_list(glyph_path),),
+    )
+    text = _text(child_lists=(_list(char_a),))
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<path" in svg
+    assert "<text" not in svg
+    assert ">A<" not in svg
+
+
+def test_character_without_a_pathified_glyph_falls_back_to_a_text_element():
+    char_a = _character(ord("A"), 1000, 2000)
+    text = _text(child_lists=(_list(char_a),))
+    artwork = _artwork((_list(text),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<text" in svg
+    assert ">A<" in svg

@@ -2721,6 +2721,18 @@ class PDFConverter(Converter):
         char = record.character_code & 0xFF
         if char < 0x20 or char == 0x7F:
             return  # control character (kerning/ligature marker?), nothing to draw
+        glyph_paths = [r for cl in record.child_lists for r in cl.records if isinstance(r, _GEOMETRY_TYPES)]
+        if glyph_paths:
+            # ArtWorks itself "pathified" this character -- see
+            # artworks_svg.py's own _emit_character docstring for the
+            # full explanation (confirmed against the SDK manual and a
+            # real picture). Render the real outline exactly like any
+            # other geometry instead of a generic substitute-font
+            # glyph, falling through to the Tf/Tj rendering below only
+            # when no such outline exists.
+            for glyph_path in glyph_paths:
+                self._artworks_pdf_emit(glyph_path, style, artwork, to_pt, scale, notes)
+            return
         font_size_pt = style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS * scale
         if font_size_pt <= 0.1:
             return

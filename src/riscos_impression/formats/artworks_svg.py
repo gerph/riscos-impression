@@ -681,6 +681,28 @@ class _SvgBuilder:
         char = record.character_code & 0xFF
         if char < 0x20 or char == 0x7F:
             return  # control character (kerning/ligature marker?), nothing to draw
+        glyph_paths = [r for cl in record.child_lists for r in cl.records if isinstance(r, _GEOMETRY_TYPES)]
+        if glyph_paths:
+            # ArtWorks itself "pathified" this character -- confirmed
+            # against the SDK manual (MethodsManual.md, on
+            # PathifyText_*): the text tool converts individual
+            # characters to real vector-traced outline paths (as this
+            # character's own child object) when it can't rely on
+            # standard text rendering coping with the attributes
+            # applied to it -- typically an unusual font (this file's
+            # own "Architect"/"Penultimat", confirmed against a real
+            # picture, corpus/TestDoc,bc5's own "Shit Creek") no output
+            # renderer could be expected to have installed. Render that
+            # real outline exactly like any other geometry (same style
+            # cascade, same fill/stroke) instead of a generic
+            # substitute-font glyph -- a real font glyph in a browser
+            # font is never a faithful stand-in for this. Falls through
+            # to the generic <text> rendering below only when no such
+            # outline exists (not every character is pathified -- only
+            # when ArtWorks decided it needed to be).
+            for glyph_path in glyph_paths:
+                self._emit(glyph_path, style)
+            return
         x, y = record.unknown_values[0], record.unknown_values[1]
         font_family = _font_family_css_for_name(style["font_name"])
         font_size = style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS

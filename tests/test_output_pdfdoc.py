@@ -3035,3 +3035,35 @@ def test_artworks_pdf_gradient_fill_clip_does_not_leak_to_later_objects():
     # has already closed, not nested inside it.
     gradient_end = content.index("Q\n") + len("Q\n")
     assert "rg\n" in content[gradient_end:]
+
+
+def test_artworks_pdf_pathified_character_renders_its_own_glyph_outline_not_tf_tj():
+    # PDF counterpart of formats/artworks_svg.py's own equivalent test
+    # -- see that test and _emit_character's own docstring for the
+    # full explanation (ArtWorks "pathifies" individual characters when
+    # it can't rely on standard text rendering, confirmed against a
+    # real picture and the SDK manual's own PathifyText_* description).
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import CharacterRecord, PathRecord, TextRecord
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _list, _record, _square_path
+
+    glyph_path = _record(PathRecord, path=_square_path(filled=True))
+    char_a = _record(
+        CharacterRecord, character_code=ord("A"), unknown_values=(1000, 2000, 0, 0),
+        child_lists=(_list(glyph_path),),
+    )
+    text = _record(TextRecord, unknown_values=(0, 0, 0, 1, 1, 0), rectangle=(), child_lists=(_list(char_a),))
+    artwork = _artwork((_list(text),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert " m\n" in content  # the glyph outline's own path ops
+    assert "Tf " not in content
+    assert "Tj" not in content

@@ -2558,6 +2558,40 @@ sub-checklist since it's the area most likely to grow piecemeal.
   by rasterising the PDF output with PyMuPDF and comparing directly.
   Regression-tested in both converters. Full suite (479 tests) passes.
 
+- [x] **ArtWorks text renders with a generic substitute font instead of
+  the real glyph outlines, when ArtWorks itself has already provided
+  them.** Once font size was fixed (above), the user compared the
+  road-sign picture directly against `TestDoc-Real5.png` and found the
+  *shape* of the text wrong too: the reference uses distinctive
+  handwritten/script fonts ("Architect", "Penultimat") this converter
+  has no way to reproduce with only the 14 standard PDF fonts, and
+  SVG's browser-font fallback fares no better for the same reason.
+  Traced to `AWDocs/MethodsManual.md`'s own documented `PathifyText_*`
+  behaviour: ArtWorks' text tool converts individual characters into
+  real vector-traced outline paths (stored as that `CharacterRecord`'s
+  own child object) whenever it can't rely on standard text rendering
+  coping with the attributes applied -- typically an unusual font, for
+  exactly this portability reason. Confirmed against the real picture:
+  every visible character in the road-sign one has its own child
+  `PathRecord`, a genuine filled bezier outline of that exact glyph in
+  that exact font, already in the same native coordinate space as
+  everything else -- while the CD-cover picture's own text (a common,
+  likely-always-installed font, "AvantG.Book") has none, confirming
+  pathifying only happens when ArtWorks itself decided it needed to.
+  `_emit_character` (SVG) and `_artworks_pdf_emit_character` (PDF) now
+  check for this and, when present, render the real outline(s) exactly
+  like any other geometry (reusing `_emit`/`_artworks_pdf_emit`
+  directly, so it gets the same fill/stroke/winding cascade) instead of
+  a substitute-font glyph -- falling through to the previous `<text>`/
+  `Tf`+`Tj` rendering only when no pathified outline exists. Verified
+  by rasterising the PDF output with PyMuPDF: the road-sign picture's
+  own text now visually matches `TestDoc-Real5.png`'s distinctive
+  script fonts exactly, not a generic sans-serif approximation.
+  Regression-tested in both converters (a pathified character renders
+  a `<path>`/path operators, not `<text>`/`Tf`+`Tj`; one without a
+  pathified glyph still falls back correctly). Full suite (482 tests)
+  passes.
+
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
   inside one.
