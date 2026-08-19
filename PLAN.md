@@ -2447,12 +2447,33 @@ sub-checklist since it's the area most likely to grow piecemeal.
     landing first, so the same interpolated geometry can be reused rather
     than re-derived independently for PDF)
 
-- [ ] **ArtWorks blend interpolation — SVG.** Blend keyframes are marked
-  invisible by design (a correct renderer interpolates `blend_steps`
-  between them); currently nothing is drawn where a blend would be.
-  Confirmed against the real "Shit Creek" corpus picture (sky gradient,
-  building shadow both missing) -- that picture is real, already-committed
-  test material for this, no new example needed for the *basic* case.
+- [x] **ArtWorks blend interpolation — SVG.** `process_blend_group` in
+  `formats/artworks_svg.py` (dispatched for `BlendGroupRecord`) now draws
+  `blend_steps + 1` interpolated shapes rather than nothing. Confirmed
+  against the real "Shit Creek" corpus picture (`corpus/TestDoc,bc5`'s
+  own picture 50): all 8 real blend groups there have matching start/end
+  point counts, and after `denormalise()` a `BlendGroupRecord`'s own
+  `child_lists` always split cleanly into exactly three -- one
+  `BlendOptionsRecord` list (giving `blend_steps`) and two single-path
+  keyframe lists (start, then end) -- confirmed both against that real
+  file and independently against riscos-artworks-js's own
+  `createSimpleBlendGroup()` test-fixture builder. Geometry is linearly
+  interpolated element-by-element; stroke colour/width continuously;
+  join/cap/winding/dash discretely switched over at the halfway point;
+  flat-to-flat fill colour continuously, any other fill combination
+  (a gradient on either end) discretely -- all matching
+  riscos-artworks-js's own `docs/blend-groups/README.md` research notes.
+  When the two keyframes' own point counts or segment types don't match,
+  AWViewer's own point-insertion algorithm for that case is a stated
+  open research problem for that same reference project ("It's not
+  fully understood how !AWViewer blends geometry") -- not attempted
+  here; both keyframes are drawn as-is instead, closer to the real
+  appearance than nothing. Visually verified by rendering "Shit Creek"'s
+  own picture 50 to a standalone SVG and opening it in a browser.
+  Unit-tested against hand-built `BlendGroupRecord`/`BlendOptionsRecord`
+  fixtures in `tests/test_formats_artworks_svg.py` (geometry/colour
+  interpolation including the exact t=0/t=0.5/t=1 values; the
+  mismatched-point-count fallback; the hidden-group case).
   - **Example documents wanted anyway:** no dedicated blend test file
     exists yet in `AWDocs/TestDocs` (checked both `TestDocs/` and the
     older nested `TestDocs/TestDocs/` -- neither has one; there are
@@ -2460,7 +2481,10 @@ sub-checklist since it's the area most likely to grow piecemeal.
     but a gradient *fill* and a *blend* are different ArtWorks features).
     A small, deliberately simple two-shape blend (matching the style of
     the other `TestDocs` fixtures) would make this easier to verify in
-    isolation from "Shit Creek"'s own more complex real-world blends.
+    isolation from "Shit Creek"'s own more complex real-world blends --
+    and, in particular, a real example with *mismatched* start/end point
+    counts would help decide whether AWViewer's own point-insertion
+    algorithm is ever worth implementing here.
 
 - [ ] **ArtWorks blend interpolation — PDF.** Depends on the SVG item
   above landing first (same interpolation logic, different emitter).

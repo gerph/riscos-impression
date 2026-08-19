@@ -33,6 +33,7 @@ from riscos_artworks import (
 )
 
 from riscos_artworks import BlendPathRecord, SpriteRecord, TextRecord, CharacterRecord, FontNameRecord, FontSizeRecord
+from riscos_artworks import BlendGroupRecord, BlendOptionsRecord
 
 from riscos_impression.formats.artworks_svg import artworks_svg_fragment, artworks_to_svg
 
@@ -478,3 +479,80 @@ def test_text_object_not_visible_draws_no_characters():
     svg = artworks_to_svg(artwork)
 
     assert "<text" not in svg
+
+
+def _square(x0, y0, size, *, filled=True):
+    tag_move = 2 | (FILLED if filled else 0)
+    return (
+        MoveElement(tag_move, Point(x0, y0)),
+        LineElement(8, Point(x0 + size, y0)),
+        LineElement(8, Point(x0 + size, y0 + size)),
+        LineElement(8, Point(x0, y0 + size)),
+        CloseElement(5),
+        EndElement(0),
+    )
+
+
+def test_blend_group_interpolates_geometry_and_stroke_colour_between_keyframes():
+    start_stroke = _record(StrokeColourRecord, colour=_direct(255, 0, 0))
+    start_path = _record(PathRecord, path=_square(0, 0, 1000), child_lists=(_list(start_stroke),))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    end_stroke = _record(StrokeColourRecord, colour=_direct(0, 0, 255))
+    end_path = _record(PathRecord, path=_square(2000, 2000, 200), child_lists=(_list(end_stroke),))
+    group = _record(
+        BlendGroupRecord, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert svg.count("<path") == 5  # blend_steps + 1
+    assert 'd="M0,0L1000,0L1000,1000L0,1000Z"' in svg  # t=0: exactly the start keyframe
+    assert 'd="M2000,2000L2200,2000L2200,2200L2000,2200Z"' in svg  # t=1: exactly the end keyframe
+    assert 'stroke="rgb(255,0,0)"' in svg  # t=0 stroke colour
+    assert 'stroke="rgb(0,0,255)"' in svg  # t=1 stroke colour
+    assert 'stroke="rgb(128,0,128)"' in svg  # t=0.5 midpoint stroke colour
+
+
+def test_blend_group_with_mismatched_point_counts_draws_both_keyframes_as_is():
+    start_path = _record(PathRecord, path=_square(0, 0, 1000))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    # A triangle (5 elements) vs a square (6 elements) -- can't be
+    # linearly paired up element-by-element, so this code doesn't
+    # attempt AWViewer's own point-insertion algorithm for unequal
+    # path shapes (see process_blend_group's own docstring).
+    triangle_path = (
+        MoveElement(2, Point(2000, 2000)),
+        LineElement(8, Point(2200, 2000)),
+        LineElement(8, Point(2100, 2200)),
+        CloseElement(5),
+        EndElement(0),
+    )
+    end_path = _record(PathRecord, path=triangle_path)
+    group = _record(
+        BlendGroupRecord, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert svg.count("<path") == 2
+    assert 'd="M0,0L1000,0L1000,1000L0,1000Z"' in svg
+    assert 'd="M2000,2000L2200,2000L2100,2200Z"' in svg
+
+
+def test_hidden_blend_group_draws_nothing():
+    start_path = _record(PathRecord, path=_square(0, 0, 1000))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    end_path = _record(PathRecord, path=_square(2000, 2000, 200))
+    group = _record(
+        BlendGroupRecord, control_word=0, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    svg = artworks_to_svg(artwork)
+
+    assert "<path" not in svg

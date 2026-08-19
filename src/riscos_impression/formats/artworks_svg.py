@@ -109,22 +109,43 @@ rendering as a stray top-level sibling drawn last (i.e. on top of
 everything), inheriting the ambient default fill (black) because its
 own local override was similarly stranded as an inert sibling. Once
 fixed, that file also relies heavily on blends for shading (sky
-gradient, rounded building shadow): with every blend left entirely
-unrendered (riscos-artworks-js's own behaviour: recursed into
-structurally, never drawn), the shading is simply absent rather than
-covered by anything -- a separate, still-open gap from the one above.
-BlendPathRecord (a
-blend's own start/end keyframe shape, carrying an identical `.path`
-field to a plain PathRecord) is now drawn the same way a PathRecord is
--- a real gap remains even so: ArtWorks marks a blend's own keyframes
-invisible in the file itself (its control word's own visibility bit is
-clear on both ends, confirmed directly against this same file), since
-a correct renderer is expected to synthesise the *interpolated*
-in-between shapes instead of showing the keyframes -- so this change
-alone doesn't yet recover that file's own missing shading; genuine
-blend interpolation (walking blend_steps, interpolating both
-geometry and colour between the two keyframe paths) remains a real
-follow-up, not attempted here.
+gradient, rounded building shadow); this is now handled -- see
+process_blend_group.
+
+process_blend_group (dispatched for BlendGroupRecord in process_record)
+implements genuine blend interpolation for the one case confirmed
+against real data (corpus/TestDoc,bc5's own blend groups, all with
+matching start/end point counts and segment types): after
+denormalise() (see above), a BlendGroupRecord's own child_lists always
+split cleanly into exactly three -- one holding a BlendOptionsRecord
+(giving blend_steps), and two holding one keyframe PathRecord each (in
+file order: start, then end) -- confirmed against every one of that
+file's own 8 real blend groups, not just guessed from
+riscos-artworks-js's own createSimpleBlendGroup() test-fixture builder
+(examples/simple-blend-group.js), which independently confirms the
+same three-list shape. `blend_steps + 1` shapes are drawn, at
+`t = i / blend_steps` for `i` in `0..blend_steps` inclusive (so the
+first and last drawn shapes exactly reproduce the two keyframes, not
+approximations of them) -- geometry is linearly interpolated
+element-by-element (_interpolate_path), stroke colour and width
+continuously (matching riscos-artworks-js's own blend-groups research
+notes, docs/blend-groups/README.md: "stroke attributes ... interpolated
+linearly"), join/cap/winding/dash discretely switched over at the
+halfway point (same source, "these have like a discrete attribute").
+Flat-to-flat fill colour is interpolated the same way stroke colour is;
+any other fill combination (a gradient on either end) falls back to a
+discrete halfway switchover of the whole fill definition rather than
+attempting the partially-understood linear/radial cross-blending that
+document's own README describes as not fully working even in AWViewer
+itself. When a real blend group's own two keyframe paths don't share
+the same point count or segment-type sequence, this code does not
+attempt AWViewer's own point-insertion algorithm for unequal path
+shapes -- by that same document's own admission ("It's not fully
+understood how !AWViewer blends geometry..."), matching a general
+unequal-point-count algorithm from black-box observation alone is an
+open research problem for that sibling project, not something to
+guess at here -- both keyframes are drawn as-is instead (closer to the
+real appearance than drawing nothing, the previous behaviour).
 
 Sprites are deliberately out of scope here too: a SpriteRecord falls
 through to the generic default case below (recursed into structurally,
@@ -138,14 +159,22 @@ from typing import Optional
 
 from riscos_artworks import (
     ArtWorks,
+    BezierElement,
+    BlendGroupRecord,
+    BlendOptionsRecord,
     BoundingBox,
     CapStyle,
+    CloseElement,
     ColourIndex,
     EllipseRecord,
+    EndElement,
     FillColourRecord,
     FillType,
     JoinStyle,
+    LineElement,
+    MoveElement,
     PathRecord,
+    Point,
     Record,
     RecordList,
     RectangleRecord,
@@ -235,6 +264,62 @@ def _fmt(value: float) -> str:
     if value == int(value):
         return str(int(value))
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _lerp_point(a: Point, b: Point, t: float) -> Point:
+    return Point(x=round(a.x + (b.x - a.x) * t), y=round(a.y + (b.y - a.y) * t))
+
+
+def _interpolate_path(start_path: tuple, end_path: tuple, t: float) -> Optional[tuple]:
+    """Linearly interpolates two blend keyframe paths element-by-
+    element, or returns None when they can't be safely paired up this
+    way (a different number of elements, or a segment-type mismatch at
+    some position) -- see process_blend_group's own docstring for why
+    that case isn't handled by attempting AWViewer's own point-
+    insertion algorithm here."""
+    if len(start_path) != len(end_path):
+        return None
+    result = []
+    for start_element, end_element in zip(start_path, end_path):
+        if start_element.masked_tag != end_element.masked_tag:
+            return None
+        if isinstance(start_element, MoveElement) and isinstance(end_element, MoveElement):
+            result.append(MoveElement(tag=start_element.tag, point=_lerp_point(start_element.point, end_element.point, t)))
+        elif isinstance(start_element, LineElement) and isinstance(end_element, LineElement):
+            result.append(LineElement(tag=start_element.tag, point=_lerp_point(start_element.point, end_element.point, t)))
+        elif isinstance(start_element, BezierElement) and isinstance(end_element, BezierElement):
+            result.append(
+                BezierElement(
+                    tag=start_element.tag,
+                    control_1=_lerp_point(start_element.control_1, end_element.control_1, t),
+                    control_2=_lerp_point(start_element.control_2, end_element.control_2, t),
+                    end=_lerp_point(start_element.end, end_element.end, t),
+                )
+            )
+        elif isinstance(start_element, (CloseElement, EndElement)):
+            result.append(start_element)
+        else:
+            return None
+    return tuple(result)
+
+
+def _interpolate_colour_index(bgr_a: Optional[int], bgr_b: Optional[int], t: float) -> Optional[ColourIndex]:
+    """Linearly interpolates two resolved BGR colour words in RGB
+    space (matching riscos-artworks-js's own blend-groups research
+    notes: colours "appear to be linearly interpolated in RGB space"),
+    re-wrapped as a direct-colour ColourIndex (bit 24 set, per that
+    class's own docstring) ready to feed back through the normal
+    style/_colour_css machinery. None (fully transparent/unresolved) on
+    either end can't be meaningfully blended towards a colour, so
+    returns None -- callers fall back to a discrete keyframe choice."""
+    if bgr_a is None or bgr_b is None:
+        return None
+    ra, ga, ba = bgr_a & 0xFF, (bgr_a >> 8) & 0xFF, (bgr_a >> 16) & 0xFF
+    rb, gb, bb = bgr_b & 0xFF, (bgr_b >> 8) & 0xFF, (bgr_b >> 16) & 0xFF
+    r = round(ra + (rb - ra) * t)
+    g = round(ga + (gb - ga) * t)
+    b = round(ba + (bb - ba) * t)
+    return ColourIndex(0x01000000 | (b << 16) | (g << 8) | r)
 
 
 def _escape_xml_text(text: str) -> str:
@@ -357,6 +442,8 @@ class _SvgBuilder:
             self.process_text(record, style)
         elif isinstance(record, CharacterRecord):
             self._emit_character(record, style)
+        elif isinstance(record, BlendGroupRecord):
+            self.process_blend_group(record, style)
         else:
             # Group/layer/blend/distortion/sprite and anything else
             # not drawn directly: descend into its own children with a
@@ -386,6 +473,50 @@ class _SvgBuilder:
         self.process_lists(record.child_lists, child_style)
         self._emit(record, child_style)
 
+    def process_blend_group(self, group: Record, style: dict) -> None:
+        # See the module docstring for how the post-denormalise() shape
+        # of a BlendGroupRecord's own child_lists was confirmed against
+        # real data. Skip entirely -- including the interpolated draws
+        # -- when the group's own visibility bit is clear, matching
+        # every other geometry-bearing record's own convention.
+        if not (group.control_word >> 1) & 1:
+            return
+        blend_steps = 1
+        keyframe_lists: list[tuple] = []
+        for child_list in group.child_lists:
+            options = next((r for r in child_list.records if isinstance(r, BlendOptionsRecord)), None)
+            if options is not None:
+                blend_steps = max(options.blend_steps, 1)
+            else:
+                keyframe_lists.append(child_list.records)
+        if len(keyframe_lists) != 2:
+            # Not the two-keyframe shape this code understands (e.g. a
+            # malformed or differently-structured file) -- fall back to
+            # drawing whatever's structurally there, the pre-blend-
+            # support behaviour, rather than guessing.
+            self.process_lists(group.child_lists, dict(style))
+            return
+        start_path, start_style = self._capture_blend_keyframe(keyframe_lists[0], style)
+        end_path, end_style = self._capture_blend_keyframe(keyframe_lists[1], style)
+        if start_path is None or end_path is None:
+            self.process_lists(group.child_lists, dict(style))
+            return
+        self._merge_bbox(group.bounding_box)
+        if _interpolate_path(start_path, end_path, 0.0) is None:
+            # Geometry can't be safely interpolated (different point
+            # counts or mismatched segment types -- see the module
+            # docstring on why AWViewer's own point-insertion algorithm
+            # for that case isn't attempted here). Draw both keyframes
+            # as-is: closer to the real appearance than nothing at all.
+            self._draw_blend_step(start_path, start_style)
+            self._draw_blend_step(end_path, end_style)
+            return
+        for step in range(blend_steps + 1):
+            t = step / blend_steps
+            path = _interpolate_path(start_path, end_path, t)
+            step_style = self._interpolate_blend_style(start_style, end_style, t)
+            self._draw_blend_step(path, step_style)
+
     # -- Drawing -----------------------------------------------------------
 
     def _emit(self, record: Record, style: dict) -> None:
@@ -404,6 +535,93 @@ class _SvgBuilder:
         d = self._path_d(path)
         attrs = self._style_attrs(style)
         self.objects.append(f'<path d="{d}"{attrs}/>')
+
+    def _draw_blend_step(self, path: tuple, style: dict) -> None:
+        """Draws one interpolated (or, on a geometry mismatch, one raw
+        keyframe) blend path -- like _emit, but for a synthesised path
+        with no Record of its own behind it, so there's no control-word
+        visibility bit or per-path "is filled" flag to check (the
+        keyframes' own such flags were already folded into start_style/
+        end_style by _capture_blend_keyframe when present as a
+        FillColourRecord; a genuine per-path filled-flag mismatch
+        between the two keyframes isn't specially handled, matching
+        this code's general stance of not guessing at AWViewer's own
+        undocumented edge-case behaviour)."""
+        if not path:
+            return
+        d = self._path_d(path)
+        attrs = self._style_attrs(style)
+        self.objects.append(f'<path d="{d}"{attrs}/>')
+
+    def _capture_blend_keyframe(self, records: tuple, ambient_style: dict) -> tuple[Optional[tuple], dict]:
+        """Walks one blend keyframe's own record list -- a geometry
+        record plus its own attribute siblings/children, folded
+        together by denormalise() -- capturing its path and final
+        resolved style rather than drawing it, mirroring
+        process_record's own attribute-record cascade (duplicated
+        rather than shared, since this variant returns instead of
+        drawing)."""
+        style = dict(ambient_style)
+        path: Optional[tuple] = None
+        for record in records:
+            if isinstance(record, _GEOMETRY_TYPES):
+                own_records = tuple(r for child_list in record.child_lists for r in child_list.records)
+                _, style = self._capture_blend_keyframe(own_records, style)
+                path = record.path
+            elif isinstance(record, StrokeColourRecord):
+                style["stroke"] = record.colour
+            elif isinstance(record, StrokeWidthRecord):
+                style["stroke_width"] = record.width
+            elif isinstance(record, FillColourRecord):
+                style["fill_type"] = record.fill_type_enum or FillType.FLAT
+                style["fill_colour"] = record.colour
+                style["gradient_line"] = record.gradient_line
+                style["fill_start"] = record.start_colour
+                style["fill_end"] = record.end_colour
+            elif isinstance(record, JoinStyleRecord):
+                style["join"] = record.join_style_enum or JoinStyle.MITRE
+            elif isinstance(record, StartCapRecord):
+                style["cap_start"] = record.cap_style_enum or CapStyle.BUTT
+            elif isinstance(record, EndCapRecord):
+                style["cap_end"] = record.cap_style_enum or CapStyle.BUTT
+            elif isinstance(record, WindingRuleRecord):
+                style["winding"] = record.winding_rule_enum or WindingRule.NON_ZERO
+            elif isinstance(record, DashPatternRecord):
+                style["dash_offset"] = record.offset or 0
+                style["dash_elements"] = record.elements
+            # Anything else (nested groups, text, ...) is out of scope
+            # for a blend keyframe -- real ArtWorks blend groups don't
+            # appear to nest that kind of content, so it's ignored here
+            # rather than guessed at.
+        return path, style
+
+    def _interpolate_blend_style(self, start_style: dict, end_style: dict, t: float) -> dict:
+        """Builds one blend step's own style: continuous linear
+        interpolation for stroke colour/width and (flat-to-flat only)
+        fill colour, discrete halfway switchover for everything else --
+        see the module docstring and riscos-artworks-js's own
+        docs/blend-groups/README.md for why each attribute is treated
+        this way."""
+        style = dict(end_style if t >= 0.5 else start_style)
+        stroke = _interpolate_colour_index(
+            self.artwork.resolve_colour(start_style["stroke"]),
+            self.artwork.resolve_colour(end_style["stroke"]),
+            t,
+        )
+        if stroke is not None:
+            style["stroke"] = stroke
+        a, b = start_style["stroke_width"], end_style["stroke_width"]
+        style["stroke_width"] = a + (b - a) * t
+        if start_style["fill_type"] == FillType.FLAT and end_style["fill_type"] == FillType.FLAT:
+            fill = _interpolate_colour_index(
+                self.artwork.resolve_colour(start_style["fill_colour"]) if start_style["fill_colour"] else None,
+                self.artwork.resolve_colour(end_style["fill_colour"]) if end_style["fill_colour"] else None,
+                t,
+            )
+            if fill is not None:
+                style["fill_type"] = FillType.FLAT
+                style["fill_colour"] = fill
+        return style
 
     def _emit_character(self, record: Record, style: dict) -> None:
         # See the module docstring for how unknown_values and
