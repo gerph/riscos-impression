@@ -2890,6 +2890,9 @@ def test_artworks_pdf_linear_gradient_fill_emits_a_real_shading():
     assert "W*\nn\n" in content  # _DEFAULT_STYLE's own winding is even-odd
     assert re.search(r"/Sh\d+ sh", content)
     assert len(converter._page_shadings) == 1
+    # The clip must be scoped inside its own q/Q -- see the dedicated
+    # leaked-clip regression test below for why.
+    assert re.search(r"q\n[^q]*W\*\nn\n/Sh1 sh\nQ\n", content)
     shading_obj = converter._writer._objects[converter._page_shadings["Sh1"]]
     assert b"/ShadingType 2" in shading_obj
     assert b"/Coords [0 500 1000 500]" in shading_obj
@@ -2956,3 +2959,49 @@ def test_artworks_pdf_gradient_with_unresolvable_colour_falls_back_to_flat():
     assert "sh\n" not in content
     assert len(converter._page_shadings) == 0
     assert any("approximated as a flat colour" in n for n in notes)
+
+
+def test_artworks_pdf_gradient_fill_clip_does_not_leak_to_later_objects():
+    # Regression test: a gradient fill's own clip (W/W* n) was
+    # previously emitted outside any q/Q pair, so it never got
+    # restored -- it leaked onto every draw call for the rest of the
+    # picture (all sharing one outer q/Q; see _draw_artworks_picture),
+    # silently clipping away anything drawn afterwards outside that one
+    # gradient shape's own boundary. Found via a real document
+    # (corpus/TestDoc,bc5's own CD-cover picture): its disc's own
+    # gradient clip was leaking onto every text glyph drawn after it.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    gradient_fill = _record(
+        FillColourRecord, fill_type=1, unknown_28=0, colour=None,
+        gradient_line=(Point(0, 500), Point(1000, 500)),
+        start_colour=_direct(255, 255, 255), end_colour=_direct(0, 0, 0),
+    )
+    gradient_path = _record(PathRecord, path=_square_path(filled=True))
+
+    flat_fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0, colour=_direct(0, 255, 0),
+        gradient_line=None, start_colour=None, end_colour=None,
+    )
+    later_path = _record(PathRecord, path=_square_path(filled=True))
+
+    artwork = _artwork((_list(gradient_fill), _list(gradient_path), _list(flat_fill), _list(later_path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert content.count("q\n") == content.count("Q\n")
+    # The later object's own fill draws after the gradient's own q/Q
+    # has already closed, not nested inside it.
+    gradient_end = content.index("Q\n") + len("Q\n")
+    assert "rg\n" in content[gradient_end:]

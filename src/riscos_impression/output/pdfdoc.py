@@ -2665,10 +2665,19 @@ class PDFConverter(Converter):
             # current path the same way a paint operator does, so the
             # path must be rebuilt for a separate stroke pass below if
             # there's also a border -- see the module docstring on why
-            # this differs from the single-pass flat-fill case.
-            self._content.append(f"{ops}{'W*' if even_odd else 'W'}\nn\n")
+            # this differs from the single-pass flat-fill case. The
+            # whole clip+paint sequence is wrapped in its own q/Q: a
+            # clip set outside q/Q has no matching restore and leaks
+            # into every draw call for the rest of this picture (they
+            # all share one outer q/Q -- see _draw_artworks_picture),
+            # silently clipping away anything drawn afterwards outside
+            # this one shape's own boundary -- a real bug found via a
+            # real document (corpus/TestDoc,bc5's own CD-cover picture,
+            # entry 48: its disc's own gradient fill clip was leaking
+            # onto every text glyph drawn after it, since none of them
+            # fall within the disc's own circular boundary).
             shading_name = self._artworks_pdf_register_shading(shading)
-            self._content.append(f"q /{shading_name} sh Q\n")
+            self._content.append(f"q\n{ops}{'W*' if even_odd else 'W'}\nn\n/{shading_name} sh\nQ\n")
             if stroke_rgb is None:
                 return  # no border to add on top of the gradient fill
             fill_rgb = None
