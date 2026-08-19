@@ -628,6 +628,17 @@ frame's own edges though the unrotated bounding box alone would not
 have suggested cropping.
 </p>
 <p>
+This whole xshift/yshift/xscale/yscale/angle formula is a property of
+the picture frame itself, not of any one embedded picture format: it
+was derived and calibrated against DrawFile pictures, then confirmed
+to apply unchanged to ArtWorks (0xD94) pictures too -- against a real
+document's own two ArtWorks pictures, whose dialog-reported placement
+(X=-3.18mm/Y=1.63mm/scale=16.2% and X=-11.64mm/Y=-30.38mm/scale=40%)
+matched this formula once expressed in ArtWorks' own native units
+(640 per point, an internal convention of that embedded format, not
+of the Impression document itself) in place of DrawFile's own.
+</p>
+<p>
 The two extra bits carried in the frame group flags word (offset 72;
 see "Frame group flags word") for XPICT records only are:
 </p>
