@@ -2383,17 +2383,35 @@ they don't just live in conversation history. Picked up one functional
 area at a time, each with its own commit(s); ArtWorks gets its own
 sub-checklist since it's the area most likely to grow piecemeal.
 
-- [ ] **Non-decimal numbering styles.** All five converters (`ovprodll.py`,
+- [x] **Non-decimal numbering styles.** All five converters (`ovprodll.py`,
   `html_scrolling.py`, `html_paged.py`, `pdfdoc.py`, `markdown.py`) only
-  implement `NumberingStyle.DECIMAL`; any other style (Roman numerals,
-  alphabetic, ...) silently renders as an empty string, logged
-  `unsupported` each time it happens.
-  - **Example documents needed:** nothing in `corpus/` currently uses a
-    non-decimal numbering style for chapters, pages, or lists -- this
-    needs a real (or purpose-built, like `TestImp,bc5`) document
-    exercising Roman-numeral and alphabetic numbering before this can be
-    verified against real behaviour rather than just the DDL source's own
-    documented styles. Flagged for the user to supply/create one.
+  implemented `NumberingStyle.DECIMAL`; any other style (Roman numerals,
+  alphabetic, bullet) silently rendered as an empty string, logged
+  `unsupported` each time it happened.
+  **Done:** `model/numbering.py` gained `format_number(value, style)` --
+  standard subtractive-notation Roman numerals, bijective-base-26
+  alphabetic (1=A, 2=B, ..., 26=Z, 27=AA, ...), and a fixed bullet glyph
+  ignoring the running count -- called identically from all five
+  converters' own `_resolve_number_text` (DECIMAL, and any unrecognised
+  raw style byte, still fall back to a plain decimal string, now with a
+  `best_effort` log note only for the genuinely-unrecognised case, not
+  for every non-decimal style). Checked the original C conversion
+  source (`c/styles`' own `expandnumber()`) first: it recognises all
+  these style codes too, but every non-decimal branch there is
+  genuinely empty -- this is real, additional behaviour beyond what
+  that reference tool ever did, not a port of existing logic. 13 new
+  unit tests (`test_model_numbering.py`) plus one converter-level
+  end-to-end test (`test_output_html_scrolling.py`, confirming the real
+  `HeadingNumberMark` -> numbering-table -> `format_number` wiring, not
+  just the formatting function in isolation).
+  - **Example documents still wanted:** nothing in `corpus/` uses a
+    non-decimal numbering style for chapters, pages, or lists, so this
+    is verified against `model/numbering.py`'s own unit tests and the
+    original C source's documented style codes, not against real
+    Impression output. A real (or purpose-built, like `TestImp,bc5`)
+    document exercising Roman-numeral/alphabetic/bullet numbering would
+    let this be checked against actual behaviour too. Flagged for the
+    user to supply/create one.
 
 - [ ] **ArtWorks pictures in PDF output.** SVG rendering (Stage 16) never
   reached `pdfdoc.py` -- `_draw_picture_content`'s ArtWorks branch is

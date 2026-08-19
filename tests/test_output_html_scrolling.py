@@ -3,12 +3,16 @@ import re
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import ChapterNumberMark, EmbedMark, MergeMark, Paragraph, Run, Story, TabMark
+from riscos_impression.model.numbering import parse_numbering_table
+from riscos_impression.model.story import (
+    ChapterNumberMark, EmbedMark, HeadingNumberMark, MergeMark, Paragraph, Run, Story, TabMark,
+)
 from riscos_impression.model.styles import TabStop
 from riscos_impression.output.html_scrolling import ScrollingHTMLConverter, _approx_width
 
 from tests.test_output_ovprodll import _picture
 from tests.test_output_base import _document, _frame, _frame_record, _header, _section, _style
+from tests.fixtures.builders import build_numbering_record
 from tests.fixtures.drawfile_builders import build_drawfile, build_path, close_line, end_path, line, move
 from tests.fixtures.artworks_builders import build_single_path_document
 
@@ -232,6 +236,35 @@ def test_merge_and_chapter_number_marks(tmp_path):
 
     assert "Chapter 1" in text
     assert "&lt;&lt;Name&gt;&gt;" in text  # merge placeholder text is HTML-escaped like any other text
+
+
+def test_heading_number_mark_renders_non_decimal_numbering_styles(tmp_path):
+    # HeadingNumberMark (unlike ChapterNumberMark, which just uses the
+    # chapter's own create_number directly) goes through the document's
+    # own numbering table and _resolve_number_text -- this exercises
+    # that real wiring end to end, not just format_number in isolation
+    # (see test_model_numbering.py for that).
+    frame = _frame(dictionary_index=0)
+    document, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    numbering_data = build_numbering_record(
+        start=True, start_value=3, style=1, tag=7, dictionary_index=0,  # style 1 = ROMAN_UPPER
+    )
+    document.numbering = parse_numbering_table(numbering_data, numbers=0, numbers_end=len(numbering_data))
+    story = Story(
+        frame_chain=(),
+        paragraphs=(Paragraph(items=(Run(text="Section ", style_slots=()), HeadingNumberMark(tag=7))),),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "Section III" in text
+    assert not converter.log.has_errors()
 
 
 def test_tab_lands_on_declared_stop_via_an_in_flow_spacer():

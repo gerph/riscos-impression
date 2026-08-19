@@ -1149,18 +1149,17 @@ class OvProDDLConverter(Converter):
         if record is None:
             self.log.error("numbering", f"no numbering record for tag {tag}")
             return ""
-        from riscos_impression.model.numbering import NumberingStyle, resolve_number
+        from riscos_impression.model.numbering import format_number, resolve_number
 
-        if record.style is not NumberingStyle.DECIMAL:
-            self.log.unsupported(
-                "numbering",
-                f"{record.style.name if record.style else record.raw_style} numbering "
-                f"style not implemented; only decimal is (matches the conversion source's "
-                f"own gap, not just this converter's)",
-            )
-            return ""
         value = resolve_number(self.document.numbering, dictionary_index, tag)
-        return f'"{value}"\n'
+        if value is None:
+            self.log.error("numbering", f"no numbering record for tag {tag}")
+            return ""
+        if record.style is None:
+            self.log.best_effort(
+                "numbering", f"unrecognised numbering style {record.raw_style}; rendered as decimal"
+            )
+        return f'"{format_number(value, record.style)}"\n'
 
     def _render_embed_reference(
         self, embed_tag: int, chapter: Chapter, page: PageGroup, master: bool, epoch_index: int
