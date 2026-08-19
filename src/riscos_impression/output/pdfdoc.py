@@ -891,6 +891,11 @@ def _wrap_one_line(
 #: anything in the sliver that's left; see _narrow_for_obstacles.
 _MIN_USABLE_WIDTH = 10.0
 
+#: Maximum Y height (in points) of one _boundary_repel_rects slice;
+#: see that function's own docstring for why a raw vertex-to-vertex
+#: interval needs subdividing down to about this size.
+_MAX_BOUNDARY_SLICE_HEIGHT_PT = 4.0
+
 
 def _boundary_repel_rects(
     pict: PictureFrame, boundary, ox: float, oy: float
@@ -917,17 +922,31 @@ def _boundary_repel_rects(
     skipped, the same limitation _boundary_clip_path already has.
 
     Each slice's own edges are sampled at both of its own Y endpoints,
-    not its midpoint: within one slice (by construction, bounded by
-    consecutive vertices with no further vertex strictly inside it)
-    every active edge is a straight line, so its own X value moves
-    monotonically between those two endpoints -- taking the min/max
-    across both endpoints, rather than a single midpoint sample, is
-    the true (not merely approximate) X-extent the edge reaches
-    anywhere within the slice. A first version of this sampled only
-    the midpoint, which under-narrowed a real document's own first
-    text line next to a steep top corner (letting one extra word run
-    fractionally under the picture's own drawn edge before this
-    fix)."""
+    not its midpoint: within one slice every active edge is a straight
+    line, so its own X value moves monotonically between those two
+    endpoints -- taking the min/max across both endpoints, rather than
+    a single midpoint sample, is the true (not merely approximate)
+    X-extent the edge reaches anywhere within the slice. A first
+    version of this sampled only the midpoint, which under-narrowed a
+    real document's own first text line next to a steep top corner
+    (letting one extra word run fractionally under the picture's own
+    drawn edge).
+
+    Slice boundaries start at the polygon's own vertices, but a raw
+    vertex-to-vertex slice can span a long, steep edge -- for a real
+    octagonal boundary (NVMeFlyer,bc5's own page 2) two vertices
+    nearly 40pt apart in Y, on an edge moving almost the full width of
+    the frame over that span, produced one slice whose endpoint-sampled
+    X-extent covered nearly the *entire* frame width throughout,
+    leaving text pinned to nearly the plain box's own edge for the
+    picture's whole height -- safe (never bleeding into the picture)
+    but far too conservative, visibly different from Impression's own
+    rendering, which lets text widen out again well before reaching
+    the next vertex. Each vertex-to-vertex interval taller than
+    _MAX_BOUNDARY_SLICE_HEIGHT_PT is therefore subdivided into equal
+    sub-slices no taller than that, keeping the endpoint-sampling
+    approximation tight regardless of how far apart the boundary's own
+    vertices happen to be."""
     cx_doc = (pict.x0 + pict.x1) // 2
     cy_doc = (pict.y0 + pict.y1) // 2
     vertices: list[tuple[float, float]] = []
@@ -939,7 +958,13 @@ def _boundary_repel_rects(
     if len(vertices) < 3:
         return []
     edges = list(zip(vertices, vertices[1:] + vertices[:1]))
-    ys = sorted({y for _, y in vertices})
+    vertex_ys = sorted({y for _, y in vertices})
+    ys: list[float] = [vertex_ys[0]]
+    for y_lo, y_hi in zip(vertex_ys, vertex_ys[1:]):
+        span = y_hi - y_lo
+        steps = max(1, math.ceil(span / _MAX_BOUNDARY_SLICE_HEIGHT_PT))
+        for i in range(1, steps + 1):
+            ys.append(y_lo + span * i / steps)
     rects: list[tuple[float, float, float, float]] = []
     for y_lo, y_hi in zip(ys, ys[1:]):
         xs = []

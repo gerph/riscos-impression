@@ -1754,19 +1754,23 @@ def test_boundary_repel_rects_slices_a_diamond_into_widening_then_narrowing_band
         PathOp(PathOpCode.END),
     ))
     rects = _boundary_repel_rects(picture, picture.boundary, ox=0.0, oy=0.0)
-    # Centre (50, 50) in points (millipoints / 1000, UNIT=1000): two
-    # slices, one widening up to the centre, one narrowing back down.
-    assert len(rects) == 2
-    (x0a, y0a, x1a, y1a), (x0b, y0b, x1b, y1b) = sorted(rects, key=lambda r: r[1])
-    assert (y0a, y1a) == (0.0, 50.0)
-    assert (y0b, y1b) == (50.0, 100.0)
-    # The widest point of the diamond (its own horizontal middle) sits
-    # exactly on the shared boundary between the two slices, so each
-    # slice's own wider end (nearer Y=50) reaches the diamond's own
-    # full x0=0..x1=100 extent -- confirmed via endpoint sampling (see
-    # _boundary_repel_rects' own docstring for why not the midpoint).
-    assert (x0a, x1a) == (0.0, 100.0)
-    assert (x0b, x1b) == (0.0, 100.0)
+    # Centre (50, 50) in points (millipoints / 1000, UNIT=1000): each
+    # 50pt-tall half (0..50, 50..100) is subdivided into several finer
+    # sub-slices (see _MAX_BOUNDARY_SLICE_HEIGHT_PT), each one strictly
+    # narrower/wider than the next as Y approaches/leaves the diamond's
+    # own horizontal middle (Y=50), not one block spanning the whole
+    # half at its own widest extent.
+    rects = sorted(rects, key=lambda r: r[1])
+    assert len(rects) > 2
+    assert rects[0][1] == 0.0
+    assert rects[-1][3] == 100.0
+    widths = [x1 - x0 for x0, _y0, x1, _y1 in rects]
+    widest = max(range(len(widths)), key=lambda i: widths[i])
+    # Widths strictly increase up to the diamond's own middle, then
+    # strictly decrease -- never any wider than the diamond's own
+    # true horizontal extent (100 at Y=50) anywhere.
+    assert widths == sorted(widths[:widest + 1]) + sorted(widths[widest:], reverse=True)[1:]
+    assert max(widths) == 100.0
 
 
 def test_boundary_repel_rects_returns_nothing_for_a_degenerate_boundary():
@@ -1817,15 +1821,21 @@ def test_repel_obstacles_for_page_slices_a_boundaried_picture_instead_of_its_box
     converter._repel_obstacles = {}
     rects = converter._repel_obstacles_for_page(page)
 
-    # Two slices (one per Y interval between the triangle's own three
-    # vertices), not one rectangle covering the picture's whole
-    # y0=0..y1=200 box -- each confined to the triangle's own Y-range
-    # (70..130), leaving the rest of the picture's own plain box (its
-    # own y0=0..70 and 130..200) free of any obstacle at all.
-    assert len(rects) == 2
+    # Several fine slices (see _MAX_BOUNDARY_SLICE_HEIGHT_PT), not one
+    # rectangle covering the picture's whole y0=0..y1=200 box -- each
+    # confined to the triangle's own Y-range (70..130), leaving the
+    # rest of the picture's own plain box (its own y0=0..70 and
+    # 130..200) free of any obstacle at all, and each one narrower
+    # than the triangle's own full base width (60..100) except right
+    # at its own middle (Y=100, the apex's own Y) -- proof the real
+    # triangle shape is tracked, not just its own bounding box.
+    rects = sorted(rects, key=lambda r: r[1])
+    assert len(rects) > 2
     for x0, y0, x1, y1 in rects:
         assert 70.0 <= y0 < y1 <= 130.0
-        assert (x0, x1) == (60.0, 100.0)
+        assert x0 == 60.0
+        assert x1 <= 100.0
+    assert any(x1 < 100.0 for _x0, _y0, x1, _y1 in rects)
 
 
 def test_text_repels_around_an_obstacle_picture(tmp_path):
