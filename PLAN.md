@@ -2716,17 +2716,63 @@ sub-checklist since it's the area most likely to grow piecemeal.
   structurally but the distortion itself isn't applied to the content
   inside one.
 
-- [ ] **ArtWorks' own embedded sprites (`SpriteRecord`).** Not decoded at
-  all -- falls through to structural-only recursion. Real Sprite pixel
-  decoding is wired up everywhere else now (Stage 16), so this is
-  mechanically straightforward once there's something to verify it
-  against.
-  - **Example documents needed:** every ArtWorks picture available so
-    far (the CD-cover and "Shit Creek" corpus pictures) has
-    `sprite_area_offset == -1` and zero `SpriteRecord`s -- there is
-    currently no real file to check a SpritePool-format wiring against,
-    so this hasn't been attempted rather than guessed at. Flagged for the
-    user to supply one if/when available.
+- [ ] **ArtWorks' own embedded sprites (`SpriteRecord`).** Two sub-problems,
+  tracked separately since the first is now solved and the second isn't:
+  - [x] **Decoding the record without crashing.** A real picture
+    (corpus/TestDoc,bc5's own "SVG logo") failed entirely --
+    riscos_artworks raised "sprite palette count exceeds record". Fixed
+    upstream (riscos_artworks, branch `fix/sprite-record-palette-flag`):
+    the word after the sprite's own fixed fields is the palette's own
+    entry count directly, confirmed against three real files the user
+    provided (`AWDocs/TestDocs/Sprite16ColourPalettedMasked,d94`,
+    `Sprite256ColoursPaletedNoMask,d94`,
+    `Sprite256oloursNoPaletteMasked-EX1EY2,d94`) -- 16 and 256
+    respectively, each followed by that many real, sensible palette
+    words. An implausible count (the original failing sprite's own
+    case, a genuinely palette-less 32bpp sprite) degrades to an empty
+    palette rather than raising. All 5 real ArtWorks pictures in
+    corpus/TestDoc,bc5 now decode without error (previously 2 of 5
+    failed) -- verified in riscos-impression's own venv (an editable
+    install of the fixed riscos_artworks).
+  - [ ] **Locating and rendering the sprite's own raw pixel data.**
+    Still open. The palette fix above only gets past the palette
+    itself; what follows it (before the sprite's own actual embedded
+    native-format pixel data begins) isn't reliably modelled yet -- an
+    unaccounted gap of varying size shows up in every real file checked
+    so far, between the end of the palette and where the sprite's own
+    native header can be found (located, so far, only by searching for
+    its own name string, not by any confirmed length/offset field).
+    Real Sprite pixel decoding (riscos_sprites) is already wired up
+    everywhere else in this project (Stage 16), so rendering itself
+    will be mechanically straightforward once the raw bytes can be
+    located reliably -- this is purely a "where do the bytes start"
+    problem. **Example documents wanted:** the user is gathering more
+    sprite examples to narrow this down further, the same way the
+    three files above resolved the palette-count question precisely.
+
+- [ ] **ArtWorks "direct" colour words only resolve as RGB, not CMYK/HSV.**
+  The user reported a real document (corpus/TestDoc,bc5's own "SVG logo"
+  picture) rendering a shape's own fill as blue instead of an unnamed
+  CMYK colour (59.8% / 99.6% / 99.2% / 0% K, confirmed from the real
+  document's own colour picker dialog). The fill word in question,
+  `0xFFFF9C00`, satisfies `riscos_artworks.ColourIndex`'s own
+  `value >= 0x01000000` "direct colour" test, and is currently *always*
+  unpacked as a raw BGR triple (giving RGB(0,156,255), a blue) --
+  `ColourIndex` has no model-selector logic for a direct colour word at
+  all, unlike Impression's own inline colour value words (docs/
+  impression-documents.xml's own "Inline colour value words": low 2
+  bits select RGB/CMYK/HSV/named). Checked whether this fill might
+  instead be a palette index into one of the picture's own "unnamed"
+  palette entries (`colour_model_value == 0`, all with markedly smaller
+  component values than the picture's own named colours) and tried
+  treating their components as MAXCV-scaled CMYK percentages -- none
+  matched the confirmed 59.8/99.6/99.2/0 values closely enough to be
+  confident, so this remains unresolved rather than guessed at further.
+  **Example document wanted:** the user is preparing a minimal ArtWorks
+  document with a single shape filled with exactly that CMYK colour via
+  the real colour picker, to byte-inspect the exact on-disk encoding
+  against known percentages -- the same approach that pinned down the
+  HSV hue bug and the sprite palette-count bug precisely.
 
 - [ ] **EPS content rendering.** Always a placeholder box in both HTML
   and PDF; PDF at least attaches the raw EPS as an embedded file (no
