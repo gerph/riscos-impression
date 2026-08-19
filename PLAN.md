@@ -2777,7 +2777,7 @@ sub-checklist since it's the area most likely to grow piecemeal.
     through, resolving the user's own original report from earlier in
     this stage) alongside the JPEG on the same page.
 
-- [ ] **ArtWorks "direct" (non-indexed) colour words don't resolve
+- [x] **ArtWorks "direct" (non-indexed) colour words don't resolve
   correctly.** The user reported a real document (corpus/TestDoc,bc5's
   own "SVG logo" picture) rendering a shape's own fill as blue instead
   of an unnamed CMYK colour (59.8% / 99.6% / 99.2% / 0% K, confirmed
@@ -2852,6 +2852,45 @@ sub-checklist since it's the area most likely to grow piecemeal.
   all, but real DrawFile-to-ArtWorks conversion documents remain a
   good place to keep looking, now that this particular false lead is
   closed off.
+
+  **Solved.** A second real colour in the very same document broke it
+  open: the SVG logo picture's own background rectangle,
+  `0xFFFF9900`, whose Object Info dialog reads RGB 40.2%/0.4%/0.8%
+  (i.e. `(102,1,2)`). A direct colour's four bytes, LSB to MSB, are K,
+  C, M, Y (each 0-255, not the 31-bit scale a palette entry's own
+  component words use), decoded via a standard subtractive
+  CMYK->RGB conversion -- `0xFFFF9900` decodes to exactly `(102,0,0)`
+  against the target, within rounding of a percentage read to one
+  decimal place. The original `0xFFFF9C00` mystery decodes to
+  61.2/100/100/0% CMYK against its own target of 59.8/99.6/99.2/0%,
+  just as close -- two independent real confirmations. This also
+  explains the `value >= 0x01000000` "is this direct" test: a document
+  realistically never has anywhere near 16 million palette entries, so
+  any real index keeps its own top byte zero, while this is simply
+  testing whether the Y (top) byte is non-zero -- and explains why it
+  can't be inverted for a colour needing zero ink on every channel
+  (pure white, or anything needing B=255 given this byte assignment):
+  its own top byte would then read as zero too, indistinguishable from
+  an index. Not yet seen in a real file.
+
+  Fixed upstream in riscos_artworks (branch
+  `fix/direct-colour-is-kcmy-not-bgr`): `ColourIndex.bgr` now performs
+  this conversion, and `Palette.resolve()`/`ArtWorks.resolve_colour()`
+  return the correctly-decoded preview word for a direct colour instead
+  of the raw word verbatim, so no caller downstream needed to change
+  how it consumes a resolved colour. This did need one further fix
+  here in riscos-impression, though: this project's own ArtWorks blend
+  interpolation constructs synthetic "direct" colours purely to carry
+  an already-computed RGB result back through the normal style/resolve
+  pipeline (never real on-disk data) -- re-resolving one through the
+  new CMYK decode a second time would have corrupted every blended
+  colour. `_interpolate_colour_index` now returns an already-resolved
+  preview word directly, and a new `_resolve_style_colour()` helper
+  (used everywhere a colour is pulled from a style dict for drawing, in
+  both the SVG and PDF converters) tells an interpolated result apart
+  from a genuine document `ColourIndex` needing the normal resolve.
+  Verified against corpus/TestDoc,bc5: the SVG logo's background now
+  renders the correct dark maroon, not blue.
 
 - [ ] **EPS content rendering.** Always a placeholder box in both HTML
   and PDF; PDF at least attaches the raw EPS as an embedded file (no
