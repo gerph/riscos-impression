@@ -2592,6 +2592,26 @@ sub-checklist since it's the area most likely to grow piecemeal.
   pathified glyph still falls back correctly). Full suite (482 tests)
   passes.
 
+- [ ] **PDF: an invisible selectable/searchable text layer behind
+  pathified ArtWorks glyphs.** User idea, not yet started: PDF viewers
+  let you select/search text that isn't actually drawn as glyphs at
+  all -- the same trick a scanned-and-OCR'd PDF uses, an invisible text
+  run (`Tr 3`, the "invisible" text-rendering mode) positioned over or
+  behind whatever *is* visually rendered. Since a pathified character
+  (see the item above) already carries both the real `CharacterRecord`
+  (the actual letter, still perfectly readable) and its own drawn
+  outline, the same trick applies directly here: emit each pathified
+  character's own real text run in `Tr 3` mode, at the same position
+  the outline already occupies, so the PDF stays visually identical but
+  gains copy/search/accessibility support the vector outline alone
+  can't provide. Not attempted yet -- needs its own investigation into
+  positioning a `Tr 3` run so it lines up with the *visual* glyph
+  outline closely enough to select sensibly (the outline's own natural
+  size/position, not the substitute font's metrics), and into whether
+  the same trick is worth applying to DrawFile text objects too (their
+  own real string is always present already, unlike ArtWorks' own
+  per-character-only records).
+
 - [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
   structurally but the distortion itself isn't applied to the content
   inside one.
