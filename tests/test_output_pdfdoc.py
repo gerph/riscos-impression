@@ -2860,3 +2860,99 @@ def test_artworks_pdf_blend_group_with_mismatched_point_counts_draws_both_keyfra
     assert content.count(" m\n") == 2
     assert "0 0 m\n" in content
     assert "2000 2000 m\n" in content
+
+
+def test_artworks_pdf_linear_gradient_fill_emits_a_real_shading():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    fill = _record(
+        FillColourRecord,
+        fill_type=1, unknown_28=0, colour=None,
+        gradient_line=(Point(0, 500), Point(1000, 500)),
+        start_colour=_direct(255, 255, 255), end_colour=_direct(0, 0, 0),
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert "W*\nn\n" in content  # _DEFAULT_STYLE's own winding is even-odd
+    assert re.search(r"/Sh\d+ sh", content)
+    assert len(converter._page_shadings) == 1
+    shading_obj = converter._writer._objects[converter._page_shadings["Sh1"]]
+    assert b"/ShadingType 2" in shading_obj
+    assert b"/Coords [0 500 1000 500]" in shading_obj
+
+
+def test_artworks_pdf_radial_gradient_fill_emits_a_real_shading():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    fill = _record(
+        FillColourRecord, fill_type=2, unknown_28=0, colour=None,
+        gradient_line=(Point(500, 500), Point(500, 1000)),
+        start_colour=_direct(255, 255, 255), end_colour=_direct(0, 0, 0),
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert re.search(r"/Sh\d+ sh", content)
+    shading_obj = converter._writer._objects[converter._page_shadings["Sh1"]]
+    assert b"/ShadingType 3" in shading_obj
+    assert b"/Coords [500 500 0 500 500 500]" in shading_obj
+
+
+def test_artworks_pdf_gradient_with_unresolvable_colour_falls_back_to_flat():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import ColourIndex, FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    # start_colour is a palette *index*, and this artwork has no
+    # palette -- resolve_colour() returns None, so no real shading can
+    # be built; the flat-colour fallback (using fill_start) applies.
+    fill = _record(
+        FillColourRecord, fill_type=1, unknown_28=0, colour=None,
+        gradient_line=(Point(0, 500), Point(1000, 500)),
+        start_colour=ColourIndex(3), end_colour=_direct(0, 0, 0),
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    notes: list[str] = []
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, notes)
+    content = "".join(converter._content)
+
+    assert "sh\n" not in content
+    assert len(converter._page_shadings) == 0
+    assert any("approximated as a flat colour" in n for n in notes)

@@ -999,6 +999,9 @@ class PDFConverter(Converter):
         #: name (e.g. "Im1") -> PDF object number, for this page's own
         #: /Resources /XObject dict; see _draw_drawfile_jpeg.
         self._page_xobjects: dict[str, int] = {}
+        #: name (e.g. "Sh1") -> PDF object number, for this page's own
+        #: /Resources /Shading dict; see _artworks_pdf_register_shading.
+        self._page_shadings: dict[str, int] = {}
         #: dictionary_index values whose box has already been drawn once
         #: on this page; see _draw_frame's use of it.
         self._dictionary_seen_this_page: set[int] = set()
@@ -1033,10 +1036,12 @@ class PDFConverter(Converter):
             " ".join(f"/{name} {obj} 0 R" for name, obj in self._page_xobjects.items())
         )
         xobject_resource = f" /XObject << {xobjects} >>" if xobjects else ""
+        shadings = " ".join(f"/{name} {obj} 0 R" for name, obj in self._page_shadings.items())
+        shading_resource = f" /Shading << {shadings} >>" if shadings else ""
         page_dict = (
             f"<< /Type /Page /Parent {self._pages_obj} 0 R "
             f"/MediaBox [0 0 {_fmt(w_pt)} {_fmt(h_pt)}] "
-            f"/Resources << /Font {self._font_resource_obj} 0 R{xobject_resource} >> "
+            f"/Resources << /Font {self._font_resource_obj} 0 R{xobject_resource}{shading_resource} >> "
             f"/Contents {content_obj} 0 R\n{annots}>>"
         )
         self._page_objs.append(self._writer.add(page_dict.encode("latin-1")))
@@ -2650,10 +2655,27 @@ class PDFConverter(Converter):
         ops = self._artworks_pdf_path_ops(path, to_pt)
         if not ops:
             return
-        fill_rgb = self._artworks_pdf_fill_rgb(style, artwork, notes)
+        even_odd = style["winding"] == WindingRule.EVEN_ODD
         stroke_rgb = self._artworks_pdf_stroke_rgb(style, artwork)
-        if fill_rgb is None and stroke_rgb is None:
-            return
+        shading = self._artworks_pdf_fill_shading(style, artwork, to_pt)
+        if shading is not None:
+            # A real gradient fill: clip to the path and paint the
+            # shading over it (PDF's "sh" operator), rather than a
+            # flat-colour approximation. Clipping (W/W* n) consumes the
+            # current path the same way a paint operator does, so the
+            # path must be rebuilt for a separate stroke pass below if
+            # there's also a border -- see the module docstring on why
+            # this differs from the single-pass flat-fill case.
+            self._content.append(f"{ops}{'W*' if even_odd else 'W'}\nn\n")
+            shading_name = self._artworks_pdf_register_shading(shading)
+            self._content.append(f"q /{shading_name} sh Q\n")
+            if stroke_rgb is None:
+                return  # no border to add on top of the gradient fill
+            fill_rgb = None
+        else:
+            fill_rgb = self._artworks_pdf_fill_rgb(style, artwork, notes)
+            if fill_rgb is None and stroke_rgb is None:
+                return
         parts = []
         if fill_rgb is not None:
             parts.append(f"{_fmt(fill_rgb[0])} {_fmt(fill_rgb[1])} {_fmt(fill_rgb[2])} rg\n")
@@ -2669,7 +2691,6 @@ class PDFConverter(Converter):
             )
             parts.append(f"{join} j {cap} J\n")
         parts.append(ops)
-        even_odd = style["winding"] == WindingRule.EVEN_ODD
         if fill_rgb is not None and stroke_rgb is not None:
             parts.append("B*\n" if even_odd else "B\n")
         elif fill_rgb is not None:
@@ -2743,18 +2764,79 @@ class PDFConverter(Converter):
         return self._artworks_pdf_rgb(artwork.resolve_colour(style["stroke"]))
 
     def _artworks_pdf_fill_rgb(self, style: dict, artwork, notes: list[str]) -> Optional[tuple[float, float, float]]:
+        """The *flat* fallback colour for a fill -- used directly for
+        FillType.FLAT, and as the fallback when a gradient fill can't
+        be turned into a real PDF shading (see
+        _artworks_pdf_fill_shading, which is tried first by
+        _artworks_pdf_emit_path for LINEAR/RADIAL fills)."""
         fill_type = style["fill_type"]
         if fill_type == FillType.FLAT:
             colour = style["fill_colour"]
             return self._artworks_pdf_rgb(artwork.resolve_colour(colour) if colour else None)
         if fill_type in (FillType.LINEAR, FillType.RADIAL):
             notes.append(
-                "an ArtWorks gradient fill is approximated as a flat colour (its own "
-                "start colour) in PDF output; true gradients are not yet implemented there"
+                "an ArtWorks gradient fill with an unresolvable colour or gradient "
+                "line is approximated as a flat colour (its own start colour) in "
+                "PDF output"
             )
             start = style["fill_start"]
             return self._artworks_pdf_rgb(artwork.resolve_colour(start) if start is not None else None)
         return None
+
+    def _artworks_pdf_fill_shading(self, style: dict, artwork, to_pt) -> Optional[dict]:
+        """A real PDF gradient (Shading dictionary parameters) for a
+        LINEAR/RADIAL fill, or None when it can't be built (no
+        gradient line, or either end colour is unresolvable) -- in
+        which case the caller falls back to _artworks_pdf_fill_rgb's
+        own flat-colour approximation. Matches
+        formats/artworks_svg.py's own _gradient_fill: for RADIAL, both
+        circles share the gradient line's own first point as centre,
+        with radii 0 and the distance to the second point (PDF's own
+        Type 3 shading equivalent of SVG's cx/cy/fx/fy/r)."""
+        fill_type = style["fill_type"]
+        if fill_type not in (FillType.LINEAR, FillType.RADIAL):
+            return None
+        gradient_line = style["gradient_line"]
+        if gradient_line is None:
+            return None
+        start = artwork.resolve_colour(style["fill_start"]) if style["fill_start"] is not None else None
+        end = artwork.resolve_colour(style["fill_end"]) if style["fill_end"] is not None else None
+        c0 = self._artworks_pdf_rgb(start)
+        c1 = self._artworks_pdf_rgb(end)
+        if c0 is None or c1 is None:
+            return None
+        p1, p2 = gradient_line
+        x1, y1 = to_pt(p1.x, p1.y)
+        x2, y2 = to_pt(p2.x, p2.y)
+        if fill_type is FillType.RADIAL:
+            r = math.hypot(x2 - x1, y2 - y1)
+            if r <= 0:
+                return None
+            return {"kind": "radial", "coords": (x1, y1, 0.0, x1, y1, r), "c0": c0, "c1": c1}
+        if x1 == x2 and y1 == y2:
+            return None
+        return {"kind": "linear", "coords": (x1, y1, x2, y2), "c0": c0, "c1": c1}
+
+    def _artworks_pdf_register_shading(self, shading: dict) -> str:
+        c0, c1 = shading["c0"], shading["c1"]
+        function_obj = self._writer.add(
+            (
+                "<< /FunctionType 2 /Domain [0 1] "
+                f"/C0 [{_fmt(c0[0])} {_fmt(c0[1])} {_fmt(c0[2])}] "
+                f"/C1 [{_fmt(c1[0])} {_fmt(c1[1])} {_fmt(c1[2])}] /N 1 >>"
+            ).encode("latin-1")
+        )
+        shading_type = 2 if shading["kind"] == "linear" else 3
+        coords = " ".join(_fmt(v) for v in shading["coords"])
+        shading_obj = self._writer.add(
+            (
+                f"<< /ShadingType {shading_type} /ColorSpace /DeviceRGB /Coords [{coords}] "
+                f"/Function {function_obj} 0 R /Extend [true true] >>"
+            ).encode("latin-1")
+        )
+        name = f"Sh{len(self._page_shadings) + 1}"
+        self._page_shadings[name] = shading_obj
+        return name
 
     def _draw_placeholder(self, x0: float, y0: float, x1: float, y1: float, label: str) -> None:
         w, h = x1 - x0, y1 - y0

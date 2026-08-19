@@ -2436,16 +2436,41 @@ sub-checklist since it's the area most likely to grow piecemeal.
     `Tm`/`Tj`/`ET`, with a real rotation matrix (`cos sin -sin cos x y Tm`)
     for the character's own angle rather than SVG's translate+scale+rotate
     trick, since there is no ambient flip to cancel here.
-  - [ ] Linear/radial gradient fills. Deferred: a gradient `FillColourRecord`
-    currently falls back to a flat fill using its own start colour, with a
-    `best_effort` log note that real PDF gradients (a Shading Pattern)
-    aren't implemented yet. Needs its own dedicated commit.
+  - [x] Linear/radial gradient fills. `_artworks_pdf_fill_shading` builds a
+    real PDF Shading dictionary (Type 2 axial for linear, Type 3 radial,
+    both with a Type 2 exponential colour Function) from the fill's own
+    `gradient_line`/`start_colour`/`end_colour`, registered per-page via a
+    new `self._page_shadings` resource dict (mirroring `_page_xobjects`).
+    `_artworks_pdf_emit_path` clips to the path (`W`/`W* n`) and paints
+    the shading with `sh`, then -- since clipping consumes the current
+    path the same way a paint operator does -- rebuilds the path for a
+    second stroke-only pass when the object also has a border. Falls
+    back to `_artworks_pdf_fill_rgb`'s flat-colour approximation (now
+    only reachable when the gradient line or either end colour can't be
+    resolved, e.g. an out-of-range palette index with no palette),
+    logged `best_effort`. Verified against the real reference fixtures
+    the user pointed at, `AWDocs/TestDocs/RectWhiteLeftToBlackRight,d94`
+    (linear) and `RectWhiteLeftToBlackRightRadial,d94` (radial), by
+    rasterising the PDF output with PyMuPDF -- both show a real
+    gradient, not a flat band. This also fixes what first looked like
+    two separate rendering bugs in `corpus/TestDoc,bc5`'s own pictures
+    (reported after the geometry/fill/stroke work above): entry 50's sky
+    rendering as flat yellow instead of a blue-to-yellow gradient, and
+    its building walls rendering as flat black instead of shaded --
+    both were gradient *fills* (not blend groups), so they were exactly
+    the case this item's own flat-colour fallback covered before this
+    landed.
   - [x] Text (`TextRecord`/`CharacterRecord`) -- see above; landed together
     with geometry/fill/stroke in the same commit since both walk the same
     record tree via the same style cascade.
-  - [ ] Blends (depends on the SVG/PDF blend-interpolation items below
-    landing first, so the same interpolated geometry can be reused rather
-    than re-derived independently for PDF)
+  - [x] Blends -- landed once the SVG/PDF blend-interpolation items below
+    landed (`_artworks_pdf_process_blend_group`, reusing
+    `formats/artworks_svg.py`'s own interpolation helpers directly). A
+    blend whose keyframes have a gradient fill still only gets the
+    discrete halfway switchover described under the SVG blend item below
+    (not a continuously-interpolated gradient) -- gradients and blends
+    combining smoothly is out of scope, matching upstream AWViewer's own
+    documented uncertainty there too.
 
 - [x] **ArtWorks blend interpolation — SVG.** `process_blend_group` in
   `formats/artworks_svg.py` (dispatched for `BlendGroupRecord`) now draws
