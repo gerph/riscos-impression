@@ -12,6 +12,7 @@ from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
     _AVERAGE_WIDTH_FACTOR,
     _approx_width,
+    _boundary_repel_rects,
     _fill_colour_op,
     _line_height_pt,
     _narrow_for_obstacles,
@@ -1735,6 +1736,96 @@ def test_narrow_for_obstacles_handles_obstacles_on_both_sides():
     obstacles = [(0.0, 30.0, 20.0, 60.0), (80.0, 30.0, 100.0, 60.0)]
     left, right = _narrow_for_obstacles(0.0, 100.0, y_top=50.0, y_bottom=40.0, obstacles=obstacles)
     assert (left, right) == (20.0, 80.0)
+
+
+def test_boundary_repel_rects_slices_a_diamond_into_widening_then_narrowing_bands():
+    # A simple diamond (a square rotated 45 degrees), centred at the
+    # picture's own frame centre, 100 units tall/wide at its own widest.
+    # See PathOp's own docstring: boundary coordinates are relative to
+    # the picture frame's own centre, in millipoints (UNIT below).
+    from riscos_impression.model.frames import PathOp, PathOpCode
+
+    picture = _picture(x0=0, y0=0, x1=100000, y1=100000, boundary=(
+        PathOp(PathOpCode.MOVE, 0, 50000),
+        PathOp(PathOpCode.DRAW, 50000, 0),
+        PathOp(PathOpCode.DRAW, 0, -50000),
+        PathOp(PathOpCode.DRAW, -50000, 0),
+        PathOp(PathOpCode.CLOSE),
+        PathOp(PathOpCode.END),
+    ))
+    rects = _boundary_repel_rects(picture, picture.boundary, ox=0.0, oy=0.0)
+    # Centre (50, 50) in points (millipoints / 1000, UNIT=1000): two
+    # slices, one widening up to the centre, one narrowing back down.
+    assert len(rects) == 2
+    (x0a, y0a, x1a, y1a), (x0b, y0b, x1b, y1b) = sorted(rects, key=lambda r: r[1])
+    assert (y0a, y1a) == (0.0, 50.0)
+    assert (y0b, y1b) == (50.0, 100.0)
+    # The widest point of the diamond (its own horizontal middle) sits
+    # exactly on the shared boundary between the two slices, so each
+    # slice's own wider end (nearer Y=50) reaches the diamond's own
+    # full x0=0..x1=100 extent -- confirmed via endpoint sampling (see
+    # _boundary_repel_rects' own docstring for why not the midpoint).
+    assert (x0a, x1a) == (0.0, 100.0)
+    assert (x0b, x1b) == (0.0, 100.0)
+
+
+def test_boundary_repel_rects_returns_nothing_for_a_degenerate_boundary():
+    from riscos_impression.model.frames import PathOp, PathOpCode
+
+    picture = _picture(x0=0, y0=0, x1=100000, y1=100000, boundary=(
+        PathOp(PathOpCode.MOVE, 0, 0),
+        PathOp(PathOpCode.END),
+    ))
+    assert _boundary_repel_rects(picture, picture.boundary, ox=0.0, oy=0.0) == []
+
+
+def test_repel_obstacles_for_page_slices_a_boundaried_picture_instead_of_its_box():
+    """Regression test for NVMeFlyer (from the local examples/ corpus):
+    a repel-flagged picture with an irregular (non-rectangular)
+    boundary should contribute several narrow obstacle slices tracking
+    the boundary's own polygon shape, not one rectangle covering its
+    whole plain outer box -- confirmed against the real document's own
+    page 2, where body text visibly hugs an octagonal picture boundary
+    rather than stopping at a plain rectangular edge."""
+    from riscos_impression.model.frames import PathOp, PathOpCode
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    # A picture at x0=60..x1=100, y0=0..y1=200 (centre (80,100)); its
+    # own irregular boundary is a triangle spanning only y=70..130 (the
+    # frame's own middle third), reaching left to the frame's own plain
+    # left edge (x=60) only exactly at its own middle (y=100) -- its
+    # own apex, pointing right, sits at x=100.
+    picture = _picture(
+        x0=60000, y0=0, x1=100000, y1=200000,
+        exx0=60000, exy0=0, exx1=100000, exy1=200000,
+        repel=True, dictionary_index=1,
+        boundary=(
+            PathOp(PathOpCode.MOVE, -20000, 30000),
+            PathOp(PathOpCode.DRAW, 20000, 0),
+            PathOp(PathOpCode.DRAW, -20000, -30000),
+            PathOp(PathOpCode.CLOSE),
+            PathOp(PathOpCode.END),
+        ),
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=250000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, picture),),
+    )
+
+    converter = PDFConverter(None)
+    converter._repel_obstacles = {}
+    rects = converter._repel_obstacles_for_page(page)
+
+    # Two slices (one per Y interval between the triangle's own three
+    # vertices), not one rectangle covering the picture's whole
+    # y0=0..y1=200 box -- each confined to the triangle's own Y-range
+    # (70..130), leaving the rest of the picture's own plain box (its
+    # own y0=0..70 and 130..200) free of any obstacle at all.
+    assert len(rects) == 2
+    for x0, y0, x1, y1 in rects:
+        assert 70.0 <= y0 < y1 <= 130.0
+        assert (x0, x1) == (60.0, 100.0)
 
 
 def test_text_repels_around_an_obstacle_picture(tmp_path):

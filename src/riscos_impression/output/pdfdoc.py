@@ -891,6 +891,71 @@ def _wrap_one_line(
 _MIN_USABLE_WIDTH = 10.0
 
 
+def _boundary_repel_rects(
+    pict: PictureFrame, boundary, ox: float, oy: float
+) -> list[tuple[float, float, float, float]]:
+    """Approximates an irregular picture boundary (crop path) as a
+    stack of horizontal slice rectangles, one per Y interval between
+    consecutive boundary vertices, each spanning the polygon's own
+    min/max X anywhere within that band -- exact for a convex boundary
+    (the common case: a crop shape drawn by hand in Impression's own
+    irregular-frame editor, confirmed against a real document,
+    NVMeFlyer,bc5's own page 2, whose text visibly hugs an octagonal
+    picture boundary rather than stopping at its plain rectangular
+    outer box), an over-inclusive approximation for a concave one.
+    Feeding several of these into _repel_obstacles_for_page's own
+    per-obstacle-rectangle list, rather than the picture's one plain
+    exx0..exy1 box, lets _narrow_for_obstacles' existing per-line
+    Y-band overlap test narrow text around the boundary's own shape
+    with no changes of its own needed -- each slice is just another
+    obstacle rectangle whose Y-range happens to be narrow. Uses the
+    same coordinate transform as _boundary_clip_path (the picture's
+    own drawn-content clip), so a line of text stops exactly where the
+    picture's own visible edge does. CURVE boundary segments carry no
+    coordinates of their own (see model.frames.PathOpCode) and are
+    skipped, the same limitation _boundary_clip_path already has.
+
+    Each slice's own edges are sampled at both of its own Y endpoints,
+    not its midpoint: within one slice (by construction, bounded by
+    consecutive vertices with no further vertex strictly inside it)
+    every active edge is a straight line, so its own X value moves
+    monotonically between those two endpoints -- taking the min/max
+    across both endpoints, rather than a single midpoint sample, is
+    the true (not merely approximate) X-extent the edge reaches
+    anywhere within the slice. A first version of this sampled only
+    the midpoint, which under-narrowed a real document's own first
+    text line next to a steep top corner (letting one extra word run
+    fractionally under the picture's own drawn edge before this
+    fix)."""
+    cx_doc = (pict.x0 + pict.x1) // 2
+    cy_doc = (pict.y0 + pict.y1) // 2
+    vertices: list[tuple[float, float]] = []
+    for op in boundary:
+        if op.code in (PathOpCode.MOVE, PathOpCode.DRAW):
+            vertices.append(((cx_doc + op.x - ox) / UNIT, (cy_doc + op.y - oy) / UNIT))
+        elif op.code is PathOpCode.END:
+            break
+    if len(vertices) < 3:
+        return []
+    edges = list(zip(vertices, vertices[1:] + vertices[:1]))
+    ys = sorted({y for _, y in vertices})
+    rects: list[tuple[float, float, float, float]] = []
+    for y_lo, y_hi in zip(ys, ys[1:]):
+        xs = []
+        for (ex0, ey0), (ex1, ey1) in edges:
+            if ey0 == ey1:
+                continue
+            lo, hi = (ey0, ey1) if ey0 < ey1 else (ey1, ey0)
+            if lo <= y_lo and y_hi <= hi:
+                t_lo = (y_lo - ey0) / (ey1 - ey0)
+                t_hi = (y_hi - ey0) / (ey1 - ey0)
+                xs.append(ex0 + t_lo * (ex1 - ex0))
+                xs.append(ex0 + t_hi * (ex1 - ex0))
+        if len(xs) >= 2:
+            rects.append((min(xs), y_lo, max(xs), y_hi))
+    return rects
+
+
 def _narrow_for_obstacles(
     left: float,
     right: float,
@@ -1155,6 +1220,10 @@ class PDFConverter(Converter):
                 if not frame.repel:
                     return
                 appearance, (ox, oy) = self._frame_appearance_and_origin(frame, page, default_origin)
+                if isinstance(appearance, PictureFrame) and appearance.boundary:
+                    for rect in _boundary_repel_rects(appearance, appearance.boundary, ox, oy):
+                        pairs.append((frame, rect))
+                    return
                 x0 = (appearance.exx0 - ox) / UNIT
                 y0 = (appearance.exy0 - oy) / UNIT
                 x1 = (appearance.exx1 - ox) / UNIT

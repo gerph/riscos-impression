@@ -2221,6 +2221,51 @@ riscos-impression/
   re-validated across all 111 real documents, all three formats, with
   0 crashes.
 
+* **Post-Stage-14 fix (41)**: dynamic text repel (fix (5)/PBServer)
+  only ever narrowed a text line around a repel-flagged frame's plain
+  rectangular `exx0..exy1` box, even when that frame is a picture with
+  an irregular (non-rectangular) boundary of its own (`PictureFrame.
+  boundary`, already decoded -- see model/frames.py's own
+  `_decode_boundary_path` -- and already used to clip the picture's
+  own drawn content, but never consulted for text repel). The user
+  supplied a real document, NVMeFlyer,bc5, whose page 2 has exactly
+  this: an octagonal picture boundary (confirmed against two reference
+  screenshots the user also supplied, one showing Impression's own
+  irregular-frame edit handles) that body text visibly hugs, rather
+  than stopping at the picture's plain rectangular edge the way the
+  previous PDF output did.
+
+  `_boundary_repel_rects` (pdfdoc.py) approximates the boundary
+  polygon as a stack of horizontal slice rectangles, one per Y
+  interval between consecutive boundary vertices, each spanning the
+  polygon's own X-extent within that band -- exact for a convex
+  boundary (the common case for a hand-drawn crop shape), an
+  over-inclusive approximation for a concave one. `_repel_obstacles_
+  for_page`'s own `add()` now calls this (feeding several slice
+  rectangles into its existing per-obstacle-rectangle list) instead of
+  the plain box, whenever a repel-flagged frame is a picture with a
+  boundary -- `_narrow_for_obstacles`'s own existing per-line Y-band
+  overlap test needed no changes at all, since a slice is just another
+  obstacle rectangle whose Y-range happens to be narrow.
+
+  Each slice's own edges are sampled at both of the slice's own Y
+  endpoints, not its midpoint: a first version sampled only the
+  midpoint, which under-narrowed the real document's own first text
+  line next to a steep top corner of the octagon, letting one extra
+  word run fractionally under the picture's own drawn edge -- since
+  every active edge within one slice is a straight line (no further
+  vertex sits strictly inside a slice, by construction), its own X
+  value moves monotonically between the slice's two endpoints, so the
+  min/max across both endpoints is the true X-extent, not merely an
+  approximation of it. Confirmed pixel-for-pixel against the real
+  document once this was corrected: the first wrapped line's own text
+  now breaks at exactly the same word as the reference screenshot.
+
+  3 new tests (one direct `_boundary_repel_rects` slicing check on a
+  diamond, one degenerate-boundary edge case, one confirming
+  `_repel_obstacles_for_page` returns several narrow slices rather
+  than one box for a boundaried picture); full suite green.
+
 ### Stage 15 (new, at the user's request) — `extract` subcommand
 
 Once the PDF and HTML output was considered good enough to commit, the user
