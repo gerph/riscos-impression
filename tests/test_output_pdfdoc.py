@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from riscos_impression.model.colours import Colour, ColourModel
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
@@ -10,6 +12,7 @@ from riscos_impression.output.pdfdoc import (
     STANDARD_FONTS,
     _AVERAGE_WIDTH_FACTOR,
     _approx_width,
+    _boundary_repel_rects,
     _fill_colour_op,
     _line_height_pt,
     _narrow_for_obstacles,
@@ -18,6 +21,7 @@ from riscos_impression.output.pdfdoc import (
     _segment_width,
     _stroke_colour_op,
     _tab_advance,
+    _to_rgb,
     _Token,
     _wrap_tokens,
     choose_standard_font,
@@ -25,10 +29,12 @@ from riscos_impression.output.pdfdoc import (
 
 # Reuse the test helpers already established for the OvProDDL converter's tests.
 from tests.test_output_ovprodll import _picture
+from tests.fixtures.artworks_builders import build_single_path_document
 from tests.fixtures.drawfile_builders import (
     build_drawfile,
     build_font_table,
     build_group,
+    build_jpeg,
     build_path,
     build_sprite,
     build_text,
@@ -1732,6 +1738,106 @@ def test_narrow_for_obstacles_handles_obstacles_on_both_sides():
     assert (left, right) == (20.0, 80.0)
 
 
+def test_boundary_repel_rects_slices_a_diamond_into_widening_then_narrowing_bands():
+    # A simple diamond (a square rotated 45 degrees), centred at the
+    # picture's own frame centre, 100 units tall/wide at its own widest.
+    # See PathOp's own docstring: boundary coordinates are relative to
+    # the picture frame's own centre, in millipoints (UNIT below).
+    from riscos_impression.model.frames import PathOp, PathOpCode
+
+    picture = _picture(x0=0, y0=0, x1=100000, y1=100000, boundary=(
+        PathOp(PathOpCode.MOVE, 0, 50000),
+        PathOp(PathOpCode.DRAW, 50000, 0),
+        PathOp(PathOpCode.DRAW, 0, -50000),
+        PathOp(PathOpCode.DRAW, -50000, 0),
+        PathOp(PathOpCode.CLOSE),
+        PathOp(PathOpCode.END),
+    ))
+    rects = _boundary_repel_rects(picture, picture.boundary, ox=0.0, oy=0.0)
+    # Centre (50, 50) in points (millipoints / 1000, UNIT=1000): each
+    # 50pt-tall half (0..50, 50..100) is subdivided into several finer
+    # sub-slices (see _MAX_BOUNDARY_SLICE_HEIGHT_PT), each one strictly
+    # narrower/wider than the next as Y approaches/leaves the diamond's
+    # own horizontal middle (Y=50), not one block spanning the whole
+    # half at its own widest extent.
+    rects = sorted(rects, key=lambda r: r[1])
+    assert len(rects) > 2
+    assert rects[0][1] == 0.0
+    assert rects[-1][3] == 100.0
+    widths = [x1 - x0 for x0, _y0, x1, _y1 in rects]
+    widest = max(range(len(widths)), key=lambda i: widths[i])
+    # Widths strictly increase up to the diamond's own middle, then
+    # strictly decrease -- never any wider than the diamond's own
+    # true horizontal extent (100 at Y=50) anywhere.
+    assert widths == sorted(widths[:widest + 1]) + sorted(widths[widest:], reverse=True)[1:]
+    assert max(widths) == 100.0
+
+
+def test_boundary_repel_rects_returns_nothing_for_a_degenerate_boundary():
+    from riscos_impression.model.frames import PathOp, PathOpCode
+
+    picture = _picture(x0=0, y0=0, x1=100000, y1=100000, boundary=(
+        PathOp(PathOpCode.MOVE, 0, 0),
+        PathOp(PathOpCode.END),
+    ))
+    assert _boundary_repel_rects(picture, picture.boundary, ox=0.0, oy=0.0) == []
+
+
+def test_repel_obstacles_for_page_slices_a_boundaried_picture_instead_of_its_box():
+    """Regression test for NVMeFlyer (from the local examples/ corpus):
+    a repel-flagged picture with an irregular (non-rectangular)
+    boundary should contribute several narrow obstacle slices tracking
+    the boundary's own polygon shape, not one rectangle covering its
+    whole plain outer box -- confirmed against the real document's own
+    page 2, where body text visibly hugs an octagonal picture boundary
+    rather than stopping at a plain rectangular edge."""
+    from riscos_impression.model.frames import PathOp, PathOpCode
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    # A picture at x0=60..x1=100, y0=0..y1=200 (centre (80,100)); its
+    # own irregular boundary is a triangle spanning only y=70..130 (the
+    # frame's own middle third), reaching left to the frame's own plain
+    # left edge (x=60) only exactly at its own middle (y=100) -- its
+    # own apex, pointing right, sits at x=100.
+    picture = _picture(
+        x0=60000, y0=0, x1=100000, y1=200000,
+        exx0=60000, exy0=0, exx1=100000, exy1=200000,
+        repel=True, dictionary_index=1,
+        boundary=(
+            PathOp(PathOpCode.MOVE, -20000, 30000),
+            PathOp(PathOpCode.DRAW, 20000, 0),
+            PathOp(PathOpCode.DRAW, -20000, -30000),
+            PathOp(PathOpCode.CLOSE),
+            PathOp(PathOpCode.END),
+        ),
+    )
+    page = PageGroup(
+        page=Page(x0=0, y0=0, x1=100000, y1=250000, bleed=0, master_page_name=""),
+        offset=1000,
+        records=(_frame_record(1008, picture),),
+    )
+
+    converter = PDFConverter(None)
+    converter._repel_obstacles = {}
+    rects = converter._repel_obstacles_for_page(page)
+
+    # Several fine slices (see _MAX_BOUNDARY_SLICE_HEIGHT_PT), not one
+    # rectangle covering the picture's whole y0=0..y1=200 box -- each
+    # confined to the triangle's own Y-range (70..130), leaving the
+    # rest of the picture's own plain box (its own y0=0..70 and
+    # 130..200) free of any obstacle at all, and each one narrower
+    # than the triangle's own full base width (60..100) except right
+    # at its own middle (Y=100, the apex's own Y) -- proof the real
+    # triangle shape is tracked, not just its own bounding box.
+    rects = sorted(rects, key=lambda r: r[1])
+    assert len(rects) > 2
+    for x0, y0, x1, y1 in rects:
+        assert 70.0 <= y0 < y1 <= 130.0
+        assert x0 == 60.0
+        assert x1 <= 100.0
+    assert any(x1 < 100.0 for _x0, _y0, x1, _y1 in rects)
+
+
 def test_text_repels_around_an_obstacle_picture(tmp_path):
     """Regression test for PBServer (from the local examples/ corpus): a
     picture with repel=True should push the body text's lines away from
@@ -2304,7 +2410,9 @@ def test_untrustworthy_shift_shrinks_oversized_content_to_fit_instead_of_croppin
 def test_drawfile_sprite_sub_object_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
     from riscos_impression.output.pdfdoc import PDFConverter
 
-    document = _picture_document(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000)))
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
 
     converter = PDFConverter(document)
     out = tmp_path / "out.pdf"
@@ -2313,6 +2421,175 @@ def test_drawfile_sprite_sub_object_falls_back_to_a_placeholder_and_logs_best_ef
 
     assert b"([Sprite])" in data
     assert any("Sprite object embedded within a DrawFile" in e.message for e in converter.log.entries)
+
+
+#: A minimal, structurally valid (but not visually meaningful) JPEG:
+#: SOI, one SOF0 (baseline DCT) marker declaring a 3x2 pixel, 3-
+#: component image, then straight to EOI -- enough for _jpeg_info to
+#: read real width/height/component values, without needing a real
+#: image library dependency just for this test.
+_MINIMAL_JPEG = (
+    b"\xff\xd8"  # SOI
+    b"\xff\xc0\x00\x11\x08\x00\x02\x00\x03\x03"  # SOF0, len=17, 8-bit, h=2, w=3, 3 components
+    b"\x01\x11\x00\x02\x11\x01\x03\x11\x01"  # component 1/2/3 (id, sampling, quant table)
+    b"\xff\xd9"  # EOI
+)
+
+
+def test_drawfile_jpeg_object_embeds_as_a_dctdecode_image_xobject(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(
+        build_jpeg(_MINIMAL_JPEG, bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000),
+    ))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"/Filter /DCTDecode" in data
+    assert b"/Subtype /Image" in data
+    assert b"/Width 3 /Height 2" in data
+    assert b"/ColorSpace /DeviceRGB" in data
+    assert _MINIMAL_JPEG in data
+    assert b"/XObject <<" in data
+    assert b"Do Q" in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_unparseable_jpeg_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(
+        build_jpeg(b"not actually a jpeg", bounds=(0, 0, 1000, 1000)), bounds=(0, 0, 1000, 1000),
+    ))
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"([JPEG])" in data
+    assert b"/DCTDecode" not in data
+    assert any("could not be parsed" in e.message for e in converter.log.entries)
+
+
+class _FakePngImage:
+    """A minimal stand-in for riscos_sprites.png.PngImage -- real
+    sprite decoding is riscos_sprites' own, separately-tested concern
+    (see riscos-dumpsprites/tests/test_png.py); these tests exercise
+    only this project's own PDF-object-building logic in
+    _draw_sprite_image, given a decoded image already in hand."""
+
+    def __init__(self, *, width, height, colour_type, bit_depth=8, palette=None,
+                 rows=(), trns_palette=None, trns_colour=None):
+        self.width = width
+        self.height = height
+        self.colour_type = colour_type
+        self.bit_depth = bit_depth
+        self.palette = palette
+        self.rows = rows
+        self.trns_palette = trns_palette
+        self.trns_colour = trns_colour
+
+
+def test_drawfile_sprite_object_embeds_as_an_indexed_image_with_colour_key_mask(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.formats.sprite_png import COLOUR_TYPE_PALETTE
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    image = _FakePngImage(
+        width=2, height=1, colour_type=COLOUR_TYPE_PALETTE, bit_depth=8,
+        palette=[(0, 0, 0), (255, 0, 0)], rows=[[0, 1]], trns_palette=[0, 255],
+    )
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=image):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"/Subtype /Image" in data
+    assert b"/Indexed /DeviceRGB 1 <000000ff0000>" in data
+    assert b"/Mask [0 0]" in data
+    assert b"/Filter /FlateDecode" in data
+    assert b"([Sprite])" not in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_object_embeds_as_plain_rgb_with_colour_key_mask(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.formats.sprite_png import COLOUR_TYPE_RGB
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    image = _FakePngImage(
+        width=1, height=1, colour_type=COLOUR_TYPE_RGB,
+        rows=[[(10, 20, 30)]], trns_colour=(255, 255, 255),
+    )
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=image):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"/ColorSpace /DeviceRGB" in data
+    assert b"/Mask [255 255 255 255 255 255]" in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_object_with_real_alpha_gets_a_real_smask(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.formats.sprite_png import COLOUR_TYPE_RGBA
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    image = _FakePngImage(
+        width=2, height=1, colour_type=COLOUR_TYPE_RGBA,
+        rows=[[(1, 2, 3, 128), (4, 5, 6, 255)]],
+    )
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=image):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"/SMask" in data
+    assert data.count(b"/Subtype /Image") == 2  # the RGB image plus its own SMask
+    assert b"/ColorSpace /DeviceGray" in data
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_sprite_missing_extra_falls_back_to_a_placeholder_and_logs_best_effort(tmp_path):
+    from unittest.mock import patch
+
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _picture_document(build_drawfile(
+        build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44), bounds=(0, 0, 1000, 1000),
+    ))
+
+    with patch("riscos_impression.output.pdfdoc.sprite_area_to_png_image", return_value=None):
+        converter = PDFConverter(document)
+        out = tmp_path / "out.pdf"
+        converter.convert(out)
+        data = out.read_bytes()
+
+    assert b"([Sprite])" in data
+    assert any("riscos_sprites" in e.message for e in converter.log.entries)
 
 
 def test_drawfile_text_object_renders_using_the_font_tables_own_name(tmp_path):
@@ -2439,7 +2716,9 @@ def test_drawfile_path_with_triangular_end_cap_draws_an_arrowhead(tmp_path):
     assert "h f\n" in content
 
 
-def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
+def test_drawfile_dashed_path_emits_a_real_dash_array(tmp_path):
+    # build_path's own dashed=True fixture writes a real (offset=0,
+    # elements=[10, 5]) dash pattern -- see drawfile_builders.py.
     from riscos_impression.output.pdfdoc import PDFConverter
 
     ops = move(0, 0) + line(2560, 0) + end_path()
@@ -2452,7 +2731,32 @@ def test_drawfile_dashed_path_renders_solid_and_logs_best_effort(tmp_path):
     data = out.read_bytes()
 
     assert b"\nS\n" in data  # stroked, since there's no fill colour
-    assert any("dash patterns are not reproduced" in e.message for e in converter.log.entries)
+    assert re.search(rb"\[[\d. ]+\] [\d.]+ d\n", data)
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_non_dashed_path_after_a_dashed_one_resets_to_solid(tmp_path):
+    # PDF's own dash array is graphics *state*, unlike SVG's per-element
+    # stroke-dasharray attribute -- a later solid path drawn within the
+    # same DrawFile (sharing one q/Q pair) must not inherit an earlier
+    # path's own dash pattern.
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    dashed_ops = move(0, 0) + line(2560, 0) + end_path()
+    dashed_path = build_path(ops=dashed_ops, bounds=(0, 0, 2560, 100), stroke_colour=0x000000FF, dashed=True)
+    solid_ops = move(0, 200) + line(2560, 200) + end_path()
+    solid_path = build_path(ops=solid_ops, bounds=(0, 200, 2560, 300), stroke_colour=0x000000FF, dashed=False)
+    document = _picture_document(
+        build_drawfile(dashed_path + solid_path, bounds=(0, 0, 2560, 300))
+    )
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"[] 0 d\n" in data
+    assert not converter.log.has_errors()
 
 
 def test_drawfile_group_and_unknown_object_types_are_handled(tmp_path):
@@ -2537,3 +2841,423 @@ def test_drawfile_picture_angle_rotates_about_the_drawfiles_own_origin(tmp_path)
     assert round(xb, 3) == 0.0
     assert round(ya, 3) == 0.0
     assert round(yb, 3) == round(xa, 3)
+
+
+def _artworks_picture_document(picture_bytes: bytes, **kwargs):
+    document = _picture_document(picture_bytes, **kwargs)
+    entry = document.dictionary[-1]
+    document.dictionary[-1] = DictionaryEntry(index=entry.index, type=entry.type, id=entry.id, types=0xD94)
+    return document
+
+
+def test_artworks_picture_frame_renders_as_real_pdf_path_content(tmp_path):
+    # No FillColourRecord is present in this minimal fixture, so the
+    # ambient _DEFAULT_STYLE fill colour (ArtWorks' own "no colour"
+    # sentinel, ColourIndex(0xFFFFFFFF)) resolves to None -- matching
+    # the SVG converter's own "solid black hairline stroke, no fill"
+    # default -- so only the stroke operator is expected here, not a
+    # fill/both operator; see the module docstring on _DEFAULT_STYLE.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _artworks_picture_document(build_single_path_document())
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b" m\n" in data
+    assert b" l\n" in data
+    assert b"\nS\n" in data
+    assert b"([ArtWorks])" not in data
+    assert not converter.log.has_errors()
+
+
+def test_artworks_picture_frame_with_unparseable_data_falls_back_to_placeholder(tmp_path):
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _artworks_picture_document(b"not a real ArtWorks file at all")
+
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"([ArtWorks])" in data
+    assert any("ArtWorks" in e.message for e in converter.log.entries)
+
+
+def test_artworks_pdf_character_font_size_is_converted_via_font_size_to_native_units():
+    # Regression test: FontSizeRecord.y_size was previously used
+    # directly as if it were already in native ArtWorks coordinate
+    # units -- see formats/artworks_svg.py's own
+    # FONT_SIZE_TO_NATIVE_UNITS docstring for the empirical derivation
+    # and why the bug went unnoticed for a while (only glaringly
+    # visible in a picture whose own frame was small).
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import CharacterRecord, FontSizeRecord, TextRecord
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE, FONT_SIZE_TO_NATIVE_UNITS
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _list, _record
+
+    size = _record(FontSizeRecord, x_size=512, y_size=512)
+    char_a = _record(CharacterRecord, character_code=ord("A"), unknown_values=(0, 0, 0, 0))
+    text = _record(TextRecord, unknown_values=(0, 0, 0, 1, 1, 0), rectangle=(), child_lists=(_list(size), _list(char_a)))
+    artwork = _artwork((_list(text),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._font_resource_name = {"Helvetica": "F1"}
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert FONT_SIZE_TO_NATIVE_UNITS == 40.0
+    assert " 20480 Tf " in content  # 512 * 40 * scale(1.0)
+
+
+def test_artworks_pdf_blend_group_interpolates_geometry_and_stroke_colour():
+    # Unit-tests PDFConverter._artworks_pdf_process_blend_group directly
+    # against hand-built riscos_artworks dataclasses (reusing the same
+    # helpers as formats/artworks_svg.py's own blend tests), bypassing
+    # ArtWorks.from_buffer()'s byte-level decoding entirely -- this
+    # class needs no document/page state at all for that method, only
+    # self._content, so a full PDF document isn't built here.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import BlendGroupRecord, BlendOptionsRecord, PathRecord, StrokeColourRecord
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square
+
+    start_stroke = _record(StrokeColourRecord, colour=_direct(255, 0, 0))
+    start_path = _record(PathRecord, path=_square(0, 0, 1000), child_lists=(_list(start_stroke),))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    end_stroke = _record(StrokeColourRecord, colour=_direct(0, 0, 255))
+    end_path = _record(PathRecord, path=_square(2000, 2000, 200), child_lists=(_list(end_stroke),))
+    group = _record(
+        BlendGroupRecord, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._artworks_pdf_process_blend_group(
+        group, dict(_DEFAULT_STYLE), artwork, lambda x, y: (x, y), 1.0, [],
+    )
+    content = "".join(converter._content)
+
+    assert content.count(" m\n") == 5  # blend_steps + 1
+    assert "0 0 m\n" in content  # t=0: exactly the start keyframe
+    assert "2000 2000 m\n" in content  # t=1: exactly the end keyframe
+    assert "1 0 0 RG" in content  # t=0 stroke colour
+    assert "0 0 0.996 RG" in content  # t=1 stroke colour -- see _direct's own
+    # docstring for why b=255 resolves to 254/255, not exactly 1
+
+
+def test_artworks_pdf_blend_group_with_mismatched_point_counts_draws_both_keyframes():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import BlendGroupRecord, BlendOptionsRecord, CloseElement, EndElement, LineElement, MoveElement, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _list, _record, _square
+
+    start_path = _record(PathRecord, path=_square(0, 0, 1000))
+    options = _record(BlendOptionsRecord, unknown_24=0, blend_steps=4, values=(0,) * 8)
+    triangle_path = (
+        MoveElement(2, Point(2000, 2000)),
+        LineElement(8, Point(2200, 2000)),
+        LineElement(8, Point(2100, 2200)),
+        CloseElement(5),
+        EndElement(0),
+    )
+    end_path = _record(PathRecord, path=triangle_path)
+    group = _record(
+        BlendGroupRecord, values=(0,) * 11,
+        child_lists=(_list(start_path), _list(options), _list(end_path)),
+    )
+    artwork = _artwork((_list(group),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._artworks_pdf_process_blend_group(
+        group, dict(_DEFAULT_STYLE), artwork, lambda x, y: (x, y), 1.0, [],
+    )
+    content = "".join(converter._content)
+
+    assert content.count(" m\n") == 2
+    assert "0 0 m\n" in content
+    assert "2000 2000 m\n" in content
+
+
+def test_artworks_pdf_linear_gradient_fill_emits_a_real_shading():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    fill = _record(
+        FillColourRecord,
+        fill_type=1, unknown_28=0, colour=None,
+        gradient_line=(Point(0, 500), Point(1000, 500)),
+        start_colour=_direct(255, 255, 255), end_colour=_direct(0, 0, 0),
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert "W*\nn\n" in content  # _DEFAULT_STYLE's own winding is even-odd
+    assert re.search(r"/Sh\d+ sh", content)
+    assert len(converter._page_shadings) == 1
+    # The clip must be scoped inside its own q/Q -- see the dedicated
+    # leaked-clip regression test below for why.
+    assert re.search(r"q\n[^q]*W\*\nn\n/Sh1 sh\nQ\n", content)
+    shading_obj = converter._writer._objects[converter._page_shadings["Sh1"]]
+    assert b"/ShadingType 2" in shading_obj
+    assert b"/Coords [0 500 1000 500]" in shading_obj
+
+
+def test_artworks_pdf_radial_gradient_fill_emits_a_real_shading():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    fill = _record(
+        FillColourRecord, fill_type=2, unknown_28=0, colour=None,
+        gradient_line=(Point(500, 500), Point(500, 1000)),
+        start_colour=_direct(255, 255, 255), end_colour=_direct(0, 0, 0),
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert re.search(r"/Sh\d+ sh", content)
+    shading_obj = converter._writer._objects[converter._page_shadings["Sh1"]]
+    assert b"/ShadingType 3" in shading_obj
+    assert b"/Coords [500 500 0 500 500 500]" in shading_obj
+
+
+def test_artworks_pdf_gradient_with_unresolvable_colour_falls_back_to_flat():
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import ColourIndex, FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    # start_colour is a palette *index*, and this artwork has no
+    # palette -- resolve_colour() returns None, so no real shading can
+    # be built; the flat-colour fallback (using fill_start) applies.
+    fill = _record(
+        FillColourRecord, fill_type=1, unknown_28=0, colour=None,
+        gradient_line=(Point(0, 500), Point(1000, 500)),
+        start_colour=ColourIndex(3), end_colour=_direct(0, 0, 0),
+    )
+    path = _record(PathRecord, path=_square_path(filled=True))
+    artwork = _artwork((_list(fill), _list(path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    notes: list[str] = []
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, notes)
+    content = "".join(converter._content)
+
+    assert "sh\n" not in content
+    assert len(converter._page_shadings) == 0
+    assert any("approximated as a flat colour" in n for n in notes)
+
+
+def test_artworks_pdf_gradient_fill_clip_does_not_leak_to_later_objects():
+    # Regression test: a gradient fill's own clip (W/W* n) was
+    # previously emitted outside any q/Q pair, so it never got
+    # restored -- it leaked onto every draw call for the rest of the
+    # picture (all sharing one outer q/Q; see _draw_artworks_picture),
+    # silently clipping away anything drawn afterwards outside that one
+    # gradient shape's own boundary. Found via a real document
+    # (corpus/TestDoc,bc5's own CD-cover picture): its disc's own
+    # gradient clip was leaking onto every text glyph drawn after it.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import FillColourRecord, PathRecord, Point
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _direct, _list, _record, _square_path
+
+    gradient_fill = _record(
+        FillColourRecord, fill_type=1, unknown_28=0, colour=None,
+        gradient_line=(Point(0, 500), Point(1000, 500)),
+        start_colour=_direct(255, 255, 255), end_colour=_direct(0, 0, 0),
+    )
+    gradient_path = _record(PathRecord, path=_square_path(filled=True))
+
+    flat_fill = _record(
+        FillColourRecord, fill_type=0, unknown_28=0, colour=_direct(0, 255, 0),
+        gradient_line=None, start_colour=None, end_colour=None,
+    )
+    later_path = _record(PathRecord, path=_square_path(filled=True))
+
+    artwork = _artwork((_list(gradient_fill), _list(gradient_path), _list(flat_fill), _list(later_path)))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._page_shadings = {}
+    converter._writer = _PDFWriter()
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert content.count("q\n") == content.count("Q\n")
+    # The later object's own fill draws after the gradient's own q/Q
+    # has already closed, not nested inside it.
+    gradient_end = content.index("Q\n") + len("Q\n")
+    assert "rg\n" in content[gradient_end:]
+
+
+def test_artworks_pdf_pathified_character_renders_its_own_glyph_outline_not_tf_tj():
+    # PDF counterpart of formats/artworks_svg.py's own equivalent test
+    # -- see that test and _emit_character's own docstring for the
+    # full explanation (ArtWorks "pathifies" individual characters when
+    # it can't rely on standard text rendering, confirmed against a
+    # real picture and the SDK manual's own PathifyText_* description).
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_artworks import CharacterRecord, PathRecord, TextRecord
+
+    from riscos_impression.formats.artworks_svg import _DEFAULT_STYLE
+    from riscos_impression.output.pdfdoc import PDFConverter
+    from tests.test_formats_artworks_svg import _artwork, _list, _record, _square_path
+
+    glyph_path = _record(PathRecord, path=_square_path(filled=True))
+    char_a = _record(
+        CharacterRecord, character_code=ord("A"), unknown_values=(1000, 2000, 0, 0),
+        child_lists=(_list(glyph_path),),
+    )
+    text = _record(TextRecord, unknown_values=(0, 0, 0, 1, 1, 0), rectangle=(), child_lists=(_list(char_a),))
+    artwork = _artwork((_list(text),))
+
+    converter = PDFConverter(None)
+    converter._content = []
+    converter._font_resource_name = {"Helvetica": "F1"}
+    style = dict(_DEFAULT_STYLE)
+    converter._artworks_pdf_process_lists(artwork.record_lists, style, artwork, lambda x, y: (x, y), 1.0, [])
+    content = "".join(converter._content)
+
+    assert " m\n" in content  # the glyph outline's own path ops
+    # An invisible (Tr 3) text run carries the real letter for
+    # copy/search/accessibility, restored to visible (0 Tr) afterwards
+    # so it can't leak into later text -- see
+    # _artworks_pdf_emit_invisible_text's own docstring.
+    assert "3 Tr" in content
+    assert "(A) Tj" in content
+    assert "0 Tr ET" in content
+    # No *visible* Tf/Tj pair (the old substitute-font fallback) --
+    # only the invisible run's own Tf/Tj, inside its own BT/ET block
+    # together with "3 Tr".
+    assert content.count("Tf ") == 1
+    assert content.count("BT") == 1
+
+
+def test_artworks_pdf_picture_applies_xshift_yshift_and_xscale_yscale(tmp_path):
+    # Regression test: the user reported two placements of similar
+    # ArtWorks content in a real document rendering identically, when
+    # their own declared xshift/yshift/xscale/yscale should have shown
+    # each at its own distinct size and position -- _draw_artworks_
+    # picture previously always scaled-to-fit-and-centred regardless
+    # of these fields, matching neither placement's own real appearance.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    picture_bytes = build_single_path_document()
+
+    default = _artworks_picture_document(picture_bytes, x0=0, y0=0, x1=100000, y1=100000)
+    out_a = tmp_path / "a.pdf"
+    PDFConverter(default).convert(out_a)
+    xa, ya = _first_moveto_point(out_a.read_bytes())
+
+    shifted = _artworks_picture_document(
+        picture_bytes, x0=0, y0=0, x1=100000, y1=100000, xshift=20000, yshift=10000,
+    )
+    out_b = tmp_path / "b.pdf"
+    PDFConverter(shifted).convert(out_b)
+    xb, yb = _first_moveto_point(out_b.read_bytes())
+
+    assert (xb, yb) != (xa, ya)
+
+    half_scale = _artworks_picture_document(
+        picture_bytes, x0=0, y0=0, x1=100000, y1=100000, xscale=0x20000, yscale=0x20000,
+    )
+    out_c = tmp_path / "c.pdf"
+    PDFConverter(half_scale).convert(out_c)
+    # The first moveto point sits exactly at the shape's own native
+    # origin, which xscale/yscale alone doesn't move (only points away
+    # from it) -- the first lineto point does move, since it isn't at
+    # the origin.
+    match_a = re.search(rb"([\d.-]+) ([\d.-]+) l\n", out_a.read_bytes())
+    match_c = re.search(rb"([\d.-]+) ([\d.-]+) l\n", out_c.read_bytes())
+    assert match_a is not None and match_c is not None
+    assert match_a.groups() != match_c.groups()
+
+
+def test_artworks_pdf_picture_content_is_clipped_to_its_own_frame(tmp_path):
+    # Regression test: _draw_artworks_picture had no clip rectangle at
+    # all (unlike _draw_drawfile_picture's own "re W n"), so a picture
+    # placed/scaled bigger than its own frame (a real, legitimate case
+    # once xshift/yshift/xscale are honoured -- see the sibling test
+    # above) would bleed into whatever else shares the same page.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    from riscos_impression.output.pdfdoc import PDFConverter
+
+    document = _artworks_picture_document(
+        build_single_path_document(), x0=10000, y0=20000, x1=60000, y1=70000,
+    )
+    converter = PDFConverter(document)
+    out = tmp_path / "out.pdf"
+    converter.convert(out)
+    data = out.read_bytes()
+
+    assert b"10 20 50 50 re W n\n" in data
+    assert not converter.log.has_errors()
+
+
+def test_hsv_colour_hue_is_normalised_by_360_not_255():
+    # Regression test: hue is an angle (0-360 degrees) packed into the
+    # same on-disk slot as saturation/value's own byte-range (0-255)
+    # channels, but was normalised by 255 like them -- confirmed wrong
+    # against a real document (corpus/TestDoc,bc5) whose own picture-
+    # frame fill colour, per its own colour picker dialog, is 268
+    # degrees / 75% saturation / 88% value (a purple): h/MAXCV there is
+    # exactly 268.0, and /255 sent the resolved colour round the wheel
+    # more than once, rendering orange instead of purple. These are
+    # that same real document's own raw on-disk values.
+    colour = Colour(
+        index=None, name="", model=ColourModel.HSV, values=(17563648, 49087, 57825),
+        process=True, overprint=False, palette_word=0,
+    )
+    r, g, b = _to_rgb(colour)
+    assert (round(r * 255), round(g * 255), round(b * 255)) == (135, 56, 225)

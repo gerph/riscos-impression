@@ -16,11 +16,14 @@ index:
   and html_scrolling.py for that fuller machinery), just a readable,
   reasonably-styled approximation good enough to carry the document's
   general look into another tool.
-* ``images/NNNN.<ext>`` -- a picture's own raw embedded bytes, as-is
-  (EPS is the one exception: its own wrapper header is stripped,
-  leaving genuinely standalone PostScript -- see formats/eps.py).
-  *ext* is "draw"/"sprite"/"eps"/"aff" when recognised, "bin"
-  otherwise.
+* ``images/NNNN,<filetype>`` or ``images/NNNN.bin`` -- a picture's own
+  raw embedded bytes, as-is (EPS is the one exception: its own wrapper
+  header is stripped, leaving genuinely standalone PostScript -- see
+  formats/eps.py). When recognised, the name carries the picture's
+  real RISC OS filetype using the standard comma-suffix convention --
+  ``,aff`` (DrawFile), ``,ff9`` (Sprite), ``,ff5`` (EPS), ``,d94``
+  (ArtWorks) -- not a made-up "friendly" extension; unrecognised data
+  falls back to a plain ``.bin``.
 * ``svg/NNNN.svg``     -- a DrawFile picture's own content re-rendered
   as a standalone SVG file, at its own native size (no picture-frame
   scale/xshift/yshift/rotation applied -- unlike html_base.py's own
@@ -64,16 +67,16 @@ from riscos_impression.output.html_base import (
     style_css_properties,
 )
 
-#: DCPICT EmbeddedObjectType -> file extension for the raw dump, when
-#: not further narrowed by an actual decode attempt (see
-#: _picture_extension_and_svg). ArtWorks' own real-world extension is
-#: "aff" (its native RISC OS filetype 0xD94 has no fixed cross-platform
-#: name of its own); every other, undecoded companion-app type in
+#: DCPICT EmbeddedObjectType -> RISC OS filetype comma-suffix for the
+#: raw dump, when not further narrowed by an actual decode attempt
+#: (see _extract_picture). ArtWorks' own RISC OS filetype is &D94, so
+#: its comma-suffix is "d94" (not "aff" -- that filetype, &AFF,
+#: belongs to DrawFile); every other, undecoded companion-app type in
 #: model.dictionary's own _DRAW_FAMILY (Tablemate, Equasor, Formulix,
-#: Eureka, DiagramIT, TabCalc, GraphMate) has no known portable
-#: extension either, so falls through to "bin" like plain DATA.
-_EXTENSION_BY_TYPE = {
-    EmbeddedObjectType.ARTWORKS: "aff",
+#: Eureka, DiagramIT, TabCalc, GraphMate) has no known filetype either,
+#: so falls through to plain ".bin" like undecodable DATA.
+_FILETYPE_SUFFIX_BY_TYPE = {
+    EmbeddedObjectType.ARTWORKS: "d94",
 }
 
 
@@ -175,18 +178,18 @@ class ExtractConverter(HTML5Converter):
 
         if kind is EmbeddedObjectType.EPS:
             eps = EPSObject.from_bytes(data)
-            (images_dir / f"{name}.eps").write_bytes(eps.data)
+            (images_dir / f"{name},ff5").write_bytes(eps.data)
             return
 
         if kind is EmbeddedObjectType.DRAW:
             draw = DrawFile.from_bytes(data)
             if draw is not None:
-                (images_dir / f"{name}.draw").write_bytes(data)
+                (images_dir / f"{name},aff").write_bytes(data)
                 svg_dir.mkdir(parents=True, exist_ok=True)
                 (svg_dir / f"{name}.svg").write_text(self._drawfile_native_svg(draw), encoding="utf-8")
                 return
             if SpriteArea.from_bytes(data) is not None:
-                (images_dir / f"{name}.sprite").write_bytes(data)
+                (images_dir / f"{name},ff9").write_bytes(data)
                 return
             self.log.error(
                 "picture", f"dictionary entry {entry.index} classified as a drawable format "
@@ -195,8 +198,11 @@ class ExtractConverter(HTML5Converter):
             (images_dir / f"{name}.bin").write_bytes(data)
             return
 
-        ext = _EXTENSION_BY_TYPE.get(kind, "bin")
-        (images_dir / f"{name}.{ext}").write_bytes(data)
+        suffix = _FILETYPE_SUFFIX_BY_TYPE.get(kind)
+        if suffix is not None:
+            (images_dir / f"{name},{suffix}").write_bytes(data)
+        else:
+            (images_dir / f"{name}.bin").write_bytes(data)
 
     def _drawfile_native_svg(self, draw: DrawFile) -> str:
         """*draw*'s own content at its own native size (100% scale, no

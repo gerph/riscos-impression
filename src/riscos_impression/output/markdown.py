@@ -35,7 +35,7 @@ from typing import Optional
 from riscos_impression.model.dictionary import DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import BlankFrame, Frame, ObjectRecord, PictureFrame, TextFrame
-from riscos_impression.model.numbering import NumberingStyle, resolve_number
+from riscos_impression.model.numbering import format_number, resolve_number
 from riscos_impression.model.story import (
     ChapterNumberMark,
     EmbedMark,
@@ -294,12 +294,12 @@ class MarkdownConverter(Converter):
         if record is None:
             self.log.error("numbering", f"no numbering record for tag {tag}")
             return ""
-        if record.style is not NumberingStyle.DECIMAL:
-            self.log.unsupported(
-                "numbering",
-                f"{record.style.name if record.style else record.raw_style} numbering "
-                "style not implemented; only decimal is (matches the conversion "
-                "source's own gap, not just this converter's)",
-            )
+        value = resolve_number(self.document.numbering, dictionary_index, tag)
+        if value is None:
+            self.log.error("numbering", f"no numbering record for tag {tag}")
             return ""
-        return str(resolve_number(self.document.numbering, dictionary_index, tag))
+        if record.style is None:
+            self.log.best_effort(
+                "numbering", f"unrecognised numbering style {record.raw_style}; rendered as decimal"
+            )
+        return format_number(value, record.style)

@@ -68,6 +68,69 @@ def parse_numbering_table(
     ]
 
 
+#: Largest-first (value, symbol) pairs for the standard subtractive-
+#: notation greedy Roman numeral algorithm.
+_ROMAN_NUMERALS = (
+    (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+    (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+    (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+)
+
+
+def _to_roman(value: int) -> str:
+    parts = []
+    for magnitude, symbol in _ROMAN_NUMERALS:
+        count, value = divmod(value, magnitude)
+        parts.append(symbol * count)
+    return "".join(parts)
+
+
+def _to_alpha(value: int) -> str:
+    """Bijective base-26: 1=A, 2=B, ..., 26=Z, 27=AA, 28=AB, ... --
+    matches the everyday "a, b, c, ..., z, aa, bb, ..." outline-list
+    convention (and spreadsheet column letters), not a plain base-26
+    positional encoding (which would have no letter for "0" and so
+    couldn't represent 26 as anything other than a two-letter value
+    starting over from A)."""
+    parts = []
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        parts.append(chr(ord("A") + remainder))
+    return "".join(reversed(parts))
+
+
+def format_number(value: int, style: Optional[NumberingStyle]) -> str:
+    """*value* (see resolve_number) formatted for *style*. DECIMAL, and
+    any unrecognised/None style, is always a plain base-10 string --
+    the same fallback the original conversion source's own decimal
+    case used, and safe for any integer including zero/negative.
+
+    Roman numerals and alphabetic style both need value >= 1: neither
+    system has a representation for zero or negative numbers, so
+    anything less falls back to plain decimal too, rather than raising
+    or producing a nonsensical string.
+
+    Bullet style ignores value entirely -- every item in a bulleted
+    list gets the same bullet glyph, not a running count.
+
+    Note: the original C conversion source (c/styles' own
+    expandnumber()) recognised all of these style codes but left every
+    non-decimal branch genuinely empty -- this is real, additional
+    behaviour beyond what that reference tool ever did, not a port of
+    existing logic."""
+    if style is NumberingStyle.BULLET:
+        return "•"
+    if style is NumberingStyle.ROMAN_UPPER and value >= 1:
+        return _to_roman(value)
+    if style is NumberingStyle.ROMAN_LOWER and value >= 1:
+        return _to_roman(value).lower()
+    if style is NumberingStyle.ALPHA_UPPER and value >= 1:
+        return _to_alpha(value)
+    if style is NumberingStyle.ALPHA_LOWER and value >= 1:
+        return _to_alpha(value).lower()
+    return str(value)
+
+
 def resolve_number(
     records: list[NumberingRecord], dictionary_index: int, tag: int
 ) -> Optional[int]:

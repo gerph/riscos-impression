@@ -275,9 +275,11 @@ def _synthetic_colour_key(colour: Colour) -> str:
     if colour.model is ColourModel.CMYK:
         c, m, y, k = (v * 255 // MAXCV for v in colour.values)
         return f"CMYK{c:02X}{m:02X}{y:02X}{k:02X}"
-    # HSV: never observed in real documents (see docs/impression-documents.xml).
-    # The original names these from the raw, unscaled source bytes; this is a
-    # best-effort approximation re-derived from the already-scaled values.
+    # HSV: confirmed present in a real document (corpus/TestDoc,bc5's
+    # own picture-frame fill colours; see pdfdoc.py's own _to_rgb for
+    # the fuller story). The original names these from the raw,
+    # unscaled source bytes; this is a best-effort approximation
+    # re-derived from the already-scaled values.
     h, s, v = colour.values
     return f"HSV{(h // 0x10000) & 0xFFF:03X}{(s * 255 // MAXCV) & 0xFF:02X}{(v * 255 // MAXCV) & 0xFF:02X}"
 
@@ -1149,18 +1151,17 @@ class OvProDDLConverter(Converter):
         if record is None:
             self.log.error("numbering", f"no numbering record for tag {tag}")
             return ""
-        from riscos_impression.model.numbering import NumberingStyle, resolve_number
+        from riscos_impression.model.numbering import format_number, resolve_number
 
-        if record.style is not NumberingStyle.DECIMAL:
-            self.log.unsupported(
-                "numbering",
-                f"{record.style.name if record.style else record.raw_style} numbering "
-                f"style not implemented; only decimal is (matches the conversion source's "
-                f"own gap, not just this converter's)",
-            )
-            return ""
         value = resolve_number(self.document.numbering, dictionary_index, tag)
-        return f'"{value}"\n'
+        if value is None:
+            self.log.error("numbering", f"no numbering record for tag {tag}")
+            return ""
+        if record.style is None:
+            self.log.best_effort(
+                "numbering", f"unrecognised numbering style {record.raw_style}; rendered as decimal"
+            )
+        return f'"{format_number(value, record.style)}"\n'
 
     def _render_embed_reference(
         self, embed_tag: int, chapter: Chapter, page: PageGroup, master: bool, epoch_index: int

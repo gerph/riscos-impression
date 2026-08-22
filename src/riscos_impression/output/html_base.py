@@ -54,6 +54,7 @@ from riscos_impression.formats.drawfile import (
     BoundingBox,
     DrawFile,
     DrawGroup,
+    DrawJPEG,
     DrawPath,
     DrawPathOpCode,
     DrawSprite,
@@ -62,11 +63,24 @@ from riscos_impression.formats.drawfile import (
     colour_rgb,
 )
 from riscos_impression.formats.eps import EPSObject
-from riscos_impression.formats.sprite import SpriteArea
+from riscos_impression.formats.sprite import SpriteArea, wrap_single_sprite_as_area
+from riscos_impression.formats.sprite_png import sprite_area_to_png
 from riscos_impression.model.colours import MAXCV, Colour, ColourModel
 from riscos_impression.model.dictionary import EmbeddedObjectType
 from riscos_impression.model.styles import Style
 from riscos_impression.output.base import Converter
+
+try:
+    # riscos_artworks is only installed via this project's own optional
+    # "artworks" extra (see pyproject.toml) -- ArtWorks pictures fall
+    # back to the usual labelled placeholder, exactly like any other
+    # undecoded picture kind, when it isn't available.
+    from riscos_artworks import ArtWorks
+    from riscos_impression.formats.artworks_svg import ARTWORKS_UNIT_TO_USER_UNITS, artworks_svg_fragment
+except ImportError:  # pragma: no cover - exercised by CI without the extra
+    ArtWorks = None
+    artworks_svg_fragment = None
+    ARTWORKS_UNIT_TO_USER_UNITS = None
 
 #: Millipoints per CSS point; see docs/impression-documents.xml's note
 #: under "Frame object common layout" (the same confirmed unit pdfdoc.py
@@ -170,8 +184,14 @@ def colour_to_css(colour: Optional[Colour]) -> Optional[str]:
     else:
         h, s, v = colour.values
         # h carries no /255 scaling (see docs/impression-documents.xml,
-        # "Colour channel encoding"); normalise it back to a 0..1 fraction.
-        r, g, b = _hsv_to_rgb((h / MAXCV) / 255.0, s / MAXCV, v / MAXCV)
+        # "Colour channel encoding") because it isn't a byte-range
+        # value like every other channel -- it's an angle, 0-360
+        # degrees, packed into the same on-disk slot. See pdfdoc.py's
+        # own _to_rgb for the real-document confirmation (268 degrees,
+        # h/MAXCV == 268.0 exactly, matching the user's own colour
+        # picker dialog) that /255 (the earlier, wrong assumption) sent
+        # the resolved colour round the wheel more than once.
+        r, g, b = _hsv_to_rgb((h / MAXCV) / 360.0, s / MAXCV, v / MAXCV)
     return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
@@ -527,10 +547,13 @@ def picture_placeholder_data_uri(label: str, width_pt: float, height_pt: float) 
 class HTML5Converter(Converter):
     """Shared base for the scrolling and paged-media HTML5 converters:
     picture rendering (dispatched by embedded type exactly like the PDF
-    converter -- DrawFile/Sprite get a labelled placeholder, since both
-    decoders are stub bounding-box readers with no pixel/vector data to
-    rasterise; ArtWorks is a full stub and always renders as a
-    placeholder; EPS gets a placeholder too, with a note that its raw
+    converter -- Sprite gets a labelled placeholder, since its decoder
+    is a stub bounding-box reader with no pixel data to rasterise;
+    ArtWorks is rendered as a nested `<svg>` via the optional
+    riscos_artworks decoder and formats/artworks_svg.py -- see
+    _artworks_svg -- falling back to the usual labelled placeholder
+    when that extra isn't installed or the picture fails to decode/
+    render; EPS gets a placeholder too, with a note that its raw
     content isn't embedded in HTML output at all, unlike the PDF
     converter's embedded-file attachment -- HTML has no equivalent
     mechanism)."""
@@ -564,17 +587,36 @@ class HTML5Converter(Converter):
                 self.log.error(
                     "picture", "picture classified as a drawable format but decoded as neither DrawFile nor Sprite"
                 )
-            else:
-                self.log.best_effort(
-                    "picture", "Sprite picture rendered as a placeholder box; pixel data is not decoded by this converter"
-                )
+                return self._placeholder_img("Sprite", width_pt, height_pt)
+            png = sprite_area_to_png(data)
+            if png is not None:
+                return self._image_data_uri_img("png", png, width_pt, height_pt)
+            self.log.best_effort(
+                "picture", "Sprite picture rendered as a placeholder box; the optional 'sprites' "
+                "extra (riscos_sprites) is not installed, or the sprite failed to decode"
+            )
             return self._placeholder_img("Sprite", width_pt, height_pt)
 
         if kind is EmbeddedObjectType.ARTWORKS:
-            self.log.unsupported(
-                "picture", "ArtWorks picture rendered as a placeholder box; this format is not decoded at all by this converter"
-            )
-            return self._placeholder_img("ArtWorks", width_pt, height_pt)
+            if artworks_svg_fragment is None:
+                self.log.unsupported(
+                    "picture", "ArtWorks picture rendered as a placeholder box; the optional "
+                    "'artworks' extra (riscos_artworks) is not installed"
+                )
+                return self._placeholder_img("ArtWorks", width_pt, height_pt)
+            try:
+                artwork = ArtWorks.from_buffer(data)
+            except Exception as e:
+                # A real, current riscos_artworks decoder gap (not this
+                # project's own bug) -- e.g. some real ArtWorks files
+                # embed a SpriteRecord shape its decoder doesn't yet
+                # parse -- so this is a known limitation, not an
+                # unexpected failure.
+                self.log.best_effort(
+                    "picture", f"ArtWorks picture rendered as a placeholder box; failed to decode ({e})"
+                )
+                return self._placeholder_img("ArtWorks", width_pt, height_pt)
+            return self._artworks_svg(artwork, pict, width_pt, height_pt)
 
         label = kind.value if kind is not None else "data"
         self.log.best_effort("picture", f"{label} picture rendered as a placeholder box; not decoded by this converter")
@@ -584,6 +626,17 @@ class HTML5Converter(Converter):
         uri = picture_placeholder_data_uri(label, width_pt, height_pt)
         return (
             f'<img src="{uri}" alt="[{escape_html(label)} picture, not rendered]" '
+            f'width="{width_pt:.1f}" height="{height_pt:.1f}" '
+            f'style="width: {width_pt:.1f}pt; height: {height_pt:.1f}pt;">'
+        )
+
+    def _image_data_uri_img(self, image_format: str, image_bytes: bytes, width_pt: float, height_pt: float) -> str:
+        """A decoded raster image (currently only real Sprite pixel
+        data, via formats/sprite_png.py) embedded as a self-contained
+        `<img>` data: URI, sized to the picture frame's own box."""
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return (
+            f'<img src="data:image/{image_format};base64,{encoded}" alt="[picture]" '
             f'width="{width_pt:.1f}" height="{height_pt:.1f}" '
             f'style="width: {width_pt:.1f}pt; height: {height_pt:.1f}pt;">'
         )
@@ -729,8 +782,6 @@ class HTML5Converter(Converter):
     def _drawfile_svg_object(self, obj, fonts: dict, to_svg, scale, parts: list[str], notes: list[str]) -> None:
         if isinstance(obj, DrawPath):
             self._drawfile_svg_path(obj, to_svg, scale, parts)
-            if obj.dashed:
-                notes.append("dashed DrawFile path lines are rendered solid; dash patterns are not reproduced")
         elif isinstance(obj, DrawText):
             self._drawfile_svg_text(obj, fonts, to_svg, scale, parts)
         elif isinstance(obj, DrawGroup):
@@ -739,21 +790,10 @@ class HTML5Converter(Converter):
         elif isinstance(obj, DrawTagged):
             if obj.inner is not None:
                 self._drawfile_svg_object(obj.inner, fonts, to_svg, scale, parts, notes)
+        elif isinstance(obj, DrawJPEG):
+            self._drawfile_svg_jpeg(obj, to_svg, parts, notes)
         elif isinstance(obj, DrawSprite):
-            px0, py0 = to_svg(obj.bounds.x0, obj.bounds.y0)
-            px1, py1 = to_svg(obj.bounds.x1, obj.bounds.y1)
-            rx0, rx1 = sorted((px0, px1))
-            ry0, ry1 = sorted((py0, py1))
-            parts.append(
-                f'<rect x="{rx0:.1f}" y="{ry0:.1f}" width="{rx1 - rx0:.1f}" height="{ry1 - ry0:.1f}" '
-                f'fill="none" stroke="#999999" stroke-width="1"/>'
-                f'<text x="{(rx0 + rx1) / 2:.1f}" y="{(ry0 + ry1) / 2:.1f}" font-size="9" fill="#666666" '
-                f'text-anchor="middle" dominant-baseline="middle">[Sprite]</text>'
-            )
-            notes.append(
-                "a Sprite object embedded within a DrawFile picture is drawn as a "
-                "placeholder box; pixel data is not decoded"
-            )
+            self._drawfile_svg_sprite(obj, to_svg, parts, notes)
         elif obj.type != OPTIONS_TYPE:  # DrawUnknown -- text area, transformed text/sprite, or unrecognised
             notes.append(
                 "one or more DrawFile object types (e.g. text area, transformed "
@@ -761,6 +801,65 @@ class HTML5Converter(Converter):
             )
         # else: an Options object -- no rendering component of its own, so
         # nothing was actually omitted; not worth logging (see OPTIONS_TYPE).
+
+    def _drawfile_svg_jpeg(self, jpeg: DrawJPEG, to_svg, parts: list[str], notes: list[str]) -> None:
+        """A JPEG's own bytes are already a complete, standalone JPEG
+        file (see formats/drawfile.py's DrawJPEG) -- embedded directly
+        as a base64 data: URI, no re-encoding needed. Positioned/sized
+        from the object's own bounding box the same way a DrawSprite
+        placeholder is; the object's own transform matrix (a/b/c/d/e/f)
+        isn't applied beyond that -- every real file seen so far has an
+        identity a/d (1.0) and zero b/c (no rotation/shear), matching
+        the bounding box exactly, so this is only a simplification for
+        the (currently unobserved) rotated/sheared case, not a gap in
+        the common one."""
+        px0, py0 = to_svg(jpeg.bounds.x0, jpeg.bounds.y0)
+        px1, py1 = to_svg(jpeg.bounds.x1, jpeg.bounds.y1)
+        rx0, rx1 = sorted((px0, px1))
+        ry0, ry1 = sorted((py0, py1))
+        encoded = base64.b64encode(jpeg.data).decode("ascii")
+        parts.append(
+            f'<image x="{rx0:.2f}" y="{ry0:.2f}" width="{rx1 - rx0:.2f}" height="{ry1 - ry0:.2f}" '
+            f'preserveAspectRatio="none" href="data:image/jpeg;base64,{encoded}"/>'
+        )
+        _a, b, c, _d, _e, _f = jpeg.matrix
+        if b or c:
+            notes.append(
+                "a JPEG image with a rotated/sheared transform is rendered axis-aligned "
+                "to its own bounding box; rotation/shear is not reproduced"
+            )
+
+    def _drawfile_svg_sprite(self, sprite: DrawSprite, to_svg, parts: list[str], notes: list[str]) -> None:
+        """A Sprite object's own body is a single native sprite record
+        with no area wrapper of its own (see DrawSprite's own
+        docstring) -- wrapped via wrap_single_sprite_as_area before
+        handing it to the same optional riscos_sprites conversion a
+        top-level Sprite picture uses. Falls back to the original
+        placeholder box (with the same label/note) when that isn't
+        installed or the sprite fails to decode."""
+        px0, py0 = to_svg(sprite.bounds.x0, sprite.bounds.y0)
+        px1, py1 = to_svg(sprite.bounds.x1, sprite.bounds.y1)
+        rx0, rx1 = sorted((px0, px1))
+        ry0, ry1 = sorted((py0, py1))
+        png = sprite_area_to_png(wrap_single_sprite_as_area(sprite.data)) if sprite.data else None
+        if png is not None:
+            encoded = base64.b64encode(png).decode("ascii")
+            parts.append(
+                f'<image x="{rx0:.2f}" y="{ry0:.2f}" width="{rx1 - rx0:.2f}" height="{ry1 - ry0:.2f}" '
+                f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/>'
+            )
+            return
+        parts.append(
+            f'<rect x="{rx0:.1f}" y="{ry0:.1f}" width="{rx1 - rx0:.1f}" height="{ry1 - ry0:.1f}" '
+            f'fill="none" stroke="#999999" stroke-width="1"/>'
+            f'<text x="{(rx0 + rx1) / 2:.1f}" y="{(ry0 + ry1) / 2:.1f}" font-size="9" fill="#666666" '
+            f'text-anchor="middle" dominant-baseline="middle">[Sprite]</text>'
+        )
+        notes.append(
+            "a Sprite object embedded within a DrawFile picture is drawn as a "
+            "placeholder box; the optional 'sprites' extra (riscos_sprites) is not "
+            "installed, or the sprite failed to decode"
+        )
 
     def _drawfile_svg_path(self, path: DrawPath, to_svg, scale, parts: list[str]) -> None:
         has_fill = path.fill_colour is not None
@@ -799,6 +898,17 @@ class HTML5Converter(Converter):
             line_scale = (abs(scale[0]) + abs(scale[1])) / 2.0
             width_pt = path.line_width * line_scale if path.line_width else 0.3
             attrs.append(f'stroke-width="{max(0.1, width_pt):.2f}"')
+            if path.dashed and path.dash_elements:
+                # line_scale converts Draw units -> pt the same way
+                # width_pt above does; SVG's own stroke-dasharray takes
+                # a plain list of on/off lengths in the current
+                # coordinate system, so no odd-element-count sense-
+                # inversion handling is needed here (SVG already
+                # repeats/alternates the array itself the same way).
+                dasharray = " ".join(f"{e * line_scale:.2f}" for e in path.dash_elements)
+                attrs.append(f'stroke-dasharray="{dasharray}"')
+                if path.dash_offset:
+                    attrs.append(f'stroke-dashoffset="{path.dash_offset * line_scale:.2f}"')
         if has_fill and path.even_odd:
             attrs.append('fill-rule="evenodd"')
         parts.append(f"<path {' '.join(attrs)}/>")
@@ -868,3 +978,106 @@ class HTML5Converter(Converter):
             style_bits.append("font-style:italic")
         style_bits.append(f"fill:{_draw_colour_to_css(text.colour) or '#000000'}")
         parts.append(f'<text x="{x:.2f}" y="{y:.2f}" style="{"; ".join(style_bits)}">{escape_html(text.text)}</text>')
+
+    # -- ArtWorks pictures -------------------------------------------------
+
+    def _artworks_svg(self, artwork: "ArtWorks", pict, width_pt: float, height_pt: float) -> str:
+        """Embed *artwork*'s own content (via formats/artworks_svg.py's
+        artworks_svg_fragment(), the same renderer output/extract.py
+        uses), using the picture frame's own xshift/yshift/xscale/
+        yscale placement -- the same formula _drawfile_svg uses (see
+        that method's own docstring for the full derivation and
+        calibration history), adapted for ArtWorks' own native units
+        (ARTWORKS_UNIT_TO_USER_UNITS in place of _DRAW_UNIT_TO_PT) and
+        a viewBox-derived bounding box in place of DrawFile's own
+        decoded BoundingBox. This superseded an earlier version that
+        only ever centred the content (via the nested SVG's own
+        preserveAspectRatio="xMidYMid meet"), never applying
+        xshift/yshift at all -- confirmed wrong by the user against a
+        real document, where a picture reusing the same ArtWorks
+        content at two different placements (once shifted/scaled,
+        once not) rendered identically instead of showing its own
+        distinct placement.
+
+        Unlike _drawfile_svg's own to_svg, which rotates each point
+        individually before scaling, artworks_svg_fragment()'s own
+        `inner` is opaque pre-rendered markup (with its own internal
+        `scale(1,-1)` Y-flip already baked in) -- there's no per-point
+        hook to rotate through, so pict.angle isn't applied here yet;
+        a non-zero angle is logged once rather than silently ignored,
+        matching this project's own convention for a known, deferred
+        gap. The translate+scale composed below accounts for that
+        pre-existing internal flip (translate_y includes native max_y,
+        not min_y, precisely to compensate for it) -- see the two
+        inline comments below for the derivation."""
+        with self.catch("picture", location="ArtWorks rendering"):
+            def sprite_to_png(sprite_data: bytes) -> Optional[bytes]:
+                return sprite_area_to_png(wrap_single_sprite_as_area(sprite_data))
+            viewbox, _native_width_pt, _native_height_pt, inner = artworks_svg_fragment(
+                artwork, sprite_to_png)
+            min_x, neg_max_y, width, height = (float(v) for v in viewbox.split())
+            min_y = -neg_max_y - height
+
+            display_scale_x = (0x10000 / pict.xscale) if pict.xscale else 1.0
+            display_scale_y = (0x10000 / pict.yscale) if pict.yscale else 1.0
+            sx = ARTWORKS_UNIT_TO_USER_UNITS * display_scale_x
+            sy = ARTWORKS_UNIT_TO_USER_UNITS * display_scale_y
+            displayed_w = width * sx
+            displayed_h = height * sy
+
+            x0, y0, x1, y1 = 0.0, 0.0, width_pt, height_pt
+            x_anchor = x0 + pict.hinset / UNIT
+            shifted_x = x_anchor - pict.xshift / UNIT + min_x * sx
+            shifted_y = y0 - pict.yshift / UNIT + min_y * sy
+            overlap_w = max(0.0, min(x1, shifted_x + displayed_w) - max(x0, shifted_x))
+            overlap_h = max(0.0, min(y1, shifted_y + displayed_h) - max(y0, shifted_y))
+            frame_area = (x1 - x0) * (y1 - y0)
+            content_area = displayed_w * displayed_h
+            reference_area = min(frame_area, content_area)
+            shifted = None
+            if reference_area <= 0 or (overlap_w * overlap_h) / reference_area >= 0.05:
+                shifted = (shifted_x, shifted_y)
+
+            if shifted is not None:
+                origin_x, origin_y = shifted
+            else:
+                frame_w, frame_h = x1 - x0, y1 - y0
+                if displayed_w > frame_w or displayed_h > frame_h:
+                    fit_scale = min(
+                        frame_w / displayed_w if displayed_w else 1.0,
+                        frame_h / displayed_h if displayed_h else 1.0,
+                    )
+                    sx *= fit_scale
+                    sy *= fit_scale
+                    displayed_w *= fit_scale
+                    displayed_h *= fit_scale
+                origin_x = x0 + max(0.0, (frame_w - displayed_w) / 2.0)
+                origin_y = y0 + max(0.0, (frame_h - displayed_h) / 2.0)
+
+            if pict.angle:
+                self.log.best_effort(
+                    "picture", "an ArtWorks picture's own rotation angle is not applied in HTML output"
+                )
+
+            # origin_x/origin_y are in the same Y-up (frame-bottom-
+            # relative) working space _drawfile_svg's own version uses;
+            # top_y converts to this fragment's own Y-down (frame-top-
+            # relative) space. translate_y then additionally accounts
+            # for inner's own internal scale(1,-1): that flip already
+            # negates the native Y coordinate before this transform
+            # ever sees it, so the translation must anchor against the
+            # native max_y (== min_y + height), not min_y, to land the
+            # content's own top edge at top_y -- see the module's own
+            # sibling formula in pdfdoc.py's _draw_artworks_picture for
+            # the equivalent, flip-free (PDF is Y-up throughout) case.
+            top_y = height_pt - origin_y - displayed_h
+            translate_x = origin_x - min_x * sx
+            translate_y = top_y + (min_y + height) * sy
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_pt:.2f}pt" '
+                f'height="{height_pt:.2f}pt" viewBox="0 0 {width_pt:.2f} {height_pt:.2f}" '
+                f'style="overflow: hidden;">'
+                f'<g transform="translate({translate_x:.4f},{translate_y:.4f}) '
+                f'scale({sx:.6f},{sy:.6f})">{inner}</g></svg>'
+            )
+        return self._placeholder_img("ArtWorks", width_pt, height_pt)

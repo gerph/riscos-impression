@@ -628,6 +628,17 @@ frame's own edges though the unrotated bounding box alone would not
 have suggested cropping.
 </p>
 <p>
+This whole xshift/yshift/xscale/yscale/angle formula is a property of
+the picture frame itself, not of any one embedded picture format: it
+was derived and calibrated against DrawFile pictures, then confirmed
+to apply unchanged to ArtWorks (0xD94) pictures too -- against a real
+document's own two ArtWorks pictures, whose dialog-reported placement
+(X=-3.18mm/Y=1.63mm/scale=16.2% and X=-11.64mm/Y=-30.38mm/scale=40%)
+matched this formula once expressed in ArtWorks' own native units
+(640 per point, an internal convention of that embedded format, not
+of the Impression document itself) in place of DrawFile's own.
+</p>
+<p>
 The two extra bits carried in the frame group flags word (offset 72;
 see "Frame group flags word") for XPICT records only are:
 </p>
@@ -776,7 +787,7 @@ value:
 <value-table head-number="y &amp; 0x3" head-value="Colour model">
 <value number="0 or 3">RGB: red = c, green = m, blue = k.</value>
 <value number="1">CMYK: cyan = c, magenta = m, yellow = (y &amp; 0xFC) (the yellow channel is packed into the upper six bits of the same byte that carries the model selector), black = k.</value>
-<value number="2">HSV: hue = ((k &lt;&lt; 4) | (m &gt;&gt; 4)), saturation = c, value = ((y &gt;&gt; 4) | ((m &amp; 0xF) &lt;&lt; 4)), each then scaled the same way as the other models (hue additionally has no /255 scaling applied, unlike saturation and value). Hue and value are each packed across the nibbles of two adjacent bytes; this is reproduced exactly from the conversion source but not independently confirmed against any other Impression documentation.</value>
+<value number="2">HSV: hue = ((k &lt;&lt; 4) | (m &gt;&gt; 4)), saturation = c, value = ((y &gt;&gt; 4) | ((m &amp; 0xF) &lt;&lt; 4)), each then scaled the same way as the other models (hue additionally has no /255 scaling applied, unlike saturation and value). Hue and value are each packed across the nibbles of two adjacent bytes; this is reproduced exactly from the conversion source but not independently confirmed against any other Impression documentation. The on-disk encoding above is unaffected, but converting a resolved hue value back to a fraction of a full turn for rendering (RGB output) needs dividing by 360, not 255: hue is an angle (0-360 degrees), not a byte-range value like saturation/value -- confirmed against a real document and its own colour picker dialog (a picture-frame fill of 268 degrees / 75% / 88%, a purple; dividing by 255 instead sent the resolved colour round the wheel more than once, rendering orange).</value>
 </value-table>
 </p>
 <p>
@@ -1175,8 +1186,20 @@ Every one of the 104 embedded pictures found across a 46-document
 survey classified as Draw, and every one began with the standard RISC
 OS DrawFile signature and a plausible bounding box when checked. No EPS,
 ArtWorks, other Draw-family application, or generic "Data" picture was
-found in that survey, so those paths remain unconfirmed against real
-documents.
+found in that survey.
+</p>
+<p>
+The ArtWorks and Sprite paths have since been confirmed against a real
+document: corpus/TestDoc,bc5 (a small, separately committed fixture,
+not part of the 104-picture survey above) carries 5 genuine ArtWorks
+(0xD94) DCPICT entries alongside 33 classified as Draw -- one of which
+is itself a real Sprite file rather than a DrawFile (0xAFF's own inner
+sub-code 0xFF9 path, confirmed working as documented above), and
+another a DrawFile containing both a Sprite object and a JPEG object
+(see the riscos-output skill's own drawfile-format.md for the JPEG
+object's on-disk layout, itself reverse-engineered from this same
+document). EPS and generic "Data" remain unconfirmed against a real
+document.
 </p>
 </subsection>
 

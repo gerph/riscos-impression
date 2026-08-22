@@ -2,13 +2,18 @@
 
 Decodes the file header and walks the object stream: font tables, paths
 (fill/stroke colour, width, winding rule, and their move/line/curve/close
-elements), single-line text, groups, and tagged objects (recursing into
-both). Sprite objects, and any other object type (text area, transformed
-text/sprite, or anything unrecognised), are captured only as a bounding
-box -- there is no pixel data or further structure decoded for them.
-Options objects (see OPTIONS_TYPE) are captured the same way but are
-never worth a caller logging as best-effort: they carry no rendering
-component at all, not just an undecoded one.
+elements), single-line text, JPEG images (see JPEG_TYPE -- the JPEG's
+own bytes are decoded standalone and complete, ready to embed directly;
+no pixel decompression is done here), Sprite objects (see DrawSprite --
+this module keeps only the object's own raw bytes; pixel decoding is a
+caller's own job via the optional riscos_sprites decoder, same as this
+project's own formats/sprite.py), groups, and tagged objects (recursing
+into both). Any other object type (text area, transformed text/sprite,
+or anything unrecognised) is captured only as a bounding box -- there
+is no pixel data or further structure decoded for it. Options objects
+(see OPTIONS_TYPE) are captured the same way but are never worth a
+caller logging as best-effort: they carry no rendering component at
+all, not just an undecoded one.
 
 This is general RISC OS DrawFile knowledge, not something recovered from
 the Impression conversion source; the on-disk layout here is verified
@@ -45,6 +50,21 @@ _OBJECT_HEADER_SIZE = 24
 #: degenerate (often zero-sized) bounding box -- a caller can always
 #: skip it silently, unlike a genuinely undecoded object type.
 OPTIONS_TYPE = 11
+
+#: The "JPEG" object type: an embedded JPEG image with its own
+#: transform matrix. Not documented in the riscos-output skill's own
+#: drawfile-format.md (which lists a different, apparently stale type
+#: number for this) -- confirmed empirically instead, against a real
+#: file (corpus/TestDoc,bc5's own updated JPEG-bearing picture): the
+#: object's own body starts with 11 words (width, height, dpi_x,
+#: dpi_y, then a standard 6-word Draw transform matrix a/b/c/d/e/f --
+#: e/f matched the object's own bounding box x0/y0 exactly, and a/d
+#: were 0x10000 i.e. 1.0 in 16.16 fixed point, an identity scale/
+#: rotation -- then a JPEG byte-length word), followed immediately by
+#: that many bytes of a real, standalone JPEG file (starting `FF D8
+#: FF`, i.e. a normal JPEG SOI marker) -- word-padded to the object's
+#: own declared size.
+JPEG_TYPE = 16
 
 #: The DrawFile "no colour" sentinel word (used for both fill and
 #: outline colour): -1 as an unsigned 32-bit word.
@@ -120,7 +140,17 @@ class DrawPath:
     stroke_colour: Optional[int]
     line_width: int  #: Draw units; 0 = hairline
     even_odd: bool  #: winding rule: False = non-zero, True = even-odd
-    dashed: bool  #: a dash pattern is present but not decoded further
+    dashed: bool  #: a dash pattern is present (see dash_offset/dash_elements)
+    #: Distance into the pattern the path starts at (Draw units); only
+    #: meaningful when dashed. 0 when not dashed.
+    dash_offset: int = 0
+    #: Alternating on/off distances (Draw units); the pattern always
+    #: starts "on" -- see the drawfile-format skill reference's own
+    #: note on the odd-element-count sense-inversion rule, which this
+    #: project's SVG/PDF stroke-dasharray output doesn't need to
+    #: reproduce itself (both formats' own dash-array semantics already
+    #: repeat/alternate the same way). Empty when not dashed.
+    dash_elements: tuple[int, ...] = ()
     join_style: int = 0  #: 0=mitred, 1=round, 2=bevelled; not decoded further than the raw code
     start_cap: int = CAP_BUTT  #: the path's own first point ("leading" cap)
     end_cap: int = CAP_BUTT  #: the path's own last point ("trailing" cap)
@@ -146,12 +176,40 @@ class DrawText:
 
 @dataclass(frozen=True)
 class DrawSprite:
-    """A Sprite object's bounding box only; the pixel data itself isn't
-    decoded (matching formats/sprite.py's own stub scope) -- a Sprite
-    embedded *within* a DrawFile is rarer than a document's picture
-    being a Sprite outright, and no more valuable to decode here."""
+    """A Sprite object. `data` is the object's own raw body: a single
+    native RISC OS sprite header+pixel record (SPRITE_HEADER_SIZE=44
+    bytes, then image/mask data) -- confirmed empirically against a
+    real file (corpus/TestDoc,bc5's own updated sprite-bearing
+    picture): the body's own first word is a "next" size field
+    identical to formats/sprite.py's/riscos_sprites' own single-sprite
+    header layout, with none of a full multi-sprite SpriteArea file's
+    own outer 12-byte area header (sprite_count/first_offset/
+    free_offset) wrapped around it. A caller wanting real pixel data
+    needs to synthesise that missing area header first -- see
+    formats/sprite.py's wrap_single_sprite_as_area()."""
 
     bounds: BoundingBox
+    data: bytes
+
+
+@dataclass(frozen=True)
+class DrawJPEG:
+    """An embedded JPEG image -- see JPEG_TYPE's own comment for the
+    on-disk layout this was reverse-engineered from. `matrix` is the
+    standard Draw a/b/c/d/e/f transform (a/b/c/d in 16.16 fixed point,
+    e/f in Draw units) mapping the JPEG's own natural pixel grid (unit
+    square, y-down like the image itself) onto the page; `data` is the
+    JPEG file's own bytes, standalone and complete, ready to embed
+    directly (as a data: URI in SVG, or a DCTDecode XObject in PDF)
+    with no unwrapping needed."""
+
+    bounds: BoundingBox
+    width: int
+    height: int
+    dpi_x: int
+    dpi_y: int
+    matrix: tuple[int, int, int, int, int, int]
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -178,7 +236,7 @@ class DrawUnknown:
     type: int
 
 
-DrawObject = Union[DrawPath, DrawText, DrawSprite, DrawGroup, DrawTagged, DrawUnknown]
+DrawObject = Union[DrawPath, DrawText, DrawSprite, DrawJPEG, DrawGroup, DrawTagged, DrawUnknown]
 
 
 def colour_rgb(word: int) -> tuple[int, int, int]:
@@ -268,7 +326,9 @@ def _parse_object(
         if obj_type == 2:
             return _parse_path(data, bounds, start, end), {}
         if obj_type == 5:
-            return DrawSprite(bounds=bounds), {}
+            return DrawSprite(bounds=bounds, data=data[start:end]), {}
+        if obj_type == JPEG_TYPE:
+            return _parse_jpeg(data, bounds, start, end), {}
         if obj_type == 6:
             name = binary.cstring(data, start, 12)
             children, fonts = _parse_objects(data, start + 12, end)
@@ -311,10 +371,16 @@ def _parse_path(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawP
     triangle_cap_width = binary.bits(style, 16, 8)
     triangle_cap_length = binary.bits(style, 24, 8)
     data_start = start + 16
+    dash_offset = 0
+    dash_elements: tuple[int, ...] = ()
     if dashed:
         # Dash pattern block: 4-byte start offset + 4-byte element count +
-        # one 4-byte word per element; skip over it to reach the path data.
+        # one 4-byte word per element.
+        dash_offset = binary.u32(data, data_start)
         element_count = binary.u32(data, data_start + 4)
+        dash_elements = tuple(
+            binary.u32(data, data_start + 8 + 4 * i) for i in range(element_count)
+        )
         data_start += 8 + element_count * 4
     return DrawPath(
         bounds=bounds,
@@ -323,6 +389,8 @@ def _parse_path(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawP
         line_width=line_width,
         even_odd=even_odd,
         dashed=dashed,
+        dash_offset=dash_offset,
+        dash_elements=dash_elements,
         join_style=join_style,
         start_cap=start_cap,
         end_cap=end_cap,
@@ -406,4 +474,19 @@ def _parse_text(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawT
         baseline_x=baseline_x,
         baseline_y=baseline_y,
         text=text,
+    )
+
+
+def _parse_jpeg(data: bytes, bounds: BoundingBox, start: int, end: int) -> DrawJPEG:
+    width = binary.s32(data, start)
+    height = binary.s32(data, start + 4)
+    dpi_x = binary.s32(data, start + 8)
+    dpi_y = binary.s32(data, start + 12)
+    matrix = tuple(binary.s32(data, start + 16 + 4 * i) for i in range(6))
+    length = binary.u32(data, start + 40)
+    jpeg_start = start + 44
+    jpeg_data = data[jpeg_start:jpeg_start + length]
+    return DrawJPEG(
+        bounds=bounds, width=width, height=height, dpi_x=dpi_x, dpi_y=dpi_y,
+        matrix=matrix, data=jpeg_data,
     )

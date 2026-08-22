@@ -15,6 +15,7 @@ from tests.test_output_ovprodll import _picture
 from tests.fixtures.drawfile_builders import (
     build_drawfile,
     build_font_table,
+    build_jpeg,
     build_path,
     build_sprite,
     build_text,
@@ -39,6 +40,19 @@ def test_colour_to_css_cmyk():
 
 def test_colour_to_css_none_is_none():
     assert colour_to_css(None) is None
+
+
+def test_colour_to_css_hsv_hue_is_normalised_by_360_not_255():
+    # Regression test: see pdfdoc.py's own equivalent test for the full
+    # story -- hue is an angle (0-360 degrees), not a byte-range (0-255)
+    # channel like saturation/value, confirmed against a real document
+    # (corpus/TestDoc,bc5) whose own colour picker dialog gives 268
+    # degrees / 75% / 88% (a purple) for these same raw values.
+    colour = Colour(
+        index=None, name="", model=ColourModel.HSV, values=(17563648, 49087, 57825),
+        process=True, overprint=False, palette_word=0,
+    )
+    assert colour_to_css(colour) == "#8738e1"
 
 
 def test_font_family_css_maps_riscos_families():
@@ -316,6 +330,41 @@ def test_drawfile_svg_sprite_sub_object_is_a_placeholder_and_logs_best_effort():
 
     assert ">[Sprite]</text>" in svg
     assert any("Sprite object embedded within a DrawFile" in e.message for e in converter.log.entries)
+
+
+def test_drawfile_svg_sprite_sub_object_decodes_as_a_real_png_image():
+    from unittest.mock import patch
+
+    # Real sprite decoding is riscos_sprites' own, separately-tested
+    # concern (see riscos-dumpsprites/tests/test_png.py) -- this test
+    # only exercises this project's own dispatch/embedding, given a
+    # successful decode already in hand.
+    draw = DrawFile.from_bytes(build_drawfile(build_sprite(bounds=(0, 0, 1000, 1000), body=b"x" * 44)))
+    converter = _converter()
+    fake_png = b"\x89PNG\r\n\x1a\nfake png bytes"
+
+    with patch("riscos_impression.output.html_base.sprite_area_to_png", return_value=fake_png):
+        svg = converter._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
+
+    import base64
+    encoded = base64.b64encode(fake_png).decode("ascii")
+    assert f'href="data:image/png;base64,{encoded}"' in svg
+    assert ">[Sprite]</text>" not in svg
+    assert not converter.log.has_errors()
+
+
+def test_drawfile_svg_jpeg_object_embeds_as_a_data_uri_image():
+    jpeg_bytes = b"\xff\xd8\xff\xe0fake jpeg data\xff\xd9"
+    draw = DrawFile.from_bytes(build_drawfile(build_jpeg(jpeg_bytes, bounds=(0, 0, 1000, 1000))))
+    converter = _converter()
+
+    svg = converter._drawfile_svg(draw, _picture(), width_pt=100.0, height_pt=100.0)
+
+    import base64
+    encoded = base64.b64encode(jpeg_bytes).decode("ascii")
+    assert f'href="data:image/jpeg;base64,{encoded}"' in svg
+    assert "<image " in svg
+    assert not converter.log.has_errors()
 
 
 def test_drawfile_svg_unknown_object_type_is_omitted_and_logs_best_effort():

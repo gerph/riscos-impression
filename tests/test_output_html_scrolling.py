@@ -3,13 +3,20 @@ import re
 from riscos_impression.model.dictionary import DictionaryEntry, DictionaryEntryType
 from riscos_impression.model.document_tree import Chapter, PageGroup
 from riscos_impression.model.frames import Page
-from riscos_impression.model.story import ChapterNumberMark, EmbedMark, MergeMark, Paragraph, Run, Story, TabMark
+from riscos_impression.model.numbering import parse_numbering_table
+from riscos_impression.model.story import (
+    ChapterNumberMark, EmbedMark, HeadingNumberMark, MergeMark, Paragraph, Run, Story, TabMark,
+)
 from riscos_impression.model.styles import TabStop
 from riscos_impression.output.html_scrolling import ScrollingHTMLConverter, _approx_width
 
 from tests.test_output_ovprodll import _picture
 from tests.test_output_base import _document, _frame, _frame_record, _header, _section, _style
+from tests.fixtures.builders import build_numbering_record
 from tests.fixtures.drawfile_builders import build_drawfile, build_path, close_line, end_path, line, move
+from tests.fixtures.artworks_builders import build_single_path_document
+
+import pytest
 
 
 def _document_with_frames(records, *, styles=None):
@@ -152,6 +159,80 @@ def test_drawfile_picture_frame_renders_as_real_svg_content(tmp_path):
     assert not converter.log.has_errors()
 
 
+def test_drawfile_dashed_path_emits_a_real_stroke_dasharray(tmp_path):
+    # build_path's own dashed=True fixture writes a real (offset=0,
+    # elements=[10, 5]) dash pattern -- see drawfile_builders.py.
+    picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
+    document, _ = _document_with_frames([_frame_record(1008, picture)])
+    dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xAFF)
+    document.dictionary.append(dict_entry)
+    ops = move(0, 0) + line(1000, 0) + end_path()
+    path = build_path(ops=ops, bounds=(0, 0, 1000, 100), stroke_colour=0x000000FF, dashed=True)
+    document.picture_bytes = lambda entry: build_drawfile(path, bounds=(0, 0, 1000, 100))
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "stroke-dasharray=" in text
+    assert "dash patterns are not reproduced" not in text
+    assert not converter.log.has_errors()
+
+
+def test_artworks_picture_frame_renders_as_real_svg_content(tmp_path):
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    picture = _picture(x0=0, y0=0, x1=100000, y1=50000, dictionary_index=1)
+    document, _ = _document_with_frames([_frame_record(1008, picture)])
+    dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xD94)
+    document.dictionary.append(dict_entry)
+    document.picture_bytes = lambda entry: build_single_path_document()
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "<svg " in text
+    assert "<path " in text
+    assert "<img" not in text
+    assert not converter.log.has_errors()
+
+
+def test_artworks_picture_frame_applies_xshift_yshift_and_xscale_yscale(tmp_path):
+    # Regression test: the user reported two placements of similar
+    # ArtWorks content in a real document rendering identically --
+    # _artworks_svg previously always scaled-to-fit-and-centred (via
+    # the nested SVG's own preserveAspectRatio) regardless of the
+    # frame's own xshift/yshift/xscale/yscale.
+    pytest.importorskip("riscos_artworks", reason="optional 'artworks' extra not installed")
+    picture_bytes = build_single_path_document()
+
+    def _document_for(**overrides):
+        picture = _picture(x0=0, y0=0, x1=100000, y1=100000, dictionary_index=1, **overrides)
+        document, _ = _document_with_frames([_frame_record(1008, picture)])
+        dict_entry = DictionaryEntry(index=1, type=DictionaryEntryType.PICTURE, id=0, types=0xD94)
+        document.dictionary.append(dict_entry)
+        document.picture_bytes = lambda entry: picture_bytes
+        return document
+
+    default = ScrollingHTMLConverter(_document_for())
+    out_a = tmp_path / "a.html"
+    default.convert(out_a)
+    transform_a = re.search(r'<g transform="([^"]+)">', out_a.read_text())
+    assert transform_a is not None
+
+    shifted = ScrollingHTMLConverter(_document_for(xshift=20000, yshift=10000))
+    out_b = tmp_path / "b.html"
+    shifted.convert(out_b)
+    transform_b = re.search(r'<g transform="([^"]+)">', out_b.read_text())
+    assert transform_b is not None
+
+    assert transform_a.group(1) != transform_b.group(1)
+    assert not default.log.has_errors()
+    assert not shifted.log.has_errors()
+
+
 def test_embed_tagged_picture_frame_is_not_also_drawn_independently(tmp_path):
     """Regression test: the user reported PCI_Spec's 3 DrawFile diagrams
     appearing repeated (once inline, once again independently, near
@@ -210,6 +291,35 @@ def test_merge_and_chapter_number_marks(tmp_path):
 
     assert "Chapter 1" in text
     assert "&lt;&lt;Name&gt;&gt;" in text  # merge placeholder text is HTML-escaped like any other text
+
+
+def test_heading_number_mark_renders_non_decimal_numbering_styles(tmp_path):
+    # HeadingNumberMark (unlike ChapterNumberMark, which just uses the
+    # chapter's own create_number directly) goes through the document's
+    # own numbering table and _resolve_number_text -- this exercises
+    # that real wiring end to end, not just format_number in isolation
+    # (see test_model_numbering.py for that).
+    frame = _frame(dictionary_index=0)
+    document, _ = _document_with_frames([_frame_record(1008, frame)])
+    dict_entry = DictionaryEntry(index=0, type=DictionaryEntryType.TEXT, id=0, types=0)
+    document.dictionary.append(dict_entry)
+    numbering_data = build_numbering_record(
+        start=True, start_value=3, style=1, tag=7, dictionary_index=0,  # style 1 = ROMAN_UPPER
+    )
+    document.numbering = parse_numbering_table(numbering_data, numbers=0, numbers_end=len(numbering_data))
+    story = Story(
+        frame_chain=(),
+        paragraphs=(Paragraph(items=(Run(text="Section ", style_slots=()), HeadingNumberMark(tag=7))),),
+    )
+    document.story = lambda entry: story  # noqa: ARG005 - test stub
+
+    converter = ScrollingHTMLConverter(document)
+    out = tmp_path / "out.html"
+    converter.convert(out)
+    text = out.read_text()
+
+    assert "Section III" in text
+    assert not converter.log.has_errors()
 
 
 def test_tab_lands_on_declared_stop_via_an_in_flow_spacer():

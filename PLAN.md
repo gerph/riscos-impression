@@ -136,6 +136,9 @@ riscos-impression/
 - [x] Stage 12 — CLI and polish
 - [x] Stage 13 (follow-up) — Real-document audit
 - [x] Stage 14 — Real DrawFile decoding and PDF/SVG rendering
+- [x] Stage 15 — `extract` subcommand
+- [x] Stage 16 — ArtWorks/Sprite/JPEG embedded-picture rendering (`artworks-experiment` branch)
+- [ ] Stage 17 — Known gaps and follow-ups (tracked below; picked up one at a time)
 
 ## Stages
 
@@ -2218,6 +2221,51 @@ riscos-impression/
   re-validated across all 111 real documents, all three formats, with
   0 crashes.
 
+* **Post-Stage-14 fix (41)**: dynamic text repel (fix (5)/PBServer)
+  only ever narrowed a text line around a repel-flagged frame's plain
+  rectangular `exx0..exy1` box, even when that frame is a picture with
+  an irregular (non-rectangular) boundary of its own (`PictureFrame.
+  boundary`, already decoded -- see model/frames.py's own
+  `_decode_boundary_path` -- and already used to clip the picture's
+  own drawn content, but never consulted for text repel). The user
+  supplied a real document, NVMeFlyer,bc5, whose page 2 has exactly
+  this: an octagonal picture boundary (confirmed against two reference
+  screenshots the user also supplied, one showing Impression's own
+  irregular-frame edit handles) that body text visibly hugs, rather
+  than stopping at the picture's plain rectangular edge the way the
+  previous PDF output did.
+
+  `_boundary_repel_rects` (pdfdoc.py) approximates the boundary
+  polygon as a stack of horizontal slice rectangles, one per Y
+  interval between consecutive boundary vertices, each spanning the
+  polygon's own X-extent within that band -- exact for a convex
+  boundary (the common case for a hand-drawn crop shape), an
+  over-inclusive approximation for a concave one. `_repel_obstacles_
+  for_page`'s own `add()` now calls this (feeding several slice
+  rectangles into its existing per-obstacle-rectangle list) instead of
+  the plain box, whenever a repel-flagged frame is a picture with a
+  boundary -- `_narrow_for_obstacles`'s own existing per-line Y-band
+  overlap test needed no changes at all, since a slice is just another
+  obstacle rectangle whose Y-range happens to be narrow.
+
+  Each slice's own edges are sampled at both of the slice's own Y
+  endpoints, not its midpoint: a first version sampled only the
+  midpoint, which under-narrowed the real document's own first text
+  line next to a steep top corner of the octagon, letting one extra
+  word run fractionally under the picture's own drawn edge -- since
+  every active edge within one slice is a straight line (no further
+  vertex sits strictly inside a slice, by construction), its own X
+  value moves monotonically between the slice's two endpoints, so the
+  min/max across both endpoints is the true X-extent, not merely an
+  approximation of it. Confirmed pixel-for-pixel against the real
+  document once this was corrected: the first wrapped line's own text
+  now breaks at exactly the same word as the reference screenshot.
+
+  3 new tests (one direct `_boundary_repel_rects` slicing check on a
+  diamond, one degenerate-boundary edge case, one confirming
+  `_repel_obstacles_for_page` returns several narrow slices rather
+  than one box for a boundaried picture); full suite green.
+
 ### Stage 15 (new, at the user's request) — `extract` subcommand
 
 Once the PDF and HTML output was considered good enough to commit, the user
@@ -2308,6 +2356,666 @@ the whole document as one file in one format the way `convert` does.
   (unlike `examples/`/`moreexamples/`, which stay gitignored, local-only,
   and are never referenced by anything under `tests/`). 25/25 new tests
   green (5 documents × 5 formats); full suite (363 tests) green.
+
+### Stage 16 — ArtWorks/Sprite/JPEG embedded-picture rendering (`artworks-experiment` branch)
+
+Sprite and ArtWorks were still bounding-box-only placeholders after Stage
+14 (which covered DrawFile only). This stage brought real rendering to
+both, plus a DrawFile object type (JPEG) not previously decoded at all,
+across several linked pieces of work:
+
+* **ArtWorks (`formats/artworks_svg.py`, third-party `riscos_artworks`
+  decoder, optional `artworks` extra)** — real path/fill/stroke/gradient/
+  text SVG rendering, ported from the `riscos-artworks-js` reference and
+  cross-checked against real files. Along the way, found and fixed two
+  real bugs upstream in `riscos_artworks` itself (separate repo, own
+  branches, not yet merged/released):
+  - `denormalise()`: the decoder reads a flat run of sibling records
+    exactly as stored on disk, but real ArtWorks documents (and the JS
+    reference) expect that run re-nested into a parent/child chain before
+    rendering -- without it, a shape's own local attribute override
+    (stored as a flat *trailing* sibling, not a preceding one) was
+    silently ignored. Confirmed with a minimal real repro
+    (`AWDocs/TestDocs/TestDocs/BlueRect,d94` rendering black instead of
+    blue) and is the same root cause behind a large stray-looking black
+    rectangle seen in an early real CD-cover test picture.
+  - "Registration Black" (`ColourIndex(0xFFFFFFFE)`, `Colour_RegBlack` in
+    the original ArtWorks source) was resolved as a literal direct BGR
+    colour (near-white) instead of the solid-black sentinel it actually
+    is -- confirmed against `AWDocs/TestDocs/RegistrationBlackRect,d94`
+    and the real "Shit Creek" corpus picture (77 uses, previously
+    rendering near-white text/line art).
+  - Text (`TextRecord`/`CharacterRecord`) rendered as real SVG `<text>`
+    glyphs for the first time -- the field layout wasn't documented
+    anywhere available, so it was reverse-engineered directly against
+    "Shit Creek" (see the module's own docstring for the full derivation:
+    position/count/angle fields, and the character code's low byte being
+    the real character with unrelated garbage in the high bits).
+* **DrawFile JPEG objects (type 16)** — not in the primary PRM source
+  this project checks against (it predates RISC OS 3.6); reverse-engineered
+  against a real RISC OS Paint-produced file and documented in the
+  `riscos-output` skill's own `drawfile-format.md`. Embedded as a data:
+  URI `<image>` in SVG, and a real `/DCTDecode` Image XObject in PDF (the
+  first image-embedding code in `pdfdoc.py`; added the `/XObject` page
+  resource plumbing this needed).
+* **Sprite pixel decoding (third-party `riscos_sprites` decoder, from
+  `github.com/gerph/riscos-dumpsprites`, `sprites-png-conversion` branch,
+  optional `sprites` extra -- not yet published to PyPI)** — real pixel
+  decoding for both top-level Sprite pictures and Sprite objects embedded
+  within a DrawFile, in both SVG (`<img>` PNG data URI) and PDF (Indexed/
+  RGB Image XObject, with colour-key `/Mask` or a real `/SMask` for
+  genuine alpha). Found and fixed two real gaps upstream in
+  `riscos-dumpsprites` too (own branch, not yet merged): `SpriteFile` had
+  no `from_bytes()` (only a real-file `parse()`), and there was no way to
+  get raw decoded pixel bytes without going through a full PNG file
+  (`raw_scanline_bytes()`, needed for the PDF path). Also fixed a real,
+  separate pre-existing bug in this project's own `formats/sprite.py`:
+  `SpriteArea.from_bytes()` read the sprite-area header at the
+  *in-memory* control-block offsets, not the *on-disk* file offsets a
+  real file actually uses -- confirmed against `riscos-dumpsprites`' own
+  test fixture.
+
+Not attempted in this stage -- see Stage 17 below for tracking: ArtWorks
+rendering in PDF (SVG only so far), ArtWorks blend interpolation, ArtWorks
+distortion/perspective, ArtWorks' own embedded sprites, EPS content
+rendering, DrawFile dash patterns.
+
+### Stage 17 — Known gaps and follow-ups
+
+A survey of every `unsupported`/`best_effort` log call site plus the
+open items noted during Stage 16, turned into a tracked checklist so
+they don't just live in conversation history. Picked up one functional
+area at a time, each with its own commit(s); ArtWorks gets its own
+sub-checklist since it's the area most likely to grow piecemeal.
+
+- [x] **Non-decimal numbering styles.** All five converters (`ovprodll.py`,
+  `html_scrolling.py`, `html_paged.py`, `pdfdoc.py`, `markdown.py`) only
+  implemented `NumberingStyle.DECIMAL`; any other style (Roman numerals,
+  alphabetic, bullet) silently rendered as an empty string, logged
+  `unsupported` each time it happened.
+  **Done:** `model/numbering.py` gained `format_number(value, style)` --
+  standard subtractive-notation Roman numerals, bijective-base-26
+  alphabetic (1=A, 2=B, ..., 26=Z, 27=AA, ...), and a fixed bullet glyph
+  ignoring the running count -- called identically from all five
+  converters' own `_resolve_number_text` (DECIMAL, and any unrecognised
+  raw style byte, still fall back to a plain decimal string, now with a
+  `best_effort` log note only for the genuinely-unrecognised case, not
+  for every non-decimal style). Checked the original C conversion
+  source (`c/styles`' own `expandnumber()`) first: it recognises all
+  these style codes too, but every non-decimal branch there is
+  genuinely empty -- this is real, additional behaviour beyond what
+  that reference tool ever did, not a port of existing logic. 13 new
+  unit tests (`test_model_numbering.py`) plus one converter-level
+  end-to-end test (`test_output_html_scrolling.py`, confirming the real
+  `HeadingNumberMark` -> numbering-table -> `format_number` wiring, not
+  just the formatting function in isolation).
+  - **Example documents still wanted:** nothing in `corpus/` uses a
+    non-decimal numbering style for chapters, pages, or lists, so this
+    is verified against `model/numbering.py`'s own unit tests and the
+    original C source's documented style codes, not against real
+    Impression output. A real (or purpose-built, like `TestImp,bc5`)
+    document exercising Roman-numeral/alphabetic/bullet numbering would
+    let this be checked against actual behaviour too. Flagged for the
+    user to supply/create one.
+
+- [x] **ArtWorks pictures in PDF output.** SVG rendering (Stage 16) never
+  reached `pdfdoc.py` -- `_draw_picture_content`'s ArtWorks branch was
+  still the placeholder box. Sub-checklist, ticked off as each piece
+  landed (mirroring what SVG already covers). Now complete: geometry/
+  fill/stroke/gradients/text/blends (below), embedded sprites (own
+  item, "ArtWorks' own embedded sprites"), embedded JPEGs (own item,
+  "Embedded JPEG records"), and direct-colour CMYK resolution (own
+  item, the `0xFFFF9C00`/`0xFFFF9900` mystery) all land in both SVG and
+  PDF output now.
+  - [x] Path/rectangle/ellipse/rounded-rectangle geometry, flat fill/stroke.
+    `_draw_artworks_picture` and its `_artworks_pdf_*` walker methods in
+    `pdfdoc.py` mirror `formats/artworks_svg.py`'s `_SvgBuilder` record-tree
+    walk and style cascade exactly, but emit PDF path operators (`m`/`l`/
+    `c`/`h`) and fill/stroke operators (`f`/`f*`/`S`/`B`/`B*` chosen from
+    `style["winding"]` and whether fill/stroke are active) instead of SVG
+    markup. No Y-flip is needed anywhere (PDF and ArtWorks' own native
+    coordinates are both Y-up), unlike the SVG converter's own outer
+    `scale(1,-1)` plus local text counter-flip -- a genuine simplification.
+    Stroke width uses PDF's own `w` operator directly: PDF's "0 = thinnest
+    device line" convention matches ArtWorks' own zero-width semantics with
+    no SVG-style hack needed. `JoinStyle`/`CapStyle` map onto PDF's `j`/`J`
+    operators directly (confirmed numeric alignment for join; `CapStyle.
+    TRIANGLE` has no PDF equivalent and falls back to butt, undocumented
+    beyond a code comment since it's a decorative simplification, not
+    logged). Text (`TextRecord`/`CharacterRecord`) draws via `BT`/`Tf`/
+    `Tm`/`Tj`/`ET`, with a real rotation matrix (`cos sin -sin cos x y Tm`)
+    for the character's own angle rather than SVG's translate+scale+rotate
+    trick, since there is no ambient flip to cancel here.
+  - [x] Linear/radial gradient fills. `_artworks_pdf_fill_shading` builds a
+    real PDF Shading dictionary (Type 2 axial for linear, Type 3 radial,
+    both with a Type 2 exponential colour Function) from the fill's own
+    `gradient_line`/`start_colour`/`end_colour`, registered per-page via a
+    new `self._page_shadings` resource dict (mirroring `_page_xobjects`).
+    `_artworks_pdf_emit_path` clips to the path (`W`/`W* n`) and paints
+    the shading with `sh`, then -- since clipping consumes the current
+    path the same way a paint operator does -- rebuilds the path for a
+    second stroke-only pass when the object also has a border. Falls
+    back to `_artworks_pdf_fill_rgb`'s flat-colour approximation (now
+    only reachable when the gradient line or either end colour can't be
+    resolved, e.g. an out-of-range palette index with no palette),
+    logged `best_effort`. Verified against the real reference fixtures
+    the user pointed at, `AWDocs/TestDocs/RectWhiteLeftToBlackRight,d94`
+    (linear) and `RectWhiteLeftToBlackRightRadial,d94` (radial), by
+    rasterising the PDF output with PyMuPDF -- both show a real
+    gradient, not a flat band. This also fixes what first looked like
+    two separate rendering bugs in `corpus/TestDoc,bc5`'s own pictures
+    (reported after the geometry/fill/stroke work above): entry 50's sky
+    rendering as flat yellow instead of a blue-to-yellow gradient, and
+    its building walls rendering as flat black instead of shaded --
+    both were gradient *fills* (not blend groups), so they were exactly
+    the case this item's own flat-colour fallback covered before this
+    landed.
+  - [x] Text (`TextRecord`/`CharacterRecord`) -- see above; landed together
+    with geometry/fill/stroke in the same commit since both walk the same
+    record tree via the same style cascade.
+  - [x] Blends -- landed once the SVG/PDF blend-interpolation items below
+    landed (`_artworks_pdf_process_blend_group`, reusing
+    `formats/artworks_svg.py`'s own interpolation helpers directly). A
+    blend whose keyframes have a gradient fill still only gets the
+    discrete halfway switchover described under the SVG blend item below
+    (not a continuously-interpolated gradient) -- gradients and blends
+    combining smoothly is out of scope, matching upstream AWViewer's own
+    documented uncertainty there too.
+
+- [x] **ArtWorks blend interpolation — SVG.** `process_blend_group` in
+  `formats/artworks_svg.py` (dispatched for `BlendGroupRecord`) now draws
+  `blend_steps + 1` interpolated shapes rather than nothing. Confirmed
+  against the real "Shit Creek" corpus picture (`corpus/TestDoc,bc5`'s
+  own picture 50): all 8 real blend groups there have matching start/end
+  point counts, and after `denormalise()` a `BlendGroupRecord`'s own
+  `child_lists` always split cleanly into exactly three -- one
+  `BlendOptionsRecord` list (giving `blend_steps`) and two single-path
+  keyframe lists (start, then end) -- confirmed both against that real
+  file and independently against riscos-artworks-js's own
+  `createSimpleBlendGroup()` test-fixture builder. Geometry is linearly
+  interpolated element-by-element; stroke colour/width continuously;
+  join/cap/winding/dash discretely switched over at the halfway point;
+  flat-to-flat fill colour continuously, any other fill combination
+  (a gradient on either end) discretely -- all matching
+  riscos-artworks-js's own `docs/blend-groups/README.md` research notes.
+  When the two keyframes' own point counts or segment types don't match,
+  AWViewer's own point-insertion algorithm for that case is a stated
+  open research problem for that same reference project ("It's not
+  fully understood how !AWViewer blends geometry") -- not attempted
+  here; both keyframes are drawn as-is instead, closer to the real
+  appearance than nothing. Visually verified by rendering "Shit Creek"'s
+  own picture 50 to a standalone SVG and opening it in a browser.
+  Unit-tested against hand-built `BlendGroupRecord`/`BlendOptionsRecord`
+  fixtures in `tests/test_formats_artworks_svg.py` (geometry/colour
+  interpolation including the exact t=0/t=0.5/t=1 values; the
+  mismatched-point-count fallback; the hidden-group case).
+  - **Example documents wanted anyway:** no dedicated blend test file
+    exists yet in `AWDocs/TestDocs` (checked both `TestDocs/` and the
+    older nested `TestDocs/TestDocs/` -- neither has one; there are
+    gradient-fill examples there, `RectWhiteLeftToBlackRight[Radial],d94`,
+    but a gradient *fill* and a *blend* are different ArtWorks features).
+    A small, deliberately simple two-shape blend (matching the style of
+    the other `TestDocs` fixtures) would make this easier to verify in
+    isolation from "Shit Creek"'s own more complex real-world blends --
+    and, in particular, a real example with *mismatched* start/end point
+    counts would help decide whether AWViewer's own point-insertion
+    algorithm is ever worth implementing here.
+
+- [x] **ArtWorks blend interpolation — PDF.** `_artworks_pdf_process_blend_group`
+  in `pdfdoc.py` reuses `formats/artworks_svg.py`'s own module-level
+  `_interpolate_path`/`_interpolate_colour_index` helpers directly (not
+  re-derived), with a parallel `_artworks_pdf_capture_blend_keyframe` and
+  `_artworks_pdf_interpolate_blend_style` mirroring the SVG converter's
+  own keyframe-capture/style-interpolation logic, but emitting PDF path
+  operators instead of SVG markup -- exactly the "same interpolation
+  logic, different emitter" this item originally anticipated.
+  `_artworks_pdf_emit` was split so its drawing core
+  (`_artworks_pdf_emit_path`) can be reused for a synthesised
+  interpolated path that has no `Record` of its own behind it. Verified
+  against the real corpus picture (entry 50) by rasterising the PDF with
+  PyMuPDF and comparing crops directly: geometry/stroke/fill match the
+  SVG rendering exactly wherever a feature is supported by both (the
+  sky's flat-yellow fallback is the already-documented PDF gradient
+  limitation, not a blend bug -- confirmed by rendering the *same* SVG
+  through MuPDF's own SVG engine, where the walls are black in both
+  outputs, ruling out a PDF-specific colour bug). Unit-tested with the
+  same hand-built `BlendGroupRecord` fixtures as the SVG tests (geometry
+  interpolation, stroke colour at t=0/1, and the mismatched-point-count
+  fallback), calling `_artworks_pdf_process_blend_group` directly since
+  it needs no document/page state. Full suite (471 tests) passes.
+
+- [x] **ArtWorks character font size was ~20-40x too small (SVG and PDF).**
+  A real, shipped bug, found after the gradient-fill work above by the
+  user reporting a real document's CD-cover picture as having no
+  visible text at all, compared against `TestDoc-Real5.png` (a real
+  reference render of the same page). `FontSizeRecord.x_size/y_size`
+  was being used directly as if it were already in native ArtWorks
+  coordinate units (the same space path geometry lives in); it isn't --
+  confirmed empirically against `CharacterRecord.bounding_box`/
+  `TextRecord.bounding_box` heights across two different real pictures
+  in `corpus/TestDoc,bc5` at several different declared font sizes,
+  RISC OS's own "1/16th of a point" font-size convention (already used
+  elsewhere in this project for Impression's own unrelated
+  `Style.font_size` field) gives a consistent set of ordinary point
+  sizes where "already native units" doesn't. New
+  `FONT_SIZE_TO_NATIVE_UNITS = 480/16 = 30` constant in
+  `formats/artworks_svg.py`, applied in both `_emit_character` (SVG)
+  and `pdfdoc.py`'s `_artworks_pdf_emit_character` (PDF). The CD-cover
+  picture's own text (previously invisible; the picture's frame was too
+  small to make even the pre-existing ~20-40x undersizing incidentally
+  legible, unlike a road-sign picture in a full-page frame, where it
+  had been) now visually matches `TestDoc-Real5.png` exactly, verified
+  by rasterising the PDF output with PyMuPDF and comparing directly.
+  Regression-tested in both converters. Full suite (479 tests) passes.
+
+- [x] **ArtWorks text renders with a generic substitute font instead of
+  the real glyph outlines, when ArtWorks itself has already provided
+  them.** Once font size was fixed (above), the user compared the
+  road-sign picture directly against `TestDoc-Real5.png` and found the
+  *shape* of the text wrong too: the reference uses distinctive
+  handwritten/script fonts ("Architect", "Penultimat") this converter
+  has no way to reproduce with only the 14 standard PDF fonts, and
+  SVG's browser-font fallback fares no better for the same reason.
+  Traced to `AWDocs/MethodsManual.md`'s own documented `PathifyText_*`
+  behaviour: ArtWorks' text tool converts individual characters into
+  real vector-traced outline paths (stored as that `CharacterRecord`'s
+  own child object) whenever it can't rely on standard text rendering
+  coping with the attributes applied -- typically an unusual font, for
+  exactly this portability reason. Confirmed against the real picture:
+  every visible character in the road-sign one has its own child
+  `PathRecord`, a genuine filled bezier outline of that exact glyph in
+  that exact font, already in the same native coordinate space as
+  everything else -- while the CD-cover picture's own text (a common,
+  likely-always-installed font, "AvantG.Book") has none, confirming
+  pathifying only happens when ArtWorks itself decided it needed to.
+  `_emit_character` (SVG) and `_artworks_pdf_emit_character` (PDF) now
+  check for this and, when present, render the real outline(s) exactly
+  like any other geometry (reusing `_emit`/`_artworks_pdf_emit`
+  directly, so it gets the same fill/stroke/winding cascade) instead of
+  a substitute-font glyph -- falling through to the previous `<text>`/
+  `Tf`+`Tj` rendering only when no pathified outline exists. Verified
+  by rasterising the PDF output with PyMuPDF: the road-sign picture's
+  own text now visually matches `TestDoc-Real5.png`'s distinctive
+  script fonts exactly, not a generic sans-serif approximation.
+  Regression-tested in both converters (a pathified character renders
+  a `<path>`/path operators, not `<text>`/`Tf`+`Tj`; one without a
+  pathified glyph still falls back correctly). Full suite (482 tests)
+  passes.
+
+- [x] **PDF: an invisible selectable/searchable text layer behind
+  pathified ArtWorks glyphs.** User idea. PDF viewers let you select/
+  search text that isn't actually drawn as glyphs at all -- the same
+  trick a scanned-and-OCR'd PDF uses, an invisible text run (`Tr 3`,
+  the "invisible" text-rendering mode) positioned over or behind
+  whatever *is* visually rendered. Since a pathified character (see
+  the item above) already carries both the real `CharacterRecord`
+  (the actual letter, still perfectly readable) and its own drawn
+  outline, the same trick applies directly here.
+
+  `_artworks_pdf_emit_character`'s own pathified branch now calls a
+  new `_artworks_pdf_emit_invisible_text` after drawing the outline:
+  `BT 3 Tr /F<n> <size> Tf <rotation matrix> Tm (<char>) Tj 0 Tr ET`,
+  reusing the *same* position (`unknown_values[0:2]`) and font size
+  (`style["font_size"] * FONT_SIZE_TO_NATIVE_UNITS * scale`) the
+  substitute-font fallback path just below already uses -- not a new
+  guess, since that's exactly what this same character would have
+  been drawn at before being pathified, so it already lines up with
+  the outline's own natural position closely enough to select
+  sensibly. `Tr` is text *state*, not reset by `ET`/`BT` (matching
+  this file's own established `Tz` precedent), so it's explicitly
+  restored to `0` (visible) afterwards to avoid leaking into later,
+  unrelated text elsewhere on the page.
+
+  Verified two ways: visually, rasterising corpus/TestDoc,bc5's own
+  "Shit Creek" picture (whose signage text is pathified) shows no
+  change at all -- confirming the run really is invisible; and via
+  PyMuPDF's own text extraction on the same PDF, which previously
+  returned nothing at all for that picture's own text and now returns
+  the real strings ("PADDLE SALE TODAY", "Cancelled", "Sold Out",
+  "You are now entering", "SHIT CREEK", "Twinned with Johnathan Creek,
+  England") -- genuine copy/search support gained with zero visual
+  change.
+
+  Kept PDF-only, matching the item's own original framing -- not
+  extended to DrawFile text objects (their own real string is always
+  present already and drawn as ordinary visible text, not pathified,
+  so there's no missing-selectability gap to close there) or to SVG
+  output (browsers/SVG viewers don't have an equivalent invisible-but-
+  selectable text-rendering mode the way PDF's `Tr 3` provides).
+
+- [x] **ArtWorks pictures ignored their own frame's xshift/yshift/
+  xscale/yscale placement (both SVG and PDF).** The user noticed a real
+  document placing similar ArtWorks content at two different picture
+  frames render identically, instead of each showing its own declared
+  size/position. `_draw_artworks_picture` (PDF) and `_artworks_svg`
+  (HTML) always scaled the artwork's own native bounding box to fit and
+  centred it, ignoring the frame's own placement fields entirely.
+
+  Both now use the same xshift/yshift/xscale/yscale formula
+  `_draw_drawfile_picture`/`_drawfile_svg` already use for DrawFile
+  pictures (see that method's own docstring for the full derivation and
+  calibration history), substituting the artwork's own native bounding
+  box (from `artworks_svg_fragment`'s own `viewbox` string) for
+  DrawFile's decoded `BoundingBox`, and `ARTWORKS_UNIT_TO_USER_UNITS`
+  for `_DRAW_UNIT_TO_PT`. PDF also applies `pict.angle` rotation (via
+  an explicit per-point `to_pt` closure, the same mechanism DrawFile
+  uses); the SVG version can't -- `artworks_svg_fragment`'s own `inner`
+  is opaque pre-rendered markup with no per-point hook to rotate
+  through, unlike `_drawfile_svg`'s own `to_svg` -- so a non-zero angle
+  is logged once there instead, a smaller follow-up of its own.
+
+  Fixing this also exposed a real, separate bug: `_draw_artworks_picture`
+  had no clip rectangle at all (unlike `_draw_drawfile_picture`'s own
+  `re W n`), so a picture now legitimately scaled/shifted bigger than
+  its own frame would bleed into whatever else shares the page -- fixed
+  alongside this, with its own regression test.
+
+  Verified against the real document (`corpus/TestDoc,bc5`): its own
+  two different CD-cover pictures (dictionary entries 48 and 51, each
+  with a different declared `xscale`) now render at visibly, correctly
+  different sizes rather than identically. Regression-tested in both
+  converters (xshift/yshift and xscale/yscale each independently change
+  the rendered output; PDF's own clip rectangle matches the frame's
+  box exactly). Full suite (485 tests) passes.
+
+- [x] **HSV colours resolved wrong (both SVG and PDF): hue was
+  normalised as a byte-range channel, not the angle it actually is.**
+  Investigating a separate report -- a sprite's own transparent
+  background not showing the expected purple frame fill through it --
+  turned out not to be a masking bug at all (the `/Mask` colour-key
+  entry was present and correct all along); the frame's own fill
+  colour itself was resolving to orange instead of purple.
+  `_to_rgb`/`colour_to_css`'s own HSV branch (`pdfdoc.py`/
+  `html_base.py`, each with their own independent copy) normalised the
+  hue channel by dividing by 255, the same as saturation and value --
+  but unlike those two, hue isn't a byte-range (0-255) value at all,
+  it's an angle (0-360 degrees) packed into the same on-disk slot (see
+  `docs/impression-documents.xml`'s own "Colour channel encoding",
+  updated with this confirmation). The user confirmed the real,
+  intended value directly from their own colour picker dialog: 268
+  degrees / 75% / 88%, and `h / MAXCV` for the real document's own raw
+  value is exactly `268.0` -- dividing that by 255 instead of 360 sent
+  the resolved colour more than a full turn round the colour wheel,
+  landing on orange. Fixed in both converters (divide by 360, not
+  255); `ovprodll.py`'s own HSV handling needed no change, since it
+  passes the raw `{hsv ...}` values straight through to OvationPro's
+  own DDL syntax rather than resolving them to RGB itself. Since this
+  bug affects colour resolution generally, not anything ArtWorks/sprite
+  -specific, it likely also explains other HSV-coloured elements
+  throughout any document using them, not just this one frame fill.
+  Regression-tested in both converters against the real document's own
+  confirmed raw values. Full suite (487 tests) passes.
+
+- [x] **ArtWorks pictures rendered about a third too big (both SVG and
+  PDF).** After the xshift/yshift/xscale placement fix above, the user
+  checked the real document's own picture-info dialog figures directly
+  (graphic X/Y and scale%) and found the rendered *scale itself*
+  matched exactly (16.2%, 40%), but the overall rendered size still
+  looked roughly 33% too big regardless. Traced to
+  `ARTWORKS_UNIT_TO_USER_UNITS`, the native-ArtWorks-unit-to-point
+  conversion factor every placement/geometry/font-size calculation in
+  both converters is built on: it carried an extra `*(4/3)` beyond the
+  base `1/640`, described as "matching riscos-artworks-js's own
+  ARTWORKS_UNITS_TO_USER_UNITS" -- true of that constant's own numeric
+  value, but that project targets a browser's own CSS pixels (96 per
+  inch) as its "user units", not points (72 per inch) the way this
+  project's own "_pt"-suffixed fields do everywhere else; 96/72 is
+  exactly 4/3, so copying the value verbatim into a points-based
+  project silently introduced a 4/3 oversizing error throughout. It
+  went unnoticed until now because the error is uniform across an
+  entire picture's own content -- proportions *within* one picture
+  (e.g. title text size relative to a disc's own diameter) still
+  matched a real reference render exactly, which is what the earlier
+  font-size and pathified-text fixes above were verified against.
+
+  Corrected via a real, independent, and exact source:
+  `ArtWorksHeader.american_paper_width/height` (391680, 506880 in
+  every real picture checked) divide *exactly* -- no rounding -- by US
+  Letter's own size in points (612 x 792, i.e. 8.5in/11in x 72pt/in):
+  `391680 / 612 == 506880 / 792 == 640.0` precisely, confirming the
+  correct native-units-per-point figure is exactly 640 with no
+  additional factor (corroborated by `european_paper_width/height`,
+  538808/380976, landing within A4's own point size's rounding of the
+  same 640 figure). `ARTWORKS_UNIT_TO_USER_UNITS` is now `1/640`
+  directly; `FONT_SIZE_TO_NATIVE_UNITS` (added by the earlier font-size
+  fix) is now derived from it (`(1/ARTWORKS_UNIT_TO_USER_UNITS)/16`)
+  rather than a second hardcoded constant, so the two can't drift apart
+  again. Existing tests asserting the old (33%-too-big) numeric
+  expectations updated to match. Full suite (487 tests) passes.
+
+- [ ] **ArtWorks distortion/perspective envelopes.** Recursed into
+  structurally but the distortion itself isn't applied to the content
+  inside one.
+
+- [x] **ArtWorks' own embedded sprites (`SpriteRecord`).** Three
+  sub-problems, all now solved:
+  - [x] **Decoding the record without crashing.** A real picture
+    (corpus/TestDoc,bc5's own "SVG logo") failed entirely --
+    riscos_artworks raised "sprite palette count exceeds record". Fixed
+    upstream (riscos_artworks, branch `fix/sprite-record-palette-flag`):
+    the word after the sprite's own fixed fields is the palette's own
+    entry count directly, confirmed against three real files the user
+    provided (`AWDocs/TestDocs/Sprite16ColourPalettedMasked,d94`,
+    `Sprite256ColoursPaletedNoMask,d94`,
+    `Sprite256oloursNoPaletteMasked-EX1EY2,d94`) -- 16 and 256
+    respectively, each followed by that many real, sensible palette
+    words. An implausible count (the original failing sprite's own
+    case, a genuinely palette-less 32bpp sprite) degrades to an empty
+    palette rather than raising. All 5 real ArtWorks pictures in
+    corpus/TestDoc,bc5 now decode without error (previously 2 of 5
+    failed) -- verified in riscos-impression's own venv (an editable
+    install of the fixed riscos_artworks).
+  - [x] **Locating the sprite's own raw pixel data.** Solved upstream
+    (riscos_artworks, branch `feature/sprite-record-raw-data`, on top of
+    the palette fix above). Five more real files the user supplied
+    specifically for this (`Sprite1BPP-lefthandwastae,d94`,
+    `Sprite2BPP-lefthandwastage,d94`, `Sprite4BPP-lethandwastage,d94`,
+    `SpriteManyFlame,d94` -- 8 sprites, `SpritesLots,d94` -- 23 sprites)
+    revealed the real structure: ArtWorks stores the pixel data for one
+    or more sibling `SpriteRecord`s together, once, in a single shared
+    RISC OS-format sprite area (a standard `[size, count, first_offset,
+    size]` control block) placed after all of their own metadata
+    blocks -- not per-record, and not at any fixed gap (the gap before
+    that area varied 48-56 bytes across the single-sprite examples, for
+    reasons not otherwise modelled). `riscos_artworks.SpriteRecord`
+    gained a new `data: bytes` field, resolved during decoding by
+    scanning forward for the shared area's own header and walking its
+    native sprite chain matching by name -- naturally handling the
+    multi-sprite case too, since every sibling record resolves against
+    the same shared area independently. Verified against all 7 example
+    files (23/23 sprites matched in `SpritesLots,d94`) and, in
+    riscos-impression, by round-tripping the two real embedded sprites
+    in `corpus/TestDoc,bc5` through
+    `wrap_single_sprite_as_area`/`sprite_area_to_png_image` into
+    correct, recognisable images.
+  - [x] **Rendering.** Wired into both converters: `formats/
+    artworks_svg.py` gained a `sprite_to_png` callback parameter
+    (`artworks_to_svg`/`artworks_svg_fragment`) rather than importing
+    riscos_impression's own Sprite/PNG modules directly, keeping that
+    module's own no-riscos_impression-dependency rule intact (see its
+    module docstring) -- `html_base.py`'s `_artworks_svg` supplies the
+    callback via `wrap_single_sprite_as_area`/`sprite_area_to_png`, and
+    the emitted `<image>` is wrapped in its own local counter-flip
+    `<g>` to cancel out the builder's outer `scale(1,-1)` (which is
+    correct for vector content but would otherwise flip a raster image
+    upside down). `output/pdfdoc.py`'s PDF converter (which walks
+    ArtWorks records directly rather than using the opaque SVG
+    fragment) reuses the same `_draw_sprite_image`/`_draw_placeholder`
+    pipeline a DrawFile-embedded Sprite object already uses. Verified
+    against corpus/TestDoc,bc5's own sprite-bearing picture in both PDF
+    (rasterised via PyMuPDF) and HTML output: the sprite now renders
+    with its mask correctly applied (the purple background showing
+    through, resolving the user's own original report from earlier in
+    this stage) alongside the JPEG on the same page.
+
+- [x] **Embedded JPEG records (`JpegRecord`, type `0x6D`).** The user
+  reported two of three images on a real document's own page 1
+  (`NVMeFlyer,bc5`) missing entirely from PDF output; both are JPEGs
+  embedded within an ArtWorks picture, a record type riscos_artworks
+  did not recognise at all -- decoded as two `UnknownRecord`s instead.
+  Fixed upstream in riscos_artworks: the record body closely mirrors
+  DrawFile's own embedded-JPEG object (one unknown word, pixel_width/
+  pixel_height, dpi_x/dpi_y, a 24-byte "corner" field reusing the same
+  3-point structure `EllipseRecord`/`RoundedRectangleRecord` call
+  "triangle", a standard 6-word transform matrix, a length word, then
+  the raw JPEG bytes themselves) -- confirmed against a real file
+  (`AWDocs/TestDocs/JPEG,d94`) two ways independently: pixel_width/
+  pixel_height match the embedded JPEG's own SOF0 marker exactly, and
+  dpi_x/dpi_y match its own JFIF APP0 density fields exactly. `data`
+  is the complete standalone JPEG file, no area wrapper to resolve
+  (unlike `SpriteRecord`).
+
+  Wired into both riscos-impression converters: `formats/
+  artworks_svg.py` gained `_emit_jpeg` -- needing no external decode
+  callback at all (unlike a sprite), just a base64 `data:` URI, reusing
+  `_emit_sprite`'s own local counter-flip `<g>` trick for the same
+  reason. `output/pdfdoc.py` gained `_artworks_pdf_emit_jpeg`, reusing
+  the existing `_jpeg_info`/DCTDecode Image XObject pipeline a
+  DrawFile-embedded JPEG object already uses. Verified against both
+  the minimal single-JPEG example (renders as the expected Acorn logo)
+  and the real document: all three of page 1's own images now render
+  in both PDF and scrolling HTML output.
+
+- [x] **ArtWorks "direct" (non-indexed) colour words don't resolve
+  correctly.** The user reported a real document (corpus/TestDoc,bc5's
+  own "SVG logo" picture) rendering a shape's own fill as blue instead
+  of an unnamed CMYK colour (59.8% / 99.6% / 99.2% / 0% K, confirmed
+  from the real document's own colour picker dialog). The fill word in
+  question, `0xFFFF9C00`, satisfies `riscos_artworks.ColourIndex`'s own
+  `value >= 0x01000000` "direct colour" test, and is currently unpacked
+  as a raw BGR triple (giving RGB(0,156,255), a blue).
+
+  Three further real example documents the user provided
+  (`AWDocs/TestDocs/TextCMYK64,26,75,45_Process,d94`,
+  `TextCMYK70,60,50,40_Spot,d94`, `PolygonStellated6Sides,d94`) resolved
+  one branch of this investigation conclusively but not the reported
+  bug itself: all three use a *palette-indexed* colour reference
+  (`ColourIndex` value < 0x01000000, e.g. index 17), not a direct one.
+  Confirmed exactly against both CMYK files' own filenames (component /
+  2147483647 * 100 matches the declared percentages to 8+ significant
+  figures for both a process and a spot colour), and confirmed
+  riscos-impression already renders both correctly -- each
+  `PaletteEntry` carries its own pre-baked preview `.colour` word
+  (e.g. `0x20004a00` for "DGreen", CMYK 64/26/75/45), already resolved
+  and used correctly by the existing `Palette.resolve()` /
+  `_artworks_pdf_rgb` pipeline, with no CMYK-specific handling needed
+  downstream at all. So: indexed CMYK colours were never actually
+  broken.
+
+  The original bug is therefore specifically about a *direct* colour
+  word, still unreproduced by any example so far. Also confirmed
+  `FillColourRecord`'s own on-disk layout (`fill_type`, `unknown_28`,
+  `colour` -- three plain words, no room for a hidden extra field the
+  way `SpriteRecord` had) is simple and correctly aligned, so
+  `0xFFFF9C00` is genuinely what's stored on disk for this fill;
+  the mystery is purely in how to interpret it correctly, not a
+  decode/alignment bug.
+
+  Two further real examples (`AWDocs/TestDocs/ShapeBlendRedoCyan,d94`,
+  an RGB-named blend, and `ShapeBlendCMYK,d94`, a CMYK one) were
+  checked on the theory that a blend's own interpolated *intermediate*
+  colour might be stored as a direct word somewhere -- it isn't: both
+  files' own two keyframes each reference a named palette colour
+  (Red/Cyan, and two auto-named CMYK entries), never a direct one.
+  Neither ArtWorks itself nor this project's own blend interpolation
+  stores/needs the intermediate colour on disk at all (both compute it
+  at render time), so there was never going to be an on-disk example of
+  one to find this way -- confirmed, not just assumed. Still useful
+  independently: confirms blend keyframe colour resolution already
+  works correctly for CMYK-named endpoints too.
+
+  **Example document wanted:** either a document with a shape filled
+  via a picked-but-not-palette-added colour (so it stays a direct
+  reference rather than being indexed), or confirmation from real
+  ArtWorks/AWViewer's own Object Info dialog on the SVG-logo shape
+  specifically, to pin down the intended resolved colour without
+  further guessing.
+
+  Two more real examples chased a promising but ultimately different
+  lead: the user's own hunch that dragging a DrawFile into ArtWorks
+  might be what creates "anonymous" colours like this one.
+  `RO4Bugs,d94` (a real DrawFile-to-ArtWorks conversion) did show 9
+  garbled, seemingly-uninitialised trailing palette entries -- but a
+  second file, `FromDrawfileRGBCircles,d94`, showed conclusively that
+  this was our own decoder's bug, not ArtWorks leaving anonymous
+  colours behind: its palette's declared `count_word` (49) ran straight
+  past the 18 genuinely populated entries into unrelated later file
+  content (an entry at the boundary decoded as `"<Nothing>"`/`"Redo"`,
+  ArtWorks' own undo-stack labels). `control_word` (a second, separate
+  word in the same header) turned out to be the real, live count in
+  every file checked (17/18/72 exactly, vs the false 17/49/81
+  `count_word` gave) -- fixed upstream in riscos_artworks (branch
+  `fix/palette-count-is-control-word`), confirmed against the whole
+  27-file `AWDocs/TestDocs` corpus (zero garbage names anywhere now).
+  So: neither of these two files was the direct-colour-word bug after
+  all, but real DrawFile-to-ArtWorks conversion documents remain a
+  good place to keep looking, now that this particular false lead is
+  closed off.
+
+  **Solved.** A second real colour in the very same document broke it
+  open: the SVG logo picture's own background rectangle,
+  `0xFFFF9900`, whose Object Info dialog reads RGB 40.2%/0.4%/0.8%
+  (i.e. `(102,1,2)`). A direct colour's four bytes, LSB to MSB, are K,
+  C, M, Y (each 0-255, not the 31-bit scale a palette entry's own
+  component words use), decoded via a standard subtractive
+  CMYK->RGB conversion -- `0xFFFF9900` decodes to exactly `(102,0,0)`
+  against the target, within rounding of a percentage read to one
+  decimal place. The original `0xFFFF9C00` mystery decodes to
+  61.2/100/100/0% CMYK against its own target of 59.8/99.6/99.2/0%,
+  just as close -- two independent real confirmations. This also
+  explains the `value >= 0x01000000` "is this direct" test: a document
+  realistically never has anywhere near 16 million palette entries, so
+  any real index keeps its own top byte zero, while this is simply
+  testing whether the Y (top) byte is non-zero -- and explains why it
+  can't be inverted for a colour needing zero ink on every channel
+  (pure white, or anything needing B=255 given this byte assignment):
+  its own top byte would then read as zero too, indistinguishable from
+  an index. Not yet seen in a real file.
+
+  Fixed upstream in riscos_artworks (branch
+  `fix/direct-colour-is-kcmy-not-bgr`): `ColourIndex.bgr` now performs
+  this conversion, and `Palette.resolve()`/`ArtWorks.resolve_colour()`
+  return the correctly-decoded preview word for a direct colour instead
+  of the raw word verbatim, so no caller downstream needed to change
+  how it consumes a resolved colour. This did need one further fix
+  here in riscos-impression, though: this project's own ArtWorks blend
+  interpolation constructs synthetic "direct" colours purely to carry
+  an already-computed RGB result back through the normal style/resolve
+  pipeline (never real on-disk data) -- re-resolving one through the
+  new CMYK decode a second time would have corrupted every blended
+  colour. `_interpolate_colour_index` now returns an already-resolved
+  preview word directly, and a new `_resolve_style_colour()` helper
+  (used everywhere a colour is pulled from a style dict for drawing, in
+  both the SVG and PDF converters) tells an interpolated result apart
+  from a genuine document `ColourIndex` needing the normal resolve.
+  Verified against corpus/TestDoc,bc5: the SVG logo's background now
+  renders the correct dark maroon, not blue.
+
+- [ ] **EPS content rendering.** Always a placeholder box in both HTML
+  and PDF; PDF at least attaches the raw EPS as an embedded file (no
+  reliable native PDF EPS-rendering mechanism exists), HTML has no
+  equivalent mechanism at all.
+
+- [x] **Dash patterns on DrawFile paths — HTML.** `formats/drawfile.py`'s
+  `DrawPath` now keeps the pattern's own `dash_offset`/`dash_elements`
+  (previously parsed only far enough to skip over them) --
+  `_drawfile_svg_path` in `html_base.py` (shared by both the scrolling
+  and paged HTML converters) emits a real `stroke-dasharray`/
+  `stroke-dashoffset`, scaled by the same Draw-unit-to-pt factor already
+  used for stroke width. No odd-element-count sense-inversion handling
+  is needed: SVG's own dasharray already repeats/alternates the same
+  way DrawFile's own pattern does.
+
+- [x] **Dash patterns on DrawFile paths — PDF.** Landed in the same
+  commit as the HTML item above, since both consume the same
+  `DrawPath.dash_offset`/`dash_elements` fields. `_draw_drawfile_path`
+  in `pdfdoc.py` emits PDF's own `[on off ...] phase d` operator.
+  Unlike SVG's per-element `stroke-dasharray` attribute, PDF's dash
+  array is graphics *state* that persists until changed -- since a
+  DrawFile's objects all share one `q`/`Q` pair (not one per object), a
+  non-dashed path drawn after a dashed one now explicitly resets to
+  `[] 0 d`, or it would otherwise inherit the earlier path's own
+  pattern.
 
 ## Verification per stage
 
