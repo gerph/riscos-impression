@@ -1,0 +1,90 @@
+stages:
+  - test
+  - package
+  - docs
+  - publish
+
+variables:
+  LC_ALL: C.UTF-8
+  GIT_DEPTH: "0"
+
+test:
+  stage: test
+  tags:
+    - robe
+  script:
+    - python3 -m pip install --disable-pip-version-check --target /tmp/pytest-deps 'pytest>=7'
+    - PYTHONPATH="src:/tmp/pytest-deps${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest
+
+package:
+  stage: package
+  tags:
+    - robe
+  script:
+    - python3 -m pip install --disable-pip-version-check --target /tmp/pypa-build build
+    - |
+      set -eu
+      eval "$(./ci-vars)"
+      PYTHONPATH="/tmp/pypa-build${PYTHONPATH:+:$PYTHONPATH}" \
+        make package VERSION="$CI_PROJECT_VERSION"
+      package_file="dist/riscos-impression_${CI_PROJECT_VERSION}_all.deb"
+      wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+      test -f "$package_file"
+      test -n "$wheel_file"
+  artifacts:
+    name: "riscos-impression-$CI_COMMIT_REF_SLUG"
+    paths:
+      - dist/*.deb
+      - dist/*.whl
+    expire_in: 1 week
+
+docs:
+  stage: docs
+  tags:
+    - robe
+  script:
+    - |
+      set -eu
+      eval "$(./ci-vars)"
+      mkdir -p output/docs
+      riscos-prminxml -f html5+xml -O output/docs docs/impression-documents.xml docs/impression-ddf.xml
+      docs_file="riscos-impression-${CI_PROJECT_VERSION}-docs.zip"
+      (cd output/docs && zip -9r "$OLDPWD/$docs_file" *)
+      test -f "$docs_file"
+  artifacts:
+    name: "riscos-impression-docs-$CI_COMMIT_REF_SLUG"
+    paths:
+      - "*-docs.zip"
+    expire_in: 1 week
+
+publish:
+  stage: publish
+  tags:
+    - robe
+  dependencies:
+    - package
+    - docs
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+  script:
+    - |
+      set -eu
+      eval "$(./ci-vars)"
+      package_file="dist/riscos-impression_${CI_PROJECT_VERSION}_all.deb"
+      wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+      docs_file="riscos-impression-${CI_PROJECT_VERSION}-docs.zip"
+      test -f "$package_file"
+      test -n "$wheel_file"
+      test -f "$docs_file"
+      curl --fail --silent --show-error \
+        --user "$ARTIFACTORY_USER:$ARTIFACTORY_ENCPASSWORD" \
+        --upload-file "$package_file" \
+        "${ARTIFACTORY_URL}${ARTIFACTORY_REPO}/build/cross/riscos-impression/$(basename "$package_file")"
+      curl --fail --silent --show-error \
+        --user "$ARTIFACTORY_USER:$ARTIFACTORY_ENCPASSWORD" \
+        --upload-file "$wheel_file" \
+        "${ARTIFACTORY_URL}${ARTIFACTORY_REPO}/build/cross/riscos-impression/$(basename "$wheel_file")"
+      curl --fail --silent --show-error \
+        --user "$ARTIFACTORY_USER:$ARTIFACTORY_ENCPASSWORD" \
+        --upload-file "$docs_file" \
+        "${ARTIFACTORY_URL}${ARTIFACTORY_REPO}/build/cross/riscos-impression/$(basename "$docs_file")"
