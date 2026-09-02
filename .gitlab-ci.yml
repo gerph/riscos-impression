@@ -14,6 +14,10 @@ test:
     - robe
   script:
     - python3 -m pip install --disable-pip-version-check --target /tmp/pytest-deps 'pytest>=7'
+    - python3 --version
+    - python3 -m pip list
+    - python3 -c "import riscos_sprites, sys; print('riscos_sprites', riscos_sprites.__file__, getattr(riscos_sprites, '__version__', '?'))" || true
+    - PYTHONPATH="src:/tmp/pytest-deps${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest -k colour_key_mask -v --tb=long
     - PYTHONPATH="src:/tmp/pytest-deps${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest
 
 package:
