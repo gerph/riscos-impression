@@ -10,33 +10,73 @@ behaviour when it isn't installed, exactly like formats/artworks_svg.py's
 own optional riscos_artworks dependency. formats/sprite.py stays a
 dependency-free stub for the cases that only need "is this
 recognisably a sprite" (no pixels), independent of whether this extra
-is present.
+is present. raw_scanline_bytes/_pack_scanline are the one exception:
+they only repack an already-decoded PngImage-shaped object (real or a
+test double) into raw pixel bytes, so they're vendored here rather
+than imported from riscos_sprites, and stay available unconditionally.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
+COLOUR_TYPE_RGB = 2
+COLOUR_TYPE_PALETTE = 3
+COLOUR_TYPE_RGBA = 6
+
 try:
     from riscos_sprites import SpriteFile
-    from riscos_sprites.png import (
-        COLOUR_TYPE_PALETTE,
-        COLOUR_TYPE_RGB,
-        COLOUR_TYPE_RGBA,
-        PngImage,
-        build_png_image,
-        encode_png,
-        raw_scanline_bytes,
-    )
+    from riscos_sprites.png import PngImage, build_png_image, encode_png
 except ImportError:  # pragma: no cover - exercised by CI without the extra
     SpriteFile = None
     PngImage = None
     build_png_image = None
     encode_png = None
-    raw_scanline_bytes = None
-    COLOUR_TYPE_RGB = 2
-    COLOUR_TYPE_PALETTE = 3
-    COLOUR_TYPE_RGBA = 6
+
+
+def _pack_scanline(row, colour_type: int, bit_depth: int) -> bytes:
+    if colour_type == COLOUR_TYPE_PALETTE and bit_depth < 8:
+        per_byte = 8 // bit_depth
+        out = bytearray()
+        for start in range(0, len(row), per_byte):
+            chunk = row[start : start + per_byte]
+            byte = 0
+            for position, value in enumerate(chunk):
+                shift = 8 - bit_depth * (position + 1)
+                byte |= (value & ((1 << bit_depth) - 1)) << shift
+            out.append(byte)
+        return bytes(out)
+    if colour_type == COLOUR_TYPE_PALETTE:
+        return bytes(row)
+    if colour_type == COLOUR_TYPE_RGB:
+        out = bytearray()
+        for red, green, blue in row:
+            out.extend((red, green, blue))
+        return bytes(out)
+    if colour_type == COLOUR_TYPE_RGBA:
+        out = bytearray()
+        for red, green, blue, alpha in row:
+            out.extend((red, green, blue, alpha))
+        return bytes(out)
+    raise ValueError(f"unsupported PNG colour type: {colour_type}")
+
+
+def raw_scanline_bytes(image: "PngImage") -> bytes:
+    """*image*'s own pixel/index data as concatenated raw scanlines --
+    no PNG per-row filter-type byte, no PNG chunk framing, not
+    compressed. For a consumer that wants the decoded raster data
+    itself rather than a PNG file (e.g. a PDF Image XObject, built
+    directly from the same width/height/bit_depth/colour_type/palette
+    this describes). A pure repacking of *image*'s own rows -- vendored
+    from riscos_sprites.png rather than imported from it, since this is
+    the PDF converter's own object-building logic, not sprite decoding,
+    and must keep working on an already-decoded image (e.g. from a
+    test double) even when the optional 'sprites' extra isn't
+    installed."""
+    raw = bytearray()
+    for row in image.rows:
+        raw.extend(_pack_scanline(row, image.colour_type, image.bit_depth))
+    return bytes(raw)
 
 
 def sprite_area_to_png_image(data: bytes) -> Optional["PngImage"]:
