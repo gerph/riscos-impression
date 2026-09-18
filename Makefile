@@ -1,11 +1,18 @@
-.PHONY: build package publish clean test
+.PHONY: build package docs docs-zip publish clean test
 
 PACKAGE_NAME := riscos-impression
 VERSION ?= $(shell ./ci-vars --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["CI_PROJECT_VERSION"])')
 WHEEL_VERSION ?= $(shell python3 -c 'import re, sys; parts = sys.argv[1].split("."); numbers = []; [numbers.append(parts.pop(0)) for _ in range(len(parts)) if parts and parts[0].isdigit()]; base = ".".join(numbers) or "0"; suffix = ".".join(parts); print(base + (("+" + re.sub(r"[^a-zA-Z0-9]+", ".", suffix).strip(".")) if suffix else ""))' '$(VERSION)')
+# The ci-vars version may contain a branch name (eg 'ci/some-work'), but a
+# Debian 'Version:' field, and the file names we build from it, only permit
+# [A-Za-z0-9.+~]. Replace any run of other characters with '.'.
+DEB_VERSION ?= $(shell printf '%s' '$(VERSION)' | sed -E 's/[^A-Za-z0-9.+~]+/./g')
 BUILD_SOURCE := build/source
-PACKAGE_DIR := build/$(PACKAGE_NAME)_$(VERSION)_all
-PACKAGE_FILE := dist/$(PACKAGE_NAME)_$(VERSION)_all.deb
+PACKAGE_DIR := build/$(PACKAGE_NAME)_$(DEB_VERSION)_all
+PACKAGE_FILE := dist/$(PACKAGE_NAME)_$(DEB_VERSION)_all.deb
+DOCS_SOURCES := docs/impression-documents.xml docs/impression-ddf.xml
+DOCS_DIR := output/docs
+DOCS_FILE := $(PACKAGE_NAME)-$(DEB_VERSION)-docs.zip
 
 build:
 	rm -rf "$(BUILD_SOURCE)" dist
@@ -24,7 +31,7 @@ package:
 	cp README.md LICENSE "$(PACKAGE_DIR)/usr/share/doc/$(PACKAGE_NAME)/"
 	printf '%s\n' \
 		'Package: $(PACKAGE_NAME)' \
-		'Version: $(VERSION)' \
+		'Version: $(DEB_VERSION)' \
 		'Section: utils' \
 		'Priority: optional' \
 		'Architecture: all' \
@@ -37,11 +44,25 @@ package:
 	mkdir -p dist
 	dpkg-deb --build --root-owner-group "$(PACKAGE_DIR)" "$(PACKAGE_FILE)"
 
+# Build the PRM-in-XML documentation with the local riscos-prminxml tool,
+# then archive it. CI environments which generate the HTML another way
+# (eg the GitHub action) can populate $(DOCS_DIR) themselves and call
+# 'docs-zip' directly, so that the archive is named identically everywhere.
+docs:
+	rm -rf "$(DOCS_DIR)"
+	mkdir -p "$(DOCS_DIR)"
+	riscos-prminxml -f html5+xml -O "$(DOCS_DIR)" $(DOCS_SOURCES)
+	$(MAKE) docs-zip
+
+docs-zip:
+	rm -f "$(DOCS_FILE)"
+	cd "$(DOCS_DIR)" && zip -9r "$(CURDIR)/$(DOCS_FILE)" *
+
 publish: build
 	python3 -m twine upload dist/*
 
 clean:
-	rm -rf dist/ build/ *.egg-info
+	rm -rf dist/ build/ *.egg-info output/ *-docs.zip
 
 test:
 	python3 -m pytest

@@ -27,9 +27,9 @@ package:
       eval "$(./ci-vars)"
       PYTHONPATH="/tmp/pypa-build${PYTHONPATH:+:$PYTHONPATH}" \
         make package VERSION="$CI_PROJECT_VERSION"
-      package_file="dist/riscos-impression_${CI_PROJECT_VERSION}_all.deb"
+      package_file="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
       wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-      test -f "$package_file"
+      test -n "$package_file"
       test -n "$wheel_file"
   artifacts:
     name: "riscos-impression-$CI_COMMIT_REF_SLUG"
@@ -46,11 +46,9 @@ docs:
     - |
       set -eu
       eval "$(./ci-vars)"
-      mkdir -p output/docs
-      riscos-prminxml -f html5+xml -O output/docs docs/impression-documents.xml docs/impression-ddf.xml
-      docs_file="riscos-impression-${CI_PROJECT_VERSION}-docs.zip"
-      (cd output/docs && zip -9r "$OLDPWD/$docs_file" *)
-      test -f "$docs_file"
+      make docs VERSION="$CI_PROJECT_VERSION"
+      docs_file="$(find . -maxdepth 1 -name '*-docs.zip' -print -quit)"
+      test -n "$docs_file"
   artifacts:
     name: "riscos-impression-docs-$CI_COMMIT_REF_SLUG"
     paths:
@@ -70,12 +68,12 @@ publish:
     - |
       set -eu
       eval "$(./ci-vars)"
-      package_file="dist/riscos-impression_${CI_PROJECT_VERSION}_all.deb"
+      package_file="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
       wheel_file="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-      docs_file="riscos-impression-${CI_PROJECT_VERSION}-docs.zip"
-      test -f "$package_file"
+      docs_file="$(find . -maxdepth 1 -name '*-docs.zip' -print -quit)"
+      test -n "$package_file"
       test -n "$wheel_file"
-      test -f "$docs_file"
+      test -n "$docs_file"
       curl --fail --silent --show-error \
         --user "$ARTIFACTORY_USER:$ARTIFACTORY_ENCPASSWORD" \
         --upload-file "$package_file" \

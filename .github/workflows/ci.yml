@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -18,10 +18,17 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: pytest
 
+  # The version comes from ci-vars, and the packaging and documentation
+  # archive are produced by the Makefile, so that the GitHub and GitLab
+  # builds produce identically named artifacts from the same commit.
+  # ci-vars needs the full history and tags to derive the version, hence
+  # fetch-depth: 0 on the checkouts below.
   build-docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Build PRM-in-XML documentation
         uses: gerph/riscos-prminxml-action@v1
@@ -30,41 +37,45 @@ jobs:
           output: output/docs
           style: prm
 
-      - name: Determine package version
-        id: pkgversion
-        run: |
-          version=$(grep -m1 '^version' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Package documentation
-        id: docsversion
+        id: docs
         run: |
-          leafname="riscos-impression-${{ steps.pkgversion.outputs.version }}-docs.zip"
-          cd output/docs && zip -9r "../../$leafname" *
+          eval "$(./ci-vars)"
+          make docs-zip VERSION="$CI_PROJECT_VERSION"
+          leafname="$(find . -maxdepth 1 -name '*-docs.zip' -printf '%f' -quit)"
+          test -n "$leafname"
           echo "leafname=$leafname" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
           name: Documentation
-          path: ${{ steps.docsversion.outputs.leafname }}
+          path: ${{ steps.docs.outputs.leafname }}
 
   build-package:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install build
-      - run: python -m build
+
+      - name: Build wheel and Debian package
+        run: |
+          eval "$(./ci-vars)"
+          make package VERSION="$CI_PROJECT_VERSION"
+          test -n "$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: SourcePackage
+          name: Packages
           path: |
             dist/*.tar.gz
             dist/*.whl
+            dist/*.deb
 
   release:
     runs-on: ubuntu-latest
@@ -80,7 +91,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: SourcePackage
+          name: Packages
           path: release/dist
 
       - name: Create release
