@@ -1,27 +1,131 @@
-name: CI
+name: Test and package
 
 on:
   push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e '.[dev]'
-      - run: pytest
+          cache: pip
 
-  build-docs:
+      - name: Install the package
+        run: python -m pip install '.[dev]'
+
+      - name: Run the unit tests
+        run: python -m pytest
+
+      - name: Compile all Python sources
+        run: python -m compileall -q src tests
+
+  # The version comes from ci-vars, and the packaging is produced by the
+  # Makefile, so that the GitHub and GitLab builds produce identically
+  # named artifacts from the same commit. ci-vars needs the full history
+  # and tags to derive the version, hence fetch-depth: 0 on the checkout.
+  package:
+    name: Build distributions
+    needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install packaging tools
+        run: python -m pip install build twine
+
+      - name: Check release tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          eval "$(./ci-vars)"
+          if [ "$TAG_NAME" != "v$CI_PROJECT_VERSION" ]; then
+            echo "Tag $TAG_NAME does not match the ci-vars version $CI_PROJECT_VERSION." >&2
+            exit 1
+          fi
+
+      - name: Build wheel, source and Debian distributions
+        shell: bash
+        run: |
+          eval "$(./ci-vars)"
+          make package VERSION="$CI_PROJECT_VERSION"
+          test -n "$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
+
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*.tar.gz dist/*.whl
+
+      - name: Install and smoke-test the source distribution
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/sdist-test"
+          "$RUNNER_TEMP/sdist-test/bin/pip" install dist/*.tar.gz
+          "$RUNNER_TEMP/sdist-test/bin/python" -c 'import riscos_impression; print(riscos_impression.__version__)'
+          "$RUNNER_TEMP/sdist-test/bin/riscos-impression" --version
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: packages
+          path: |
+            dist/*.tar.gz
+            dist/*.whl
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  docs:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
       - name: Build PRM-in-XML documentation
         uses: gerph/riscos-prminxml-action@v1
@@ -30,63 +134,60 @@ jobs:
           output: output/docs
           style: prm
 
-      - name: Determine package version
-        id: pkgversion
-        run: |
-          version=$(grep -m1 '^version' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Package documentation
-        id: docsversion
+        id: docs
+        shell: bash
         run: |
-          leafname="riscos-impression-${{ steps.pkgversion.outputs.version }}-docs.zip"
-          cd output/docs && zip -9r "../../$leafname" *
+          eval "$(./ci-vars)"
+          make docs-zip VERSION="$CI_PROJECT_VERSION"
+          leafname="$(find . -maxdepth 1 -name '*-docs.zip' -printf '%f' -quit)"
+          test -n "$leafname"
           echo "leafname=$leafname" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v7
+      - name: Upload documentation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Documentation
-          path: ${{ steps.docsversion.outputs.leafname }}
-
-  build-package:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: pip install build
-      - run: python -m build
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: SourcePackage
-          path: |
-            dist/*.tar.gz
-            dist/*.whl
+          name: documentation
+          path: ${{ steps.docs.outputs.leafname }}
+          if-no-files-found: error
+          retention-days: 30
 
   release:
-    runs-on: ubuntu-latest
-    needs: [test, build-docs, build-package]
+    name: Create GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - package
+      - docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
+
     steps:
-      - uses: actions/download-artifact@v8
+      - name: Download tested distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: Documentation
-          path: release/docs
+          name: packages
+          path: dist
 
-      - uses: actions/download-artifact@v8
+      - name: Download documentation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: SourcePackage
-          path: release/dist
+          name: documentation
+          path: dist
 
-      - name: Create release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          files: |
-            release/docs/*
-            release/dist/*
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" dist/* --clobber
+          else
+            gh release create "$TAG_NAME" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "$TAG_NAME"
+          fi
