@@ -20,6 +20,8 @@ build:
 	cp -a README.md LICENSE "$(BUILD_SOURCE)/"
 	cp -a src/riscos_impression "$(BUILD_SOURCE)/src/riscos_impression"
 	sed 's/^version = ".*"/version = "$(WHEEL_VERSION)"/' pyproject.toml > "$(BUILD_SOURCE)/pyproject.toml"
+	# The in-tree __version__ is "dev"; the built copy carries the real one.
+	sed -i 's/^__version__ = ".*"/__version__ = "$(WHEEL_VERSION)"/' "$(BUILD_SOURCE)/src/riscos_impression/__init__.py"
 	python3 -m build --outdir "$(CURDIR)/dist" "$(BUILD_SOURCE)"
 
 package:
